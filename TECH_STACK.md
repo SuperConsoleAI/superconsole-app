@@ -1,0 +1,58 @@
+# TECH_STACK.md
+
+Every dependency and why it's here. App target: <30MB installed, Mac first (Windows later).
+
+## Desktop shell
+
+| Dep | Why |
+|-----|-----|
+| Tauri 2 (`tauri`, `tauri-build`) | Rust-native shell, ~10x smaller than Electron. Window config in `tauri.conf.json` uses macOS `titleBarStyle: Overlay`. |
+| `tauri-plugin-dialog` | Native folder picker for Add Workspace. |
+| `tauri-plugin-opener` | Open external links (Documentation). |
+| `tauri-plugin-updater` | Auto-update scaffolding. Inert until `pubkey` + endpoint are set in tauri.conf.json (needs `TAURI_SIGNING_PRIVATE_KEY` + `createUpdaterArtifacts` at release time). |
+
+## Rust crates (src-tauri/Cargo.toml)
+
+| Crate | Why |
+|-------|-----|
+| `portable-pty` 0.9 | Real PTY sessions (same approach as VS Code terminal). Core of the app. |
+| `rusqlite` 0.32 (`bundled`) | Local SQLite, no system dependency. All persistence. |
+| `cron` 0.12 + `chrono` | Cron parsing + next-run computation (5-field input, seconds prepended). |
+| `tokio` (`time` feature) | Tick loops; Tauri's async runtime is tokio already. |
+| `tiny_http` 0.12 | Minimal blocking HTTP server for remote triggers (127.0.0.1 only). Chosen over axum to keep binary small. |
+| `reqwest` 0.12 (`rustls-tls`, no default features) | Telegram Bot API calls. rustls avoids OpenSSL linkage. |
+| `rand` 0.8 | API token generation. |
+| `serde` / `serde_json` | IPC + JSON payloads. |
+
+## Frontend (package.json)
+
+| Dep | Why |
+|-----|-----|
+| React 19 + Vite 7 | UI. Vite dev server on fixed port 1420 (Tauri requirement). |
+| `@tanstack/react-router` | Type-safe code-based routing with memory history; views are panels, not pages. |
+| Tailwind CSS v4 (`@tailwindcss/vite`) | CSS-first config; all tokens in `src/index.css`, no tailwind.config. |
+| shadcn/ui (via CLI, `components.json`) | UI primitives on `radix-ui` + `class-variance-authority` + `tailwind-merge` + `clsx`. Regenerate with `npx shadcn add <c> -y -o`. |
+| `tw-animate-css` | Animation utilities shadcn v4 components expect (`animate-in` etc.). |
+| `@xterm/xterm` + `@xterm/addon-fit` | Terminal rendering for PTY sessions. |
+| `react-markdown` + `remark-gfm` | Markdown rendering in Inbox + file editor preview. |
+| `lucide-react` | Icon set (CLI brand icons are local SVGs in `src/assets/icons/preset-icons/`). |
+| `@fontsource-variable/{archivo,lora,jetbrains-mono}` | Bundled variable fonts (offline app, no Google Fonts CDN). |
+| `@tauri-apps/api` + plugin guests (`plugin-dialog`, `plugin-opener`, `plugin-updater`) | IPC + plugin JS bindings. |
+
+## Dev tooling
+
+| File | Purpose |
+|------|---------|
+| `vite.config.ts` | React + Tailwind plugins, `@` alias → `src/`, Tauri dev-server settings (port 1420, ignore src-tauri). |
+| `tsconfig.json` | Strict TS, bundler resolution, `@/*` paths. |
+| `components.json` | shadcn CLI config (new-york style, neutral base, lucide). |
+| `app-icon.png` | 1024px source icon (generated). `cargo tauri icon app-icon.png` regenerates `src-tauri/icons/`. |
+
+## Version constraints / surprises
+
+- Tauri CLI is installed via cargo (`cargo tauri ...`), not npm — `npx tauri` won't work here.
+- shadcn CLI v4: `-b` flag means component base (`radix`), not base color; interactive init was bypassed by writing `components.json` manually.
+- Tailwind v4 syntax throughout (`@theme`, `@custom-variant`); v3 config patterns don't apply.
+- `cron` crate requires 6/7-field expressions — handled centrally in `scheduler::next_run`, don't parse cron elsewhere.
+- React 19: no `forwardRef` needed in new shadcn components (they use plain props).
+- Release artifacts: `cargo tauri build` → `src-tauri/target/release/bundle/{macos/Dockyard.app, dmg/Dockyard_0.1.0_aarch64.dmg}` (aarch64; add `--target x86_64-apple-darwin` or a universal build for Intel Macs).

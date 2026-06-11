@@ -1,0 +1,143 @@
+@import "@fontsource-variable/archivo";
+@import "@fontsource-variable/lora";
+@import "@fontsource-variable/jetbrains-mono";
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@xterm/xterm/css/xterm.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Dockyard design system, adapted from the shadcn token contract.
+  Palette modeled on Claude Code: warm cream paper in light mode,
+  warm charcoal in dark mode, terracotta as the single accent.
+*/
+
+:root {
+  /* Light: warm cream, ink text, terracotta accent */
+  --background: oklch(0.977 0.005 91);          /* #faf9f5 cream */
+  --foreground: oklch(0.328 0.014 95);          /* #3d3929 warm ink */
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.328 0.014 95);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.328 0.014 95);
+  --primary: oklch(0.667 0.123 40);             /* #d97757 terracotta */
+  --primary-foreground: oklch(0.985 0.005 91);
+  --secondary: oklch(0.945 0.008 91);
+  --secondary-foreground: oklch(0.328 0.014 95);
+  --muted: oklch(0.945 0.008 91);
+  --muted-foreground: oklch(0.55 0.012 95);
+  --accent: oklch(0.93 0.012 80);
+  --accent-foreground: oklch(0.328 0.014 95);
+  --destructive: oklch(0.577 0.215 27);
+  --destructive-foreground: oklch(0.985 0.005 91);
+  --border: oklch(0.9 0.008 91);
+  --input: oklch(0.9 0.008 91);
+  --ring: oklch(0.667 0.123 40);
+  --radius: 0.625rem;
+
+  --terminal-bg: oklch(0.234 0.006 80);
+  --sidebar: oklch(0.962 0.006 91);
+  --sidebar-foreground: oklch(0.328 0.014 95);
+  --sidebar-border: oklch(0.9 0.008 91);
+}
+
+.dark {
+  /* Dark: warm charcoal, parchment text, brighter terracotta */
+  --background: oklch(0.234 0.006 80);          /* #262624 warm charcoal */
+  --foreground: oklch(0.937 0.008 91);          /* #f0eee7 parchment */
+  --card: oklch(0.268 0.007 80);                /* #2b2a27 */
+  --card-foreground: oklch(0.937 0.008 91);
+  --popover: oklch(0.268 0.007 80);
+  --popover-foreground: oklch(0.937 0.008 91);
+  --primary: oklch(0.705 0.13 41);              /* lifted terracotta */
+  --primary-foreground: oklch(0.2 0.006 80);
+  --secondary: oklch(0.305 0.007 80);
+  --secondary-foreground: oklch(0.937 0.008 91);
+  --muted: oklch(0.305 0.007 80);
+  --muted-foreground: oklch(0.69 0.01 91);
+  --accent: oklch(0.33 0.009 75);
+  --accent-foreground: oklch(0.937 0.008 91);
+  --destructive: oklch(0.62 0.19 27);
+  --destructive-foreground: oklch(0.95 0.005 91);
+  --border: oklch(0.33 0.008 80);
+  --input: oklch(0.33 0.008 80);
+  --ring: oklch(0.705 0.13 41);
+
+  --terminal-bg: oklch(0.205 0.006 80);
+  --sidebar: oklch(0.215 0.006 80);
+  --sidebar-foreground: oklch(0.937 0.008 91);
+  --sidebar-border: oklch(0.29 0.007 80);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-terminal: var(--terminal-bg);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@theme {
+  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Lora Variable", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    overflow: hidden;
+  }
+}
+
+.font-display {
+  font-family: var(--font-serif);
+  letter-spacing: -0.01em;
+}
+
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: oklch(0.45 0.008 80 / 0.5);
+  border-radius: 4px;
+}
+
+::selection {
+  background: oklch(0.667 0.123 40 / 0.35);
+}
