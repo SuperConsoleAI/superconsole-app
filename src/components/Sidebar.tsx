@@ -33,6 +33,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CLI_PRESETS, type Organization, type Workspace } from "@/lib/api";
+import { AccountMenu } from "@/components/AccountMenu";
 import { cn } from "@/lib/utils";
 
 interface SidebarRailProps {
@@ -138,6 +139,7 @@ export function SidebarRail({
         </TooltipTrigger>
         <TooltipContent side="right">Settings</TooltipContent>
       </Tooltip>
+      <AccountMenu collapsed />
     </aside>
   );
 }
@@ -348,14 +350,17 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
-      <div className="flex items-center gap-2 border-t border-sidebar-border p-3">
-        <Button variant="outline" size="sm" className="flex-1 justify-center" onClick={onAdd}>
-          <Plus className="h-4 w-4" />
-          New workspace
-        </Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onSettings}>
-          <Settings className="h-4 w-4 text-muted-foreground" />
-        </Button>
+      <div className="flex flex-col gap-2 border-t border-sidebar-border p-3">
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="flex-1 justify-center" onClick={onAdd}>
+            <Plus className="h-4 w-4" />
+            New workspace
+          </Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onSettings}>
+            <Settings className="h-4 w-4 text-muted-foreground" />
+          </Button>
+        </div>
+        <AccountMenu />
       </div>
 
       <Dialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen}>

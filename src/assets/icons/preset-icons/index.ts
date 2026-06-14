@@ -25,7 +25,7 @@ export interface PresetIconSet {
 
 export const PRESET_ICONS: Record<string, PresetIconSet> = {
 	amp: { light: ampIcon, dark: ampIcon },
-	antigravity: { light: antigravityColorIcon, dark: antigravityIcon },
+	antigravity: { light: antigravityColorIcon, dark: antigravityColorIcon },
 	claude: { light: claudeIcon, dark: claudeIcon },
 	codex: { light: codexIcon, dark: codexWhiteIcon },
 	copilot: { light: copilotIcon, dark: copilotWhiteIcon },

@@ -1,30 +1,49 @@
 # ARCHITECTURE.md
 
-Dockyard is a Tauri 2 desktop app: Rust backend (system-level) + React 19 frontend (UI). No cloud, no accounts. All state is local SQLite + runtime memory.
+SuperConsole is a Tauri 2 desktop app: Rust backend (system-level) + React 19 frontend (UI). It is **local-first with an optional cloud layer**: terminals, jobs, files, inbox, and chat live in local SQLite + runtime memory, while identity, org/project config, team membership, LLM keys, and connector credentials sync to a shared Turso (libSQL) cloud DB via WorkOS auth. A companion web portal (`superconsole-web/`, Cloudflare Workers) is a second surface onto the same Turso DB.
 
 ## High-level data flow
 
 ```
 React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
    ▲                        │
-   │ listen()               ├─► db.rs        SQLite (workspaces, orgs, jobs, inbox, settings, session_history)
-   │                        ├─► pty.rs       portable-pty sessions (one per tab, keyed "wsId:cli" / "wsId:shell-N")
- events                     ├─► files.rs     sandboxed file ops inside workspace folder
- pty-output                 ├─► scheduler.rs 30s tick loop → runs due cron jobs headless → inbox
- pty-exit                   └─► remote.rs    Telegram long-poll bot + local tiny_http server (127.0.0.1)
- inbox-new
+   │ listen()               ├─► db.rs         SQLite (workspaces, orgs, jobs, inbox, settings, session_history,
+   │                        │                  chat_messages, *_cache tables synced from Turso)
+ events                     ├─► pty.rs        portable-pty sessions (one per tab, keyed "wsId:cli" / "wsId:shell-N")
+ pty-output                 ├─► files.rs      sandboxed file ops inside workspace folder
+ pty-exit                   ├─► scheduler.rs  30s tick loop → runs due cron jobs headless → inbox
+ inbox-new                  ├─► remote.rs     Telegram long-poll bot + local tiny_http server (127.0.0.1)
+ chat-token                 │
+ chat-done                  │   ── cloud layer ──
+ chat-error                 ├─► auth.rs       WorkOS loopback OAuth (127.0.0.1:4666) + keyring; upserts user/orgs to Turso
+                            ├─► cloud.rs      Turso HTTP exec helper (turso_execute / rows / cell_*)
+                            ├─► crypto.rs     AES-256-GCM (HKDF from WORKOS_COOKIE_PASSWORD); key cached in keychain
+                            ├─► sync_manager.rs  pulls Turso config → local *_cache (startup/manual/org-switch/30min)
+                            ├─► llm.rs        LLM key CRUD (project>org>account) + session_env + chat streaming adapters
+                            ├─► chat.rs       native chat: streams provider tokens via chat-* events
+                            ├─► team.rs       org/project membership + invitations CRUD
+                            └─► connectors.rs connector credentials CRUD + session_env injection
 ```
 
-- UI never touches disk/processes directly; everything goes through `invoke()` commands.
-- PTY output streams via Tauri events (`pty-output` with `session_id`), filtered per terminal in the frontend.
+- UI never touches disk/processes/cloud directly; everything goes through `invoke()` commands.
+- PTY output streams via Tauri events (`pty-output` with `session_id`), filtered per terminal in the frontend. Chat streams via `chat-token`/`chat-done`/`chat-error`.
 - Three trigger paths (scheduler, HTTP `/trigger`, Telegram `/run`) all funnel into `scheduler::exec_in_workspace`, so results consistently land in the Inbox and notify Telegram.
+
+## Cloud layer (identity + sync)
+
+- **Source of truth split**: Turso owns identity/org/project/team/keys/connectors; local SQLite owns everything agents do (terminals, jobs, inbox, chat, files). Only config/identity goes to cloud; agent activity never leaves the device.
+- **Auth**: `auth.rs` runs a one-shot loopback server on `127.0.0.1:4666`, opens the WorkOS hosted page, exchanges the code via `/user_management/authenticate`, and stores the session in the OS keychain. On login it upserts the user + orgs to Turso and accepts email-matched pending invitations.
+- **Sync cache**: Turso is queried only on app start, explicit refresh, org switch, and a 30-minute tick (`sync_manager.rs`). Results land in local `*_cache` tables; PTY/chat env injection reads the cache only, never Turso live.
+- **Encryption**: LLM keys and connector credentials are AES-256-GCM encrypted (`crypto.rs`), key derived via HKDF-SHA256 from `WORKOS_COOKIE_PASSWORD`. The desktop `crypto.rs` and web `crypto.ts` are byte-for-byte compatible, so secrets set on either surface decrypt on both.
+- **Resolution precedence**: LLM keys and connectors resolve project → org → account/local → `.env` → skip; project always overrides org. Project rows are created idempotently and under a lock (`llm.rs::ensure_workspace_project`) to avoid duplicate cloud rows.
 
 ## Frontend structure
 
 - `src/router.tsx` is the spine: TanStack Router (memory history), code-based route tree, and the `Shell` layout.
 - Routes: `/` (welcome), `/workspace/$workspaceId` (+ search params `file`, `files`), `/inbox`, `/tasks`, `/settings`.
 - CRITICAL: terminals are rendered in the root layout (`Shell`), NOT inside route outlets. Routes only control visibility. This keeps PTY sessions alive across navigation.
-- Shared state lives in `WorkspaceProvider` (src/lib/workspace-context.tsx): workspaces, organizations, per-workspace tab sets, live sessions, active org (localStorage).
+- Tabs are typed: terminal tabs render `TerminalView`, chat tabs (`{workspaceId}:chat`) render `ChatView`. The router picks the view by `tab.cli`; chat is its own tab type, not a per-tab toggle.
+- Shared state lives in `WorkspaceProvider` (src/lib/workspace-context.tsx): workspaces, organizations, per-workspace tab sets, live sessions, active org (localStorage). Cloud identity/session state lives in `AuthProvider` (src/lib/auth-context.tsx): WorkOS user, orgs, active cloud org.
 - Layout: full-width `TopBar` (holds macOS traffic lights via titleBarStyle Overlay + drag region) → below it `Sidebar`/`SidebarRail` + content column (`TabStrip` → terminal/editor + optional `FilePanel`).
 
 ## Key decisions and why
@@ -47,8 +66,10 @@ src/                    React frontend
   assets/icons/preset-icons/  CLI brand SVGs + index.ts lookup
 src-tauri/              Rust backend
   src/lib.rs            all #[tauri::command] handlers + app setup
-  src/{db,pty,files,scheduler,remote}.rs   modules per concern
+  src/{db,pty,files,scheduler,remote}.rs   local-first modules per concern
+  src/{auth,cloud,crypto,sync_manager,llm,chat,team,connectors}.rs   cloud layer
   tauri.conf.json       window (Overlay titlebar), bundling, updater config
   capabilities/default.json  permission grants
   icons/                generated by `cargo tauri icon app-icon.png`
+superconsole-web/       Cloudflare Workers web portal (TanStack Start, own PROJECT.md/CLAUDE.md)
 ```

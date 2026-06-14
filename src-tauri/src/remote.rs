@@ -56,7 +56,7 @@ async fn handle_telegram_text(app: &AppHandle, text: &str) -> String {
             .collect::<Vec<_>>()
             .join("\n");
         return format!(
-            "Dockyard connected.\n\nWorkspaces:\n{}\n\nRun a command:\n/run <workspace> <command>",
+            "SuperConsole connected.\n\nWorkspaces:\n{}\n\nRun a command:\n/run <workspace> <command>",
             if list.is_empty() { "(none)".into() } else { list }
         );
     }
@@ -164,7 +164,7 @@ pub fn spawn_http(app: AppHandle) {
         let server = match tiny_http::Server::http(("127.0.0.1", port)) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("dockyard http server failed to bind port {}: {}", port, e);
+                eprintln!("superconsole http server failed to bind port {}: {}", port, e);
                 return;
             }
         };
@@ -173,7 +173,7 @@ pub fn spawn_http(app: AppHandle) {
                 .headers()
                 .iter()
                 .any(|h| {
-                    h.field.as_str().as_str().eq_ignore_ascii_case("x-dockyard-token")
+                    h.field.as_str().as_str().eq_ignore_ascii_case("x-superconsole-token")
                         && h.value.as_str() == token
                 });
 
@@ -183,7 +183,7 @@ pub fn spawn_http(app: AppHandle) {
             let (status, body) = if url == "/health" {
                 (200, json!({ "ok": true }).to_string())
             } else if !authed {
-                (401, json!({ "error": "invalid or missing x-dockyard-token" }).to_string())
+                (401, json!({ "error": "invalid or missing x-superconsole-token" }).to_string())
             } else if method == "GET" && url == "/workspaces" {
                 let db = app.state::<Db>();
                 match db.list_workspaces() {

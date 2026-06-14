@@ -1,6 +1,6 @@
 Read PLAN.md fully before doing anything.
 
-We are building Dockyard — a Tauri 2 desktop app (Mac + Windows).
+We are building SuperConsole — a Tauri 2 desktop app (Mac + Windows).
 Start Phase 1 only.
 
 Phase 1 deliverables:
@@ -26,7 +26,7 @@ ___
 Reference this repo for architecture patterns: https://github.com/superset-sh/superset
 
 Key patterns to learn from and adapt:
-- .superset/config.json pattern → use as .dockyard/config.json per workspace
+- .superset/config.json pattern → use as .superconsole/config.json per workspace
   (setup/teardown scripts, env vars, workspace metadata)
 - plugins/ folder structure → how they define CLI presets per agent
 - packages/ui → component structure with shadcn + Tailwind
@@ -86,7 +86,7 @@ Done (Phases 1-6 complete):
       manager, slash commands
    •  Scheduler + Inbox with approve/reject, session history, Telegram bot + local HTTP triggers
    •  Settings page, app icon, updater scaffold (needs signing key + endpoint), onboarding
-   •  Shippable artifacts: src-tauri/target/release/bundle/dmg/Dockyard_0.1.0_aarch64.dmg and Dockyard.app
+   •  Shippable artifacts: src-tauri/target/release/bundle/dmg/SuperConsole_0.1.0_aarch64.dmg and SuperConsole.app
    •  Docs: ARCHITECTURE.md, CONTEXT.md, CODEBASE.md, DESIGN_PRINCIPLES.md, TECH_STACK.md
 
    Left for later: custom CLI presets, Windows build, updater signing key/endpoint, Cloudflare Tunnel docs. Note: 

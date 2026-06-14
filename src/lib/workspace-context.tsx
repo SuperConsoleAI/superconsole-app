@@ -46,7 +46,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [activeOrgId, setActiveOrgIdState] = useState<number>(() =>
-    Number(localStorage.getItem("dockyard-org") || 1),
+    Number(localStorage.getItem("superconsole-org") || 1),
   );
   const [openedIds, setOpenedIds] = useState<number[]>([]);
   const [tabsByWs, setTabsByWs] = useState<Record<number, SessionTab[]>>({});
@@ -62,19 +62,33 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   const setActiveOrgId = useCallback((id: number) => {
     setActiveOrgIdState(id);
-    localStorage.setItem("dockyard-org", String(id));
+    localStorage.setItem("superconsole-org", String(id));
   }, []);
 
   const addOrganization = useCallback(async (name: string) => {
     const org = await api.addOrganization(name);
     setOrganizations((prev) => [...prev, org].sort((a, b) => a.name.localeCompare(b.name)));
     setActiveOrgIdState(org.id);
-    localStorage.setItem("dockyard-org", String(org.id));
+    localStorage.setItem("superconsole-org", String(org.id));
   }, []);
 
   const openTab = useCallback((workspaceId: number, cli: string) => {
     setTabsByWs((prev) => {
       const tabs = prev[workspaceId] ?? [];
+      if (cli === "chat") {
+        const existing = tabs.find((t) => t.cli === "chat");
+        if (existing) {
+          setActiveTabByWs((a) => ({ ...a, [workspaceId]: existing.id }));
+          return prev;
+        }
+        const tab: SessionTab = {
+          id: `${workspaceId}:chat`,
+          cli: "chat",
+          label: "Chat",
+        };
+        setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
+        return { ...prev, [workspaceId]: [...tabs, tab] };
+      }
       if (cli !== "shell") {
         const existing = tabs.find((t) => t.cli === cli);
         if (existing) {

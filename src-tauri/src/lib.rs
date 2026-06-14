@@ -1,10 +1,20 @@
+mod auth;
+mod chat;
+mod cloud;
+mod connectors;
+mod crypto;
 mod db;
 mod files;
+mod llm;
 mod pty;
 mod remote;
 mod scheduler;
+mod sync_manager;
+mod team;
 
-use db::{Db, InboxItem, Job, Organization, SessionLog, Workspace};
+use auth::AuthState;
+
+use db::{ChatMessage, Db, InboxItem, Job, Organization, SessionLog, Workspace};
 use files::FileEntry;
 use pty::{SessionInfo, SessionManager};
 use std::path::Path;
@@ -50,29 +60,37 @@ fn remove_workspace(
 }
 
 #[tauri::command]
-fn start_session(
+async fn start_session(
     app: AppHandle,
-    db: State<Db>,
-    sessions: State<SessionManager>,
+    sessions: State<'_, SessionManager>,
     workspace_id: i64,
     session_id: String,
     cli: String,
     rows: u16,
     cols: u16,
 ) -> Result<SessionInfo, String> {
-    let ws = db.get_workspace(workspace_id)?;
-    let was_active = pty::session_active(&sessions, &session_id);
+    let (ws_path, was_active) = {
+        let db = app.state::<Db>();
+        let ws = db.get_workspace(workspace_id)?;
+        (ws.path, pty::session_active(&sessions, &session_id))
+    };
+    let resolved = llm::session_env(&app, workspace_id);
+    let mut env = resolved.env;
+    env.extend(connectors::session_env(&app, workspace_id));
     let info = pty::start_session(
         &app,
         &sessions,
         &session_id,
         workspace_id,
-        &ws.path,
+        &ws_path,
         &cli,
         rows,
         cols,
+        &env,
+        &resolved.providers,
     )?;
     if !was_active {
+        let db = app.state::<Db>();
         let _ = db.log_session(workspace_id, &session_id, &cli);
     }
     Ok(info)
@@ -258,6 +276,48 @@ fn list_slash_commands(db: State<Db>, workspace_id: i64) -> Result<Vec<String>, 
     Ok(commands)
 }
 
+#[tauri::command]
+async fn sync_cloud_cache(app: AppHandle) -> Result<(), String> {
+    sync_manager::sync_on_startup(&app).await;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_chat_messages(db: State<Db>, project_id: String) -> Result<Vec<ChatMessage>, String> {
+    db.list_chat_messages(&project_id)
+}
+
+#[tauri::command]
+fn add_chat_message(
+    db: State<Db>,
+    project_id: String,
+    role: String,
+    content: String,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ChatMessage, String> {
+    db.add_chat_message(&project_id, &role, &content, provider.as_deref(), model.as_deref())
+}
+
+#[tauri::command]
+fn clear_chat_messages(db: State<Db>, project_id: String) -> Result<(), String> {
+    db.clear_chat_messages(&project_id)
+}
+
+/// Remove all locally cached cloud data + the derived encryption key from this
+/// machine. Does not sign out and does not touch Turso.
+#[tauri::command]
+fn clear_local_cloud_data(db: State<Db>) -> Result<(), String> {
+    db.clear_cloud_cache()?;
+    crypto::clear_cached_key()
+}
+
+#[tauri::command]
+async fn sync_org_cache(app: AppHandle, org_id: String) -> Result<(), String> {
+    sync_manager::sync_on_update(&app, "org", &org_id).await;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -269,7 +329,9 @@ pub fn run() {
             let db = Db::init(data_dir).map_err(|e| std::io::Error::other(e))?;
             app.manage(db);
             app.manage(SessionManager::default());
+            app.manage(AuthState::load_from_keyring());
             scheduler::spawn(app.handle().clone());
+            sync_manager::spawn(app.handle().clone());
             remote::spawn_http(app.handle().clone());
             remote::spawn_telegram(app.handle().clone());
             Ok(())
@@ -304,7 +366,35 @@ pub fn run() {
             list_organizations,
             add_organization,
             set_inbox_status,
-            list_session_history
+            list_session_history,
+            auth::sign_in,
+            auth::auth_status,
+            auth::sign_out,
+            llm::ensure_workspace_project,
+            llm::list_llm_keys,
+            llm::set_llm_key,
+            llm::delete_llm_key,
+            sync_cloud_cache,
+            sync_org_cache,
+            chat::chat_send,
+            chat::has_provider_key,
+            list_chat_messages,
+            add_chat_message,
+            clear_chat_messages,
+            clear_local_cloud_data,
+            team::list_org_members,
+            team::invite_org_member,
+            team::update_org_member_role,
+            team::remove_org_member,
+            team::cancel_org_invitation,
+            team::list_project_members,
+            team::list_addable_project_members,
+            team::add_project_member,
+            team::update_project_member_role,
+            team::remove_project_member,
+            connectors::list_connectors,
+            connectors::set_connector,
+            connectors::delete_connector
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -11,6 +11,7 @@ pub struct Workspace {
     pub cli: String,
     pub organization_id: i64,
     pub created_at: String,
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,13 +53,39 @@ pub struct InboxItem {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CachedLlmKey {
+    pub provider: String,
+    pub credentials_encrypted: Option<String>,
+    pub base_url: Option<String>,
+    pub extra_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub id: i64,
+    pub project_id: String,
+    pub role: String,
+    pub content: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedConnector {
+    pub service: String,
+    pub status: Option<String>,
+    pub credentials_encrypted: Option<String>,
+}
+
 pub struct Db(pub Mutex<Connection>);
 
 impl Db {
     pub fn init(app_data_dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
         let conn =
-            Connection::open(app_data_dir.join("dockyard.db")).map_err(|e| e.to_string())?;
+            Connection::open(app_data_dir.join("superconsole.db")).map_err(|e| e.to_string())?;
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS workspaces (
@@ -89,6 +116,10 @@ impl Db {
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS cloud_identity (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                payload TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS inbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +155,58 @@ impl Db {
             .map_err(|e| e.to_string())?;
         }
 
+        let has_project_col = conn
+            .prepare("SELECT project_id FROM workspaces LIMIT 1")
+            .is_ok();
+        if !has_project_col {
+            conn.execute_batch("ALTER TABLE workspaces ADD COLUMN project_id TEXT;")
+                .map_err(|e| e.to_string())?;
+        }
+
+        // Local mirror of cloud (Turso) data, scoped to the signed-in user.
+        // PTY injection reads only from here; Turso is never hit at session
+        // start. scope is account|org|project, scope_id the matching cloud id.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS llm_keys_cache (
+                scope TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                credentials_encrypted TEXT,
+                base_url TEXT,
+                extra_env TEXT,
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (scope, scope_id, provider)
+            );
+            CREATE TABLE IF NOT EXISTS connectors_cache (
+                scope TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                service TEXT NOT NULL,
+                status TEXT,
+                credentials_encrypted TEXT,
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (scope, scope_id, service)
+            );
+            CREATE TABLE IF NOT EXISTS project_org_cache (
+                project_id TEXT PRIMARY KEY,
+                org_id TEXT NOT NULL,
+                synced_at TEXT NOT NULL
+            );
+            -- Native chat history, keyed by project_id (the workspace->project
+            -- ULID). Local only: never synced to Turso.
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                provider TEXT,
+                model TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS chat_messages_project_idx
+                ON chat_messages(project_id);",
+        )
+        .map_err(|e| e.to_string())?;
+
         Ok(Db(Mutex::new(conn)))
     }
 
@@ -135,6 +218,7 @@ impl Db {
             cli: r.get(3)?,
             organization_id: r.get(4)?,
             created_at: r.get(5)?,
+            project_id: r.get(6)?,
         })
     }
 
@@ -177,7 +261,7 @@ impl Db {
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, path, cli, organization_id, created_at FROM workspaces ORDER BY name")
+            .prepare("SELECT id, name, path, cli, organization_id, created_at, project_id FROM workspaces ORDER BY name")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], Self::workspace_from_row)
@@ -200,7 +284,7 @@ impl Db {
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, created_at FROM workspaces WHERE id = ?1",
+            "SELECT id, name, path, cli, organization_id, created_at, project_id FROM workspaces WHERE id = ?1",
             [id],
             Self::workspace_from_row,
         )
@@ -456,17 +540,268 @@ impl Db {
     pub fn find_workspace_by_name(&self, name: &str) -> Result<Workspace, String> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, created_at FROM workspaces WHERE LOWER(name) = LOWER(?1)",
+            "SELECT id, name, path, cli, organization_id, created_at, project_id FROM workspaces WHERE LOWER(name) = LOWER(?1)",
             [name],
             Self::workspace_from_row,
         )
         .map_err(|_| format!("No workspace named '{}'", name))
     }
 
+    pub fn get_workspace_project_id(&self, id: i64) -> Option<String> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row(
+            "SELECT project_id FROM workspaces WHERE id = ?1",
+            [id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+    }
+
+    pub fn set_workspace_project_id(&self, id: i64, project_id: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE workspaces SET project_id = ?1 WHERE id = ?2",
+            (project_id, id),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn set_cloud_identity(&self, payload: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "INSERT INTO cloud_identity (id, payload) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
+            [payload],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_cloud_identity(&self) -> Option<String> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row("SELECT payload FROM cloud_identity WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .ok()
+    }
+
+    pub fn clear_cloud_identity(&self) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute("DELETE FROM cloud_identity WHERE id = 1", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Wipe all locally cached cloud data. Used on sign-out and before a fresh
+    /// startup sync so a previous user's data never lingers on the machine.
+    pub fn clear_cloud_cache(&self) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute_batch(
+            "DELETE FROM llm_keys_cache;
+             DELETE FROM connectors_cache;
+             DELETE FROM project_org_cache;",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn replace_cached_llm_keys(
+        &self,
+        scope: &str,
+        scope_id: &str,
+        keys: &[CachedLlmKey],
+        synced_at: &str,
+    ) -> Result<(), String> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM llm_keys_cache WHERE scope = ?1 AND scope_id = ?2",
+            (scope, scope_id),
+        )
+        .map_err(|e| e.to_string())?;
+        for k in keys {
+            tx.execute(
+                "INSERT INTO llm_keys_cache
+                    (scope, scope_id, provider, credentials_encrypted, base_url, extra_env, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    scope,
+                    scope_id,
+                    k.provider,
+                    k.credentials_encrypted,
+                    k.base_url,
+                    k.extra_env,
+                    synced_at,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    pub fn get_cached_llm_keys(&self, scope: &str, scope_id: &str) -> Vec<CachedLlmKey> {
+        let conn = self.0.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT provider, credentials_encrypted, base_url, extra_env
+             FROM llm_keys_cache WHERE scope = ?1 AND scope_id = ?2 ORDER BY provider",
+        ) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map((scope, scope_id), |r| {
+            Ok(CachedLlmKey {
+                provider: r.get(0)?,
+                credentials_encrypted: r.get(1)?,
+                base_url: r.get(2)?,
+                extra_env: r.get(3)?,
+            })
+        });
+        match rows {
+            Ok(iter) => iter.flatten().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn replace_cached_connectors(
+        &self,
+        scope: &str,
+        scope_id: &str,
+        connectors: &[CachedConnector],
+        synced_at: &str,
+    ) -> Result<(), String> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM connectors_cache WHERE scope = ?1 AND scope_id = ?2",
+            (scope, scope_id),
+        )
+        .map_err(|e| e.to_string())?;
+        for c in connectors {
+            tx.execute(
+                "INSERT INTO connectors_cache
+                    (scope, scope_id, service, status, credentials_encrypted, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    scope,
+                    scope_id,
+                    c.service,
+                    c.status,
+                    c.credentials_encrypted,
+                    synced_at,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    pub fn get_cached_connectors(&self, scope: &str, scope_id: &str) -> Vec<CachedConnector> {
+        let conn = self.0.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT service, status, credentials_encrypted
+             FROM connectors_cache WHERE scope = ?1 AND scope_id = ?2 ORDER BY service",
+        ) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map((scope, scope_id), |r| {
+            Ok(CachedConnector {
+                service: r.get(0)?,
+                status: r.get(1)?,
+                credentials_encrypted: r.get(2)?,
+            })
+        });
+        match rows {
+            Ok(iter) => iter.flatten().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn set_project_org(&self, project_id: &str, org_id: &str, synced_at: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "INSERT INTO project_org_cache (project_id, org_id, synced_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(project_id) DO UPDATE SET org_id = excluded.org_id, synced_at = excluded.synced_at",
+            (project_id, org_id, synced_at),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_project_org(&self, project_id: &str) -> Option<String> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row(
+            "SELECT org_id FROM project_org_cache WHERE project_id = ?1",
+            [project_id],
+            |r| r.get(0),
+        )
+        .ok()
+    }
+
+    fn chat_message_from_row(r: &rusqlite::Row) -> rusqlite::Result<ChatMessage> {
+        Ok(ChatMessage {
+            id: r.get(0)?,
+            project_id: r.get(1)?,
+            role: r.get(2)?,
+            content: r.get(3)?,
+            provider: r.get(4)?,
+            model: r.get(5)?,
+            created_at: r.get(6)?,
+        })
+    }
+
+    pub fn add_chat_message(
+        &self,
+        project_id: &str,
+        role: &str,
+        content: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<ChatMessage, String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "INSERT INTO chat_messages (project_id, role, content, provider, model)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![project_id, role, content, provider, model],
+        )
+        .map_err(|e| e.to_string())?;
+        let id = conn.last_insert_rowid();
+        conn.query_row(
+            "SELECT id, project_id, role, content, provider, model, created_at
+             FROM chat_messages WHERE id = ?1",
+            [id],
+            Self::chat_message_from_row,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn list_chat_messages(&self, project_id: &str) -> Result<Vec<ChatMessage>, String> {
+        let conn = self.0.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, project_id, role, content, provider, model, created_at
+                 FROM chat_messages WHERE project_id = ?1 ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([project_id], Self::chat_message_from_row)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn clear_chat_messages(&self, project_id: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "DELETE FROM chat_messages WHERE project_id = ?1",
+            [project_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn get_workspace(&self, id: i64) -> Result<Workspace, String> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, created_at FROM workspaces WHERE id = ?1",
+            "SELECT id, name, path, cli, organization_id, created_at, project_id FROM workspaces WHERE id = ?1",
             [id],
             Self::workspace_from_row,
         )

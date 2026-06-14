@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1781459303794,
+      "tag": "0000_magical_lockheed",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1781463222531,
+      "tag": "0001_fantastic_bucky",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1781560000000,
+      "tag": "0002_team_invitations",
+      "breakpoints": true
+    }
+  ]
+}

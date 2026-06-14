@@ -33,6 +33,7 @@ export function TerminalView({
   const startedRef = useRef(false);
   const [exited, setExited] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [keyError, setKeyError] = useState<string | null>(null);
 
   const startSession = async () => {
     const term = termRef.current;
@@ -40,6 +41,7 @@ export function TerminalView({
     if (!term || !fit) return;
     fit.fit();
     setError(null);
+    setKeyError(null);
     setExited(false);
     try {
       const info = await api.startSession(
@@ -113,6 +115,17 @@ export function TerminalView({
         api.stopSession(tab.id).catch(() => {});
       }
     });
+    const unlistenKeyError = listen<{ session_id: string; providers: string[] }>(
+      "llm-key-error",
+      (event) => {
+        if (event.payload.session_id === tab.id) {
+          const names = event.payload.providers.join(", ");
+          setKeyError(
+            `API key for ${names} may be invalid — update in Settings → Models.`,
+          );
+        }
+      },
+    );
 
     const resizeObserver = new ResizeObserver(() => {
       if (!containerRef.current?.offsetParent) return;
@@ -130,6 +143,7 @@ export function TerminalView({
       dataDisposable.dispose();
       unlistenOutput.then((fn) => fn());
       unlistenExit.then((fn) => fn());
+      unlistenKeyError.then((fn) => fn());
       resizeObserver.disconnect();
       term.dispose();
       termRef.current = null;
@@ -162,6 +176,20 @@ export function TerminalView({
           <Button variant="outline" size="sm" className="h-7 shrink-0 text-xs" onClick={startSession}>
             <RefreshCw className="h-3 w-3" />
             Retry
+          </Button>
+        </div>
+      )}
+
+      {keyError && (
+        <div className="flex items-center gap-3 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          <span className="min-w-0 flex-1 truncate">{keyError}</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 shrink-0 text-xs"
+            onClick={() => setKeyError(null)}
+          >
+            Dismiss
           </Button>
         </div>
       )}

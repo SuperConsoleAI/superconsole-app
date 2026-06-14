@@ -25,7 +25,7 @@ Patterns, constraints, and gotchas specific to this codebase.
 - TanStack Router with `createMemoryHistory` (desktop app, no URL bar). Routes are markers; heavy components live in the root `Shell` so terminals survive navigation.
 - UI state that must survive route changes goes in `WorkspaceProvider`; ephemeral per-view state stays local.
 - Search params are the API for panels: `?file=rel/path.md` opens the editor, `?files=true` opens the file tree.
-- Theme: `ThemeProvider` toggles `.dark` on `<html>`, persisted to localStorage (`dockyard-theme`); active org persisted as `dockyard-org`.
+- Theme: `ThemeProvider` toggles `.dark` on `<html>`, persisted to localStorage (`superconsole-theme`); active org persisted as `superconsole-org`.
 - Tailwind v4 CSS-first: all design tokens in `src/index.css` under `:root` / `.dark` / `@theme inline`. No tailwind.config file.
 
 ## Gotchas / workarounds
@@ -43,5 +43,18 @@ Patterns, constraints, and gotchas specific to this codebase.
 ## Environment / credentials
 
 - Per-workspace `.env` is parsed by `pty::parse_env_file` (supports `export`, quotes, comments) and injected into both PTY sessions and headless job runs. Never logged.
-- App data: SQLite at `~/Library/Application Support/com.dockyard.app/dockyard.db`.
+- App data: SQLite at `~/Library/Application Support/com.superconsole.app/superconsole.db`.
 - `api_token` (HTTP auth) is auto-generated into settings on first read; treat as a secret.
+- Cloud config lives in a gitignored root `.env` (loaded via `dotenvy`): `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URI`, `WORKOS_COOKIE_PASSWORD`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`. The same `WORKOS_COOKIE_PASSWORD` must be used by the web portal or encrypted secrets won't cross surfaces.
+- The WorkOS session + derived AES key are cached in the macOS keychain (service `com.superconsole.desktop`), not in SQLite.
+
+## Cloud / sync patterns
+
+- WorkOS sign-in: `auth.rs` starts a one-shot loopback server on `127.0.0.1:4666`, opens the hosted auth page, and exchanges the code. Don't change the port without updating the WorkOS redirect URI.
+- Turso access goes through `cloud.rs::turso_execute` (HTTP `/v2/pipeline`); read columns with `rows()` + `cell_text()`/`cell_opt()`. Never build SQL with interpolated user input — bind params.
+- Turso is NOT queried per keystroke/session. `sync_manager.rs` pulls config into local `*_cache` tables on startup, explicit refresh, org switch, and a 30-min tick; PTY/chat env injection reads only the cache. After any cloud write, call `sync_manager::sync_on_update` to refresh the relevant cache immediately.
+- Secret precedence (LLM keys + connectors): project → org → account/local → `.env` → skip. Project overrides org. Telegram resolves project → org → local `telegram_token` setting → skip.
+- Encryption parity: AES-256-GCM, key = HKDF-SHA256(`WORKOS_COOKIE_PASSWORD`), salt `superconsole-llm-keys-v1`, info `aes-256-gcm`, format `base64(nonce[12] || ct||tag)`. Connector creds are an encrypted JSON blob in `credentials_encrypted`. Keep `crypto.rs` and the web `crypto.ts` identical.
+- Registries (LLM providers + connectors) are mirrored in three places: `src-tauri/src/connectors.rs`, `src/lib/api.ts`, and `superconsole-web/src/connector-registry.ts`. Keep service ids, field keys, scopes, and env mappings identical.
+- Native chat: `chat.rs` streams provider tokens via `chat-token`/`chat-done`/`chat-error` events; messages are stored locally in `chat_messages` keyed by project; the system prompt is built from CLAUDE.md/brand-voice.md/HEARTBEAT.md plus the project's connected services.
+- `ensure_workspace_project` is serialized via a process Mutex and reuses an existing cloud project by (org_id, local_path_hint) before inserting — keeps Turso from accumulating duplicate project rows.

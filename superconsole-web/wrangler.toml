@@ -1,0 +1,17 @@
+"$schema" = "node_modules/wrangler/config-schema.json"
+name = "superconsole-web"
+compatibility_date = "2026-06-12"
+compatibility_flags = ["nodejs_compat"]
+main = "@tanstack/react-start/server-entry"
+
+[observability]
+enabled = true
+
+# Secrets (set with `wrangler secret put <NAME>` before deploy; local values
+# live in .dev.vars):
+#   WORKOS_API_KEY
+#   WORKOS_CLIENT_ID
+#   WORKOS_COOKIE_PASSWORD
+#   WORKOS_REDIRECT_URI
+#   TURSO_DATABASE_URL
+#   TURSO_AUTH_TOKEN

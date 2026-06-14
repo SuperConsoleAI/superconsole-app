@@ -1,4 +1,4 @@
-# Dockyard — Plan
+# SuperConsole — Plan
 ## Agentic Workspace Desktop App
 
 ---
@@ -58,7 +58,7 @@ Every workspace is just a folder on disk. It can be:
 The app doesn't care what's inside. It runs your chosen CLI against it.
 
 ```
-~/dockyard-workspaces/
+~/superconsole-workspaces/
   acme-dental/          ← businesskit-agent for client A
   my-saas-app/          ← Next.js webapp being built by Claude Code
   xyz-restaurant/       ← businesskit-agent for client B
@@ -190,7 +190,7 @@ Every workspace has a built-in file browser and editor. Users can:
 
 This matters because agents rely on context files the user maintains
 manually — brand-voice.md, CLAUDE.md, product lists, business info.
-Today you'd edit these in VS Code. In Dockyard you stay in one app.
+Today you'd edit these in VS Code. In SuperConsole you stay in one app.
 
 The editor is intentionally minimal — not a code editor, not Monaco.
 Plain text editing with markdown preview. For serious code editing,

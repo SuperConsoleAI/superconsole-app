@@ -38,6 +38,7 @@ fn job_command(cli: &str, prompt: &str) -> (String, Vec<String>) {
     match cli {
         "claude" => ("claude".into(), vec!["-p".into(), prompt.into()]),
         "droid" => ("droid".into(), vec!["exec".into(), prompt.into()]),
+        "antigravity" => ("agy".into(), vec![prompt.into()]),
         other => (other.to_string(), vec![prompt.to_string()]),
     }
 }

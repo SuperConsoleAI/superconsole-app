@@ -48,7 +48,7 @@ pub fn read_file(workspace: &str, rel: &str) -> Result<String, String> {
     let path = resolve(workspace, rel)?;
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     if meta.len() > 2_000_000 {
-        return Err("File too large to edit in Dockyard".into());
+        return Err("File too large to edit in SuperConsole".into());
     }
     std::fs::read_to_string(&path).map_err(|e| format!("Cannot read file: {}", e))
 }

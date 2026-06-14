@@ -1,7 +1,14 @@
-import { SquareTerminal, X } from "lucide-react";
+import { MessageSquare, Plus, SquareTerminal, X } from "lucide-react";
 import { CLI_PRESETS, type SessionTab } from "@/lib/api";
 import { PresetIcon } from "@/components/PresetIcon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 interface TabStripProps {
@@ -48,6 +55,10 @@ export function TabStrip({
                 <SquareTerminal
                   className={cn("h-3.5 w-3.5 shrink-0", active && "text-primary")}
                 />
+              ) : tab.cli === "chat" ? (
+                <MessageSquare
+                  className={cn("h-3.5 w-3.5 shrink-0", active && "text-primary")}
+                />
               ) : (
                 <PresetIcon
                   preset={tab.cli}
@@ -71,6 +82,33 @@ export function TabStrip({
             </div>
           );
         })}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="flex h-9 w-9 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+              title="New tab"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-44">
+            {CLI_PRESETS.map((preset) => (
+              <DropdownMenuItem key={preset.id} onClick={() => onOpen(preset.id)}>
+                <PresetIcon preset={preset.id} className="h-3.5 w-3.5" />
+                {preset.label}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuItem onClick={() => onOpen("chat")}>
+              <MessageSquare className="h-3.5 w-3.5" />
+              Chat
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => onOpen("shell")}>
+              <SquareTerminal className="h-3.5 w-3.5" />
+              New terminal
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       <div className="flex items-center gap-0.5 border-l px-1.5">
@@ -95,6 +133,24 @@ export function TabStrip({
             </Tooltip>
           );
         })}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              className={cn(
+                "flex h-6 w-6 items-center justify-center rounded-md transition-all hover:bg-accent",
+                tabs.some((t) => t.cli === "chat")
+                  ? "opacity-100"
+                  : "opacity-50 hover:opacity-100",
+              )}
+              onClick={() => onOpen("chat")}
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {tabs.some((t) => t.cli === "chat") ? "Go to Chat" : "Open Chat"}
+          </TooltipContent>
+        </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
             <button

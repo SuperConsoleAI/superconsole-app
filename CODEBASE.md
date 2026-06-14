@@ -6,15 +6,23 @@ File index for fast navigation. Read ARCHITECTURE.md first.
 
 | File | One-liner |
 |------|-----------|
-| `main.rs` | Entry point, calls `dockyard_lib::run()`. Don't touch. |
+| `main.rs` | Entry point, calls `superconsole_lib::run()`. Don't touch. |
 | `lib.rs` | All `#[tauri::command]` handlers, plugin registration, app setup (DB init, scheduler/remote spawn). Add new commands here + register in `generate_handler!`. |
 | `db.rs` | SQLite via rusqlite. Schema (workspaces, organizations, jobs, inbox, settings, session_history) + all queries. Migrations are idempotent blocks in `Db::init`. |
 | `pty.rs` | PTY sessions via portable-pty. `SessionManager` map keyed by session id string. CLI presets in `cli_command()` (claude/droid/antigravity/shell). `.env` parsing, context-file detection, output reader thread → `pty-output` events. |
 | `files.rs` | Workspace-sandboxed file ops (list/read/write/create/delete). `resolve()` is the path-safety gate — never bypass it. |
 | `scheduler.rs` | Cron parsing (`next_run`), 30s tick loop (`spawn`), `exec_in_workspace` = the ONE headless executor (scheduler + HTTP + Telegram all use it). |
 | `remote.rs` | Telegram long-poll bot (`spawn_telegram`), local tiny_http server (`spawn_http`), `ensure_api_token`, `notify_telegram`. |
+| `auth.rs` | WorkOS loopback OAuth (`127.0.0.1:4666`), keychain session storage, `upsert_user_and_orgs` + `accept_pending_invitations` to Turso. |
+| `cloud.rs` | Turso HTTP exec helper: `turso_config`, `turso_execute`, `rows`, `cell_text`, `cell_opt`. All cloud SQL goes through here. |
+| `crypto.rs` | AES-256-GCM encrypt/decrypt; HKDF key from `WORKOS_COOKIE_PASSWORD`, cached in keychain. Mirrors web `crypto.ts`. |
+| `sync_manager.rs` | Pulls Turso config into local `*_cache` tables (startup/manual/org-switch/30min tick) + `sync_on_update`. PTY/chat read cache only. |
+| `llm.rs` | LLM key CRUD per scope (account/org/project), `ensure_workspace_project` (locked + idempotent), `session_env` resolution, provider streaming adapters. |
+| `chat.rs` | Native chat: streams tokens via `chat-*` events through Anthropic/OpenAI-compatible/Gemini adapters; system prompt from context files + connected services. |
+| `team.rs` | Org + project membership and invitation CRUD; permission checks (owner/admin manage, last-owner guard, members must be org members). |
+| `connectors.rs` | Connector `REGISTRY` (fields + env mapping), encrypted-blob CRUD, `session_env` injection (project>org + telegram fallback), `connected_services`. |
 
-Config: `tauri.conf.json` (window/titlebar/updater/bundle), `capabilities/default.json` (permissions), `Cargo.toml` (deps).
+Config: `tauri.conf.json` (window/titlebar/updater/bundle), `capabilities/default.json` (permissions), `Cargo.toml` (deps). Cloud config in gitignored root `.env`.
 
 ## Frontend (src/)
 
@@ -25,9 +33,13 @@ Config: `tauri.conf.json` (window/titlebar/updater/bundle), `capabilities/defaul
 | `index.css` | THE design system: all color tokens (light + dark), fonts, radii. |
 | `lib/api.ts` | Every backend command as a typed function + all shared types (`Workspace`, `Job`, `InboxItem`, `SessionTab`, ...) + `CLI_PRESETS`. |
 | `lib/workspace-context.tsx` | Global state: workspaces, orgs, tabs per workspace, live sessions. All mutations go through its actions. |
+| `lib/auth-context.tsx` | Cloud identity state: WorkOS user, orgs, active cloud org; `ensureWorkspaceProject` helper. |
 | `lib/utils.ts` | `cn()` only. |
 | `components/TerminalView.tsx` | xterm instance per tab; starts session, streams events, resize, exit overlay, embeds CommandInput. |
-| `components/TabStrip.tsx` | Per-workspace tabs + CLI launcher icons + new-terminal button. |
+| `components/ChatView.tsx` | Native chat tab: message list + bottom composer `[input][provider][model][send]`, streams `chat-*` events. |
+| `components/LoginScreen.tsx` | WorkOS sign-in entry (pre-auth gate). |
+| `components/AccountMenu.tsx` | Signed-in user menu (org switch, sign out). |
+| `components/TabStrip.tsx` | Per-workspace tabs + browser-style "+" dropdown (new terminal/chat) + CLI launcher icons. |
 | `components/TopBar.tsx` | h-10 full-width bar: traffic-light padding, sidebar toggle, back/forward, workspace name, jobs/files/theme buttons. |
 | `components/Sidebar.tsx` | Expanded sidebar (org dropdown, Inbox/Tasks, workspace list) AND collapsed `SidebarRail`. |
 | `components/CommandInput.tsx` | Slash-command input with autocomplete (built-ins + `.claude/commands/*.md`). |
@@ -36,7 +48,7 @@ Config: `tauri.conf.json` (window/titlebar/updater/bundle), `capabilities/defaul
 | `components/InboxView.tsx` | Inbox feed, markdown output, approve/reject flow. |
 | `components/TasksView.tsx` | Org-wide job list (toggle/run/delete). |
 | `components/JobsDialog.tsx` | Per-workspace job CRUD + schedule presets + recent session history. |
-| `components/SettingsPage.tsx` | /settings page: section nav; live sections General (updates), Appearance, Integrations (Telegram), API Keys (HTTP). |
+| `components/SettingsPage.tsx` | /settings page: section nav; Account/Security, General (updates), Appearance, Integrations (Telegram), API Keys (HTTP), Models (LLM keys), Teams, Connectors. Large file — sections are co-located components. |
 | `components/AddWorkspaceDialog.tsx` | Folder picker + name + CLI choice. |
 | `components/PresetIcon.tsx` | Theme-aware CLI brand icon (falls back to terminal glyph). |
 | `components/theme-provider.tsx` | Dark/light context, persists to localStorage. |
@@ -53,7 +65,14 @@ Config: `tauri.conf.json` (window/titlebar/updater/bundle), `capabilities/defaul
 - New backend capability → command in `lib.rs` → wrapper in `api.ts` → component.
 - New route/panel → `router.tsx` route tree + Sidebar/TopBar nav.
 - New CLI preset → `pty.rs::cli_command` + `scheduler.rs::job_command` + `CLI_PRESETS` in `api.ts` + icon in preset-icons.
-- Schema change → idempotent migration in `db.rs::Db::init`.
+- Schema change (local) → idempotent migration in `db.rs::Db::init`.
+- Schema change (cloud) → Drizzle migration in `superconsole-web/drizzle/` (+ journal) and a matching idempotent `ensure_*` in the relevant Rust module.
+- New connector/LLM provider → mirror in `connectors.rs`/`llm.rs`, `src/lib/api.ts`, and `superconsole-web/src/connector-registry.ts`.
+- New cloud command → command in `lib.rs` → wrapper in `api.ts` → SettingsPage section; add the matching server fn in `superconsole-web/src/server/`.
+
+## Web portal (superconsole-web/)
+
+Separate Cloudflare Workers app on the same Turso DB. See `superconsole-web/PROJECT.md` + `CLAUDE.md`. Key files: `src/server/{auth,turso,crypto,data,llm,team,connectors}.ts`, routes under `src/routes/`, shared `src/connector-registry.ts` + `ConnectorManager.tsx`, Drizzle schema `src/db/schema.ts`.
 
 ## Do not touch
 

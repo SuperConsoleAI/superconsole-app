@@ -1,0 +1,40 @@
+{
+  "name": "superconsole-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --port 3000",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "db:check": "tsx scripts/check-connection.ts"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.15.4",
+    "@tanstack/react-router": "^1.170.15",
+    "@tanstack/react-start": "^1.168.25",
+    "@workos-inc/node": "^10.2.0",
+    "drizzle-orm": "^0.38.4",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.40.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "dotenv": "^16.4.7",
+    "drizzle-kit": "^0.30.2",
+    "tsx": "^4.19.2",
+    "typescript": "~5.8.3",
+    "vite": "^8.0.16",
+    "wrangler": "^4.100.0"
+  }
+}

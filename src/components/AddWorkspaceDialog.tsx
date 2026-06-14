@@ -68,7 +68,7 @@ export function AddWorkspaceDialog({
         <DialogHeader>
           <DialogTitle>Add workspace</DialogTitle>
           <DialogDescription>
-            Point to any repo or folder. Dockyard runs your chosen CLI inside it.
+            Point to any repo or folder. SuperConsole runs your chosen CLI inside it.
           </DialogDescription>
         </DialogHeader>
 

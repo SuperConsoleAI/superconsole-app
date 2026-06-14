@@ -9,13 +9,13 @@ const ThemeContext = createContext<{
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem("dockyard-theme") as Theme) || "dark",
+    () => (localStorage.getItem("superconsole-theme") as Theme) || "dark",
   );
 
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle("dark", theme === "dark");
-    localStorage.setItem("dockyard-theme", theme);
+    localStorage.setItem("superconsole-theme", theme);
   }, [theme]);
 
   return (

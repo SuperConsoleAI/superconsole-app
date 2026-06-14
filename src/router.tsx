@@ -18,6 +18,7 @@ import { Sidebar, SidebarRail } from "@/components/Sidebar";
 import { TabStrip } from "@/components/TabStrip";
 import { TopBar } from "@/components/TopBar";
 import { TerminalView } from "@/components/TerminalView";
+import { ChatView } from "@/components/ChatView";
 import { FilePanel } from "@/components/FilePanel";
 import { FileEditor } from "@/components/FileEditor";
 import { AddWorkspaceDialog } from "@/components/AddWorkspaceDialog";
@@ -26,7 +27,10 @@ import { TasksView } from "@/components/TasksView";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import { LoginScreen } from "@/components/LoginScreen";
 import { WorkspaceProvider, useWorkspaces } from "@/lib/workspace-context";
+import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { Anchor as AnchorIcon } from "lucide-react";
 
 interface WorkspaceSearch {
   file?: string;
@@ -186,20 +190,40 @@ function Shell() {
           <div className="flex min-h-0 flex-1">
             <main className="relative min-w-0 flex-1">
             {openedWorkspaces.map((ws) =>
-              (tabsByWs[ws.id] ?? []).map((tab) => (
-                <TerminalView
-                  key={tab.id}
-                  workspace={ws}
-                  tab={tab}
-                  visible={
-                    ws.id === activeId &&
-                    tab.id === activeTabId &&
-                    openedFile === null
-                  }
-                  onSessionState={setSessionState}
-                  onSessionInfo={setSessionInfo}
-                />
-              )),
+              (tabsByWs[ws.id] ?? []).map((tab) => {
+                const isActiveTab =
+                  ws.id === activeId &&
+                  tab.id === activeTabId &&
+                  openedFile === null;
+                if (tab.cli === "chat") {
+                  return (
+                    <ChatView
+                      key={tab.id}
+                      workspace={ws}
+                      visible={isActiveTab}
+                      onRouteToPty={(text) => {
+                        const target = (tabsByWs[ws.id] ?? []).find(
+                          (t) => t.cli !== "chat",
+                        );
+                        if (!target) return false;
+                        api.writeSession(target.id, text + "\r").catch(() => {});
+                        activateTab(ws.id, target.id);
+                        return true;
+                      }}
+                    />
+                  );
+                }
+                return (
+                  <TerminalView
+                    key={tab.id}
+                    workspace={ws}
+                    tab={tab}
+                    visible={isActiveTab}
+                    onSessionState={setSessionState}
+                    onSessionInfo={setSessionInfo}
+                  />
+                );
+              }),
             )}
             <Outlet />
           </main>
@@ -222,13 +246,31 @@ function Shell() {
   );
 }
 
+function AuthGate() {
+  const { auth, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-background">
+        <AnchorIcon className="h-8 w-8 animate-pulse text-primary" />
+      </div>
+    );
+  }
+  if (!auth) return <LoginScreen />;
+  return (
+    <WorkspaceProvider>
+      <Shell />
+    </WorkspaceProvider>
+  );
+}
+
 function RootLayout() {
   return (
     <ThemeProvider>
       <TooltipProvider>
-        <WorkspaceProvider>
-          <Shell />
-        </WorkspaceProvider>
+        <AuthProvider>
+          <AuthGate />
+        </AuthProvider>
       </TooltipProvider>
     </ThemeProvider>
   );
@@ -244,7 +286,7 @@ function Welcome() {
       </span>
       <div>
         <h1 className="font-display text-2xl font-semibold tracking-tight">
-          Welcome to Dockyard
+          Welcome to SuperConsole
         </h1>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
           The desktop runtime for agentic repos. Bring any folder as a

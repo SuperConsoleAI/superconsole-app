@@ -6,7 +6,7 @@ Conventions used in this codebase. Match them when adding code.
 
 - React components: PascalCase files (`TerminalView.tsx`), one main export per file, named exports (no default except none).
 - Rust: snake_case modules per concern (`pty.rs`, `scheduler.rs`); commands are verbs (`start_session`, `list_jobs`, `set_inbox_status`).
-- IPC pairing: Rust command `list_session_history` ↔ `api.listSessionHistory`. Keep names mirrored.
+- IPC pairing: Rust command `list_session_history` ↔ `api.listSessionHistory`. Keep names mirrored. Cloud commands follow the same rule (`list_connectors` ↔ `api.listConnectors`) and have a matching server fn in `superconsole-web/src/server/` (`listConnectors`).
 - Session ids: `"{workspaceId}:{cli}"` for CLI tabs, `"{workspaceId}:shell-{timestamp}"` for shells. Workspace cleanup matches on prefix.
 - Tailwind: utility classes inline, merged with `cn()`. No CSS modules, no styled-components.
 
@@ -38,6 +38,16 @@ Conventions used in this codebase. Match them when adding code.
 - Every headless agent execution goes through `scheduler::exec_in_workspace` (single funnel → inbox + telegram).
 - DB migrations: append idempotent `CREATE TABLE IF NOT EXISTS` / guarded `ALTER TABLE` blocks in `Db::init`. Never edit existing migration blocks.
 - Settings keys are whitelisted in `lib.rs::set_setting`. Add new keys there explicitly.
+
+## Cloud conventions
+
+- All Turso SQL goes through `cloud.rs::turso_execute` with bound params — never interpolate user input. Read with `rows()`/`cell_text()`/`cell_opt()`.
+- PTY/chat env injection reads local `*_cache` tables only; never query Turso on the hot path. After a cloud write, call `sync_manager::sync_on_update` for the affected entity.
+- Secrets are AES-256-GCM via `crypto.rs`; keep the derivation and storage format byte-identical to the web `crypto.ts`. Connector creds are an encrypted JSON blob; a blank secret on update keeps the existing value.
+- Resolution precedence is project → org → account/local → `.env` → skip. Project overrides org. Apply this consistently for keys and connectors.
+- Cloud schema lives in Drizzle (`superconsole-web/drizzle/`) — append migrations + journal, never edit applied ones; mirror with an idempotent `ensure_*` table guard on the Rust side.
+- Registries (LLM providers, connectors) are mirrored in three files — change all three together, keeping ids/fields/scopes/env mappings identical.
+- Cloud writes must authorize: org membership for org scope, project membership for project scope; only owner/admin manage team, and never remove/demote the last owner.
 
 ## What to avoid
 

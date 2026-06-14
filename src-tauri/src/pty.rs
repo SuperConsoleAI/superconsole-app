@@ -28,6 +28,32 @@ struct PtyExit {
 }
 
 #[derive(Clone, Serialize)]
+struct LlmKeyError {
+    session_id: String,
+    providers: Vec<String>,
+}
+
+// Best-effort signatures of provider auth failures in CLI output.
+const AUTH_ERROR_SIGNATURES: &[&str] = &[
+    "invalid api key",
+    "invalid x-api-key",
+    "incorrect api key",
+    "invalid_api_key",
+    "authentication_error",
+    "authentication error",
+    "401 unauthorized",
+    "error 401",
+    "status 401",
+    "http 401",
+    "403 forbidden",
+];
+
+fn looks_like_auth_error(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    AUTH_ERROR_SIGNATURES.iter().any(|s| lower.contains(s))
+}
+
+#[derive(Clone, Serialize)]
 pub struct SessionInfo {
     pub session_id: String,
     pub context_files: Vec<String>,
@@ -71,7 +97,7 @@ pub fn cli_command(cli: &str, workspace: &Path) -> CommandBuilder {
             c
         }
         "droid" => CommandBuilder::new("droid"),
-        "antigravity" => CommandBuilder::new("antigravity"),
+        "antigravity" => CommandBuilder::new("agy"),
         "shell" => {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
             let mut c = CommandBuilder::new(shell);
@@ -94,6 +120,8 @@ pub fn start_session(
     cli: &str,
     rows: u16,
     cols: u16,
+    llm_env: &[(String, String)],
+    key_providers: &[String],
 ) -> Result<SessionInfo, String> {
     let workspace = Path::new(workspace_path);
     let info = SessionInfo {
@@ -125,7 +153,12 @@ pub fn start_session(
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
 
+    // Precedence: project > org > account > .env. Apply .env first, then the
+    // resolved LLM env (account->org->project order) so LLM keys override .env.
     for (k, v) in parse_env_file(&workspace.join(".env")) {
+        cmd.env(k, v);
+    }
+    for (k, v) in llm_env {
         cmd.env(k, v);
     }
 
@@ -141,13 +174,28 @@ pub fn start_session(
 
     let app_handle = app.clone();
     let sid = session_id.to_string();
+    let providers: Vec<String> = key_providers.to_vec();
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
+        let mut auth_error_reported = false;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if !auth_error_reported
+                        && !providers.is_empty()
+                        && looks_like_auth_error(&data)
+                    {
+                        auth_error_reported = true;
+                        let _ = app_handle.emit(
+                            "llm-key-error",
+                            LlmKeyError {
+                                session_id: sid.clone(),
+                                providers: providers.clone(),
+                            },
+                        );
+                    }
                     let _ = app_handle.emit(
                         "pty-output",
                         PtyOutput {
