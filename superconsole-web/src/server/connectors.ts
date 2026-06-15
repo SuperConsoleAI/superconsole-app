@@ -5,7 +5,13 @@ import { decrypt, encrypt } from "./crypto";
 import { ensureUser } from "./data";
 import type { SessionUser } from "./auth";
 import { connectorDef, type ConnectorScope } from "../connector-registry";
-import { connectors, orgConnectors, orgMembers, projects } from "../db/schema";
+import {
+  accountConnectors,
+  connectors,
+  orgConnectors,
+  orgMembers,
+  projects,
+} from "../db/schema";
 
 export interface ConnectorFieldValue {
   key: string;
@@ -21,6 +27,31 @@ export interface ConnectorView {
 }
 
 type Db = ReturnType<typeof getDb>;
+
+// scope -> (table, id column, insert id field). All three share the same
+// service / credentials_encrypted / status columns.
+function table(scope: ConnectorScope) {
+  switch (scope) {
+    case "account":
+      return {
+        t: accountConnectors,
+        col: accountConnectors.userId,
+        idField: "userId" as const,
+      };
+    case "org":
+      return {
+        t: orgConnectors,
+        col: orgConnectors.orgId,
+        idField: "orgId" as const,
+      };
+    case "project":
+      return {
+        t: connectors,
+        col: connectors.projectId,
+        idField: "projectId" as const,
+      };
+  }
+}
 
 async function isOrgMember(db: Db, userId: string, orgId: string) {
   const rows = await db
@@ -38,6 +69,7 @@ async function authorize(
   scope: ConnectorScope,
   scopeId: string,
 ): Promise<string> {
+  if (scope === "account") return userId;
   if (scope === "org") {
     if (!(await isOrgMember(db, userId, scopeId)))
       throw new Error("Not a member of this organization");
@@ -98,27 +130,17 @@ export async function listConnectors(
   const db = getDb();
   const userId = await ensureUser(user);
   const id = await authorize(db, userId, scope, scopeId);
+  const { t, col } = table(scope);
 
-  const rows =
-    scope === "org"
-      ? await db
-          .select({
-            service: orgConnectors.service,
-            status: orgConnectors.status,
-            enc: orgConnectors.credentialsEncrypted,
-          })
-          .from(orgConnectors)
-          .where(eq(orgConnectors.orgId, id))
-          .orderBy(orgConnectors.service)
-      : await db
-          .select({
-            service: connectors.service,
-            status: connectors.status,
-            enc: connectors.credentialsEncrypted,
-          })
-          .from(connectors)
-          .where(eq(connectors.projectId, id))
-          .orderBy(connectors.service);
+  const rows = await db
+    .select({
+      service: t.service,
+      status: t.status,
+      enc: t.credentialsEncrypted,
+    })
+    .from(t)
+    .where(eq(col, id))
+    .orderBy(t.service);
 
   const out: ConnectorView[] = [];
   for (const r of rows) {
@@ -142,26 +164,13 @@ export async function setConnector(
   if (!def) throw new Error(`Unknown service '${service}'`);
   if (!def.scopes.includes(scope))
     throw new Error(`${def.label} is not available at the ${scope} level`);
+  const { t, col, idField } = table(scope);
 
-  const existingRows =
-    scope === "org"
-      ? await db
-          .select({ enc: orgConnectors.credentialsEncrypted })
-          .from(orgConnectors)
-          .where(
-            and(
-              eq(orgConnectors.orgId, id),
-              eq(orgConnectors.service, service),
-            ),
-          )
-          .limit(1)
-      : await db
-          .select({ enc: connectors.credentialsEncrypted })
-          .from(connectors)
-          .where(
-            and(eq(connectors.projectId, id), eq(connectors.service, service)),
-          )
-          .limit(1);
+  const existingRows = await db
+    .select({ enc: t.credentialsEncrypted })
+    .from(t)
+    .where(and(eq(col, id), eq(t.service, service)))
+    .limit(1);
   const prev = await parseBlob(existingRows[0]?.enc ?? null);
 
   const blob: Record<string, string> = {};
@@ -180,50 +189,29 @@ export async function setConnector(
   const encrypted = await encrypt(JSON.stringify(blob));
   const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
 
-  if (scope === "org") {
-    await db
-      .insert(orgConnectors)
-      .values({
-        id: ulid(),
-        orgId: id,
-        service,
+  const values: Record<string, unknown> = {
+    id: ulid(),
+    [idField]: id,
+    service,
+    credentialsEncrypted: encrypted,
+    status: "connected",
+    connectedBy: userId,
+    updatedAt: now,
+  };
+  if (scope === "project") values.scope = "project";
+
+  await db
+    .insert(t)
+    .values(values as typeof t.$inferInsert)
+    .onConflictDoUpdate({
+      target: [col, t.service],
+      set: {
         credentialsEncrypted: encrypted,
         status: "connected",
         connectedBy: userId,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [orgConnectors.orgId, orgConnectors.service],
-        set: {
-          credentialsEncrypted: encrypted,
-          status: "connected",
-          connectedBy: userId,
-          updatedAt: now,
-        },
-      });
-  } else {
-    await db
-      .insert(connectors)
-      .values({
-        id: ulid(),
-        projectId: id,
-        service,
-        credentialsEncrypted: encrypted,
-        scope: "project",
-        status: "connected",
-        connectedBy: userId,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [connectors.projectId, connectors.service],
-        set: {
-          credentialsEncrypted: encrypted,
-          status: "connected",
-          connectedBy: userId,
-          updatedAt: now,
-        },
-      });
-  }
+      },
+    });
 }
 
 export async function deleteConnector(
@@ -235,15 +223,6 @@ export async function deleteConnector(
   const db = getDb();
   const userId = await ensureUser(user);
   const id = await authorize(db, userId, scope, scopeId);
-  if (scope === "org") {
-    await db
-      .delete(orgConnectors)
-      .where(
-        and(eq(orgConnectors.orgId, id), eq(orgConnectors.service, service)),
-      );
-  } else {
-    await db
-      .delete(connectors)
-      .where(and(eq(connectors.projectId, id), eq(connectors.service, service)));
-  }
+  const { t, col } = table(scope);
+  await db.delete(t).where(and(eq(col, id), eq(t.service, service)));
 }

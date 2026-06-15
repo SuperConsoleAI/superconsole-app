@@ -21,6 +21,6 @@ export const Route = createFileRoute("/callback")({
       throw redirect({ to: "/login" });
     }
     await completeLogin({ data: deps.code });
-    throw redirect({ to: "/" });
+    throw redirect({ to: "/", search: { org: undefined } });
   },
 });

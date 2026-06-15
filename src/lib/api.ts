@@ -40,6 +40,7 @@ export interface AuthUser {
   workos_id: string;
   email: string;
   name: string | null;
+  logo_url?: string | null;
 }
 
 export interface CloudOrg {
@@ -47,6 +48,7 @@ export interface CloudOrg {
   name: string;
   plan: string;
   role: string;
+  logo_url?: string | null;
 }
 
 export interface AuthInfo {
@@ -171,7 +173,11 @@ export const PROJECT_ROLES = [
   { id: "viewer", label: "Viewer" },
 ] as const;
 
-export type ConnectorScope = "project" | "org";
+export type ConnectorScope = "account" | "project" | "org";
+
+export type ConnectorCategory = "integrations" | "connectors";
+
+const ALL_CONNECTOR_SCOPES: ConnectorScope[] = ["account", "org", "project"];
 
 export interface ConnectorFieldDef {
   key: string;
@@ -183,6 +189,7 @@ export interface ConnectorFieldDef {
 export interface ConnectorDef {
   id: string;
   label: string;
+  category: ConnectorCategory;
   scopes: ConnectorScope[];
   fields: ConnectorFieldDef[];
 }
@@ -204,9 +211,31 @@ export interface ConnectorView {
 // service ids, field keys, and scopes in src-tauri/src/connectors.rs.
 export const CONNECTOR_REGISTRY: ConnectorDef[] = [
   {
+    id: "github",
+    label: "GitHub",
+    category: "integrations",
+    scopes: ALL_CONNECTOR_SCOPES,
+    fields: [{ key: "token", label: "Personal access token", secret: true }],
+  },
+  {
+    id: "slack",
+    label: "Slack",
+    category: "integrations",
+    scopes: ALL_CONNECTOR_SCOPES,
+    fields: [{ key: "bot_token", label: "Bot token", secret: true }],
+  },
+  {
+    id: "linear",
+    label: "Linear",
+    category: "integrations",
+    scopes: ALL_CONNECTOR_SCOPES,
+    fields: [{ key: "api_key", label: "API key", secret: true }],
+  },
+  {
     id: "gmail",
     label: "Gmail",
-    scopes: ["project"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [
       { key: "api_key", label: "API key", secret: true },
       { key: "email", label: "Email address", secret: false },
@@ -215,13 +244,15 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
   {
     id: "google_drive",
     label: "Google Drive",
-    scopes: ["project"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [{ key: "api_key", label: "API key", secret: true }],
   },
   {
     id: "shopify",
     label: "Shopify",
-    scopes: ["project"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [
       { key: "api_key", label: "Admin API token", secret: true },
       { key: "shop_domain", label: "Shop domain", secret: false, placeholder: "store.myshopify.com" },
@@ -230,7 +261,8 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
   {
     id: "beehiiv",
     label: "Beehiiv",
-    scopes: ["project"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [
       { key: "api_key", label: "API key", secret: true },
       { key: "publication_id", label: "Publication ID", secret: false },
@@ -239,25 +271,29 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
   {
     id: "convertkit",
     label: "ConvertKit",
-    scopes: ["project"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [{ key: "api_key", label: "API key", secret: true }],
   },
   {
     id: "stripe",
     label: "Stripe",
-    scopes: ["project", "org"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [{ key: "api_key", label: "Secret key", secret: true }],
   },
   {
     id: "buffer",
     label: "Buffer",
-    scopes: ["project"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [{ key: "access_token", label: "Access token", secret: true }],
   },
   {
     id: "ga4",
     label: "Google Analytics 4",
-    scopes: ["project"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [
       { key: "api_secret", label: "API secret", secret: true },
       { key: "measurement_id", label: "Measurement ID", secret: false },
@@ -266,7 +302,8 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
   {
     id: "turso",
     label: "Turso",
-    scopes: ["project"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [
       { key: "auth_token", label: "Auth token", secret: true },
       { key: "url", label: "Database URL", secret: false, placeholder: "libsql://..." },
@@ -275,7 +312,8 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
   {
     id: "supabase",
     label: "Supabase",
-    scopes: ["project"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [
       { key: "service_role_key", label: "Service role key", secret: true },
       { key: "url", label: "Project URL", secret: false },
@@ -284,32 +322,23 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
   {
     id: "notion",
     label: "Notion",
-    scopes: ["project", "org"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [{ key: "api_key", label: "Integration token", secret: true }],
   },
   {
     id: "airtable",
     label: "Airtable",
-    scopes: ["project"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [{ key: "api_key", label: "API key", secret: true }],
   },
   {
     id: "telegram",
     label: "Telegram",
-    scopes: ["project", "org"],
+    category: "connectors",
+    scopes: ALL_CONNECTOR_SCOPES,
     fields: [{ key: "bot_token", label: "Bot token", secret: true }],
-  },
-  {
-    id: "slack",
-    label: "Slack",
-    scopes: ["org"],
-    fields: [{ key: "bot_token", label: "Bot token", secret: true }],
-  },
-  {
-    id: "github",
-    label: "GitHub",
-    scopes: ["org"],
-    fields: [{ key: "token", label: "Personal access token", secret: true }],
   },
 ];
 

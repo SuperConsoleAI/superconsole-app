@@ -111,6 +111,10 @@ const REGISTRY: &[Def] = &[
         service: "github",
         fields: &[Field { key: "token", env: "GITHUB_TOKEN", secret: true }],
     },
+    Def {
+        service: "linear",
+        fields: &[Field { key: "api_key", env: "LINEAR_API_KEY", secret: true }],
+    },
 ];
 
 fn connector_def(service: &str) -> Option<&'static Def> {
@@ -146,10 +150,38 @@ fn cached_user_id(db: &Db) -> Option<String> {
 // scope -> (table, id column, has_scope_column). Whitelisted; never interpolate.
 fn scope_table(scope: &str) -> Result<(&'static str, &'static str, bool), String> {
     match scope {
+        "account" => Ok(("account_connectors", "user_id", false)),
         "project" => Ok(("connectors", "project_id", true)),
         "org" => Ok(("org_connectors", "org_id", false)),
         other => Err(format!("unknown scope '{}'", other)),
     }
+}
+
+/// Idempotent bootstrap for account-scoped connectors so the feature works
+/// regardless of cloud migration order. Mirrors superconsole-web Drizzle schema.
+pub async fn ensure_account_connectors_table(
+    client: &reqwest::Client,
+    cfg: &cloud::TursoConfig,
+) -> Result<(), String> {
+    cloud::turso_execute(
+        client,
+        cfg,
+        "CREATE TABLE IF NOT EXISTS account_connectors (\
+            id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL, service TEXT NOT NULL, \
+            credentials_encrypted TEXT, status TEXT NOT NULL DEFAULT 'disconnected', \
+            connected_by TEXT, updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+        vec![],
+    )
+    .await?;
+    cloud::turso_execute(
+        client,
+        cfg,
+        "CREATE UNIQUE INDEX IF NOT EXISTS account_connectors_user_service_unq \
+         ON account_connectors (user_id, service)",
+        vec![],
+    )
+    .await?;
+    Ok(())
 }
 
 fn parse_blob(encrypted: Option<&str>) -> Map<String, Value> {
@@ -198,6 +230,9 @@ pub async fn list_connectors(scope: String, scope_id: String) -> Result<Vec<Conn
     let (table, id_col, _) = scope_table(&scope)?;
     let cfg = cloud::turso_config()?;
     let client = reqwest::Client::new();
+    if scope == "account" {
+        ensure_account_connectors_table(&client, &cfg).await?;
+    }
     let result = cloud::turso_execute(
         &client,
         &cfg,
@@ -233,6 +268,9 @@ pub async fn set_connector(
 
     let cfg = cloud::turso_config()?;
     let client = reqwest::Client::new();
+    if scope == "account" {
+        ensure_account_connectors_table(&client, &cfg).await?;
+    }
 
     // Merge with any existing blob so blank secret fields keep their value.
     let existing = cloud::turso_execute(
@@ -330,6 +368,9 @@ pub async fn delete_connector(
     let (table, id_col, _) = scope_table(&scope)?;
     let cfg = cloud::turso_config()?;
     let client = reqwest::Client::new();
+    if scope == "account" {
+        ensure_account_connectors_table(&client, &cfg).await?;
+    }
     cloud::turso_execute(
         &client,
         &cfg,
@@ -369,6 +410,9 @@ pub fn session_env(app: &AppHandle, workspace_id: i64) -> Vec<(String, String)> 
     let db = app.state::<Db>();
     let mut env: Vec<(String, String)> = Vec::new();
 
+    if let Some(user_id) = cached_user_id(&db) {
+        apply_scope(&db, "account", &user_id, &mut env);
+    }
     if let Some(project_id) = db.get_workspace_project_id(workspace_id) {
         if let Some(org_id) = db.get_project_org(&project_id) {
             apply_scope(&db, "org", &org_id, &mut env);
@@ -397,6 +441,11 @@ pub fn connected_services(app: &AppHandle, workspace_id: i64) -> Vec<String> {
         }
     };
 
+    if let Some(user_id) = cached_user_id(&db) {
+        for c in db.get_cached_connectors("account", &user_id) {
+            push(&c.service);
+        }
+    }
     if let Some(project_id) = db.get_workspace_project_id(workspace_id) {
         for c in db.get_cached_connectors("project", &project_id) {
             push(&c.service);

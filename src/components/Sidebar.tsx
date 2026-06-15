@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  Anchor,
   Check,
   ChevronsUpDown,
   FolderOpen,
@@ -8,6 +7,7 @@ import {
   ListTodo,
   Plus,
   Settings,
+  Terminal,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -78,7 +78,7 @@ export function SidebarRail({
       <Tooltip>
         <TooltipTrigger asChild>
           <button className={railButton(false)} onClick={onExpand}>
-            <Anchor className="h-4 w-4 text-primary" />
+            <Terminal className="h-4 w-4 text-primary" />
           </button>
         </TooltipTrigger>
         <TooltipContent side="right">{orgName} — expand sidebar</TooltipContent>
@@ -203,7 +203,7 @@ export function Sidebar({
           <DropdownMenuTrigger asChild>
             <button className="flex w-full items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-accent/60">
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/15">
-                <Anchor className="h-4 w-4 text-primary" />
+                <Terminal className="h-4 w-4 text-primary" />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[13px] font-semibold leading-tight">

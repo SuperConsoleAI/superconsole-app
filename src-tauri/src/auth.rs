@@ -8,7 +8,7 @@
 // Phase 7c) and have the desktop talk to that worker instead. This direct
 // approach is a deliberate dev-phase tradeoff only.
 
-use crate::cloud::{self, cell_text, turso_execute, TursoConfig};
+use crate::cloud::{self, cell_opt, cell_text, turso_execute, TursoConfig};
 use crate::db::Db;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -30,6 +30,8 @@ pub struct AuthUser {
     pub workos_id: String,
     pub email: String,
     pub name: Option<String>,
+    #[serde(default)]
+    pub logo_url: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -38,6 +40,8 @@ pub struct CloudOrg {
     pub name: String,
     pub plan: String,
     pub role: String,
+    #[serde(default)]
+    pub logo_url: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -132,6 +136,7 @@ async fn upsert_user_and_orgs(
     workos_id: &str,
     email: &str,
     name: &Option<String>,
+    avatar: &Option<String>,
 ) -> Result<AuthInfo, String> {
     // 1. Find or create the user.
     let found = turso_execute(
@@ -144,18 +149,29 @@ async fn upsert_user_and_orgs(
     let rows = found["rows"].as_array().cloned().unwrap_or_default();
 
     let user_id = if let Some(row) = rows.first() {
-        cell_text(row, 0)
+        let id = cell_text(row, 0);
+        if avatar.is_some() {
+            let _ = turso_execute(
+                client,
+                cfg,
+                "UPDATE users SET logo_url = ? WHERE id = ?",
+                vec![avatar.clone(), Some(id.clone())],
+            )
+            .await;
+        }
+        id
     } else {
         let id = ulid::Ulid::new().to_string();
         turso_execute(
             client,
             cfg,
-            "INSERT INTO users (id, workos_id, email, name) VALUES (?, ?, ?, ?)",
+            "INSERT INTO users (id, workos_id, email, name, logo_url) VALUES (?, ?, ?, ?, ?)",
             vec![
                 Some(id.clone()),
                 Some(workos_id.to_string()),
                 Some(email.to_string()),
                 name.clone(),
+                avatar.clone(),
             ],
         )
         .await?;
@@ -196,6 +212,7 @@ async fn upsert_user_and_orgs(
             workos_id: workos_id.to_string(),
             email: email.to_string(),
             name: name.clone(),
+            logo_url: avatar.clone(),
         },
         orgs,
     })
@@ -284,7 +301,7 @@ async fn load_orgs(
     let res = turso_execute(
         client,
         cfg,
-        "SELECT o.id, o.name, o.plan, m.role FROM organizations o \
+        "SELECT o.id, o.name, o.plan, m.role, o.logo_url FROM organizations o \
          JOIN org_members m ON m.org_id = o.id WHERE m.user_id = ? ORDER BY o.name",
         vec![Some(user_id.to_string())],
     )
@@ -297,6 +314,7 @@ async fn load_orgs(
             name: cell_text(row, 1),
             plan: cell_text(row, 2),
             role: cell_text(row, 3),
+            logo_url: cell_opt(row, 4),
         })
         .collect())
 }
@@ -343,6 +361,10 @@ async fn complete_login(
     let last = wu["last_name"].as_str().unwrap_or("").trim().to_string();
     let full = format!("{} {}", first, last).trim().to_string();
     let name = if full.is_empty() { None } else { Some(full) };
+    let avatar = wu["profile_picture_url"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
     let access_token = body["access_token"].as_str().unwrap_or("").to_string();
     let refresh_token = body["refresh_token"].as_str().map(|s| s.to_string());
 
@@ -351,7 +373,7 @@ async fn complete_login(
     }
 
     let tcfg = turso_config()?;
-    let info = upsert_user_and_orgs(&client, &tcfg, &workos_id, &email, &name).await?;
+    let info = upsert_user_and_orgs(&client, &tcfg, &workos_id, &email, &name, &avatar).await?;
 
     // Persist tokens to the OS keychain; cache identity in local SQLite.
     let stored = StoredSession {

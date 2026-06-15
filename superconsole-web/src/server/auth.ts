@@ -9,6 +9,7 @@ export interface SessionUser {
   email: string;
   firstName: string | null;
   lastName: string | null;
+  profilePictureUrl: string | null;
 }
 
 function workos() {
@@ -50,6 +51,7 @@ export async function handleCallback(code: string): Promise<SessionUser> {
     email: user.email,
     firstName: user.firstName ?? null,
     lastName: user.lastName ?? null,
+    profilePictureUrl: user.profilePictureUrl ?? null,
   };
 }
 
@@ -71,6 +73,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     email: user.email,
     firstName: user.firstName ?? null,
     lastName: user.lastName ?? null,
+    profilePictureUrl: user.profilePictureUrl ?? null,
   };
 }
 

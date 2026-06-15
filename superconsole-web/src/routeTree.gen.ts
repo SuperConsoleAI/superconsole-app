@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TeamRouteImport } from './routes/team'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ProjectTeamRouteImport } from './routes/project-team'
 import { Route as ProjectConnectorsRouteImport } from './routes/project-connectors'
 import { Route as ModelsRouteImport } from './routes/models'
@@ -22,6 +23,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const TeamRoute = TeamRouteImport.update({
   id: '/team',
   path: '/team',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProjectTeamRoute = ProjectTeamRouteImport.update({
@@ -74,6 +80,7 @@ export interface FileRoutesByFullPath {
   '/models': typeof ModelsRoute
   '/project-connectors': typeof ProjectConnectorsRoute
   '/project-team': typeof ProjectTeamRoute
+  '/settings': typeof SettingsRoute
   '/team': typeof TeamRoute
 }
 export interface FileRoutesByTo {
@@ -85,6 +92,7 @@ export interface FileRoutesByTo {
   '/models': typeof ModelsRoute
   '/project-connectors': typeof ProjectConnectorsRoute
   '/project-team': typeof ProjectTeamRoute
+  '/settings': typeof SettingsRoute
   '/team': typeof TeamRoute
 }
 export interface FileRoutesById {
@@ -97,6 +105,7 @@ export interface FileRoutesById {
   '/models': typeof ModelsRoute
   '/project-connectors': typeof ProjectConnectorsRoute
   '/project-team': typeof ProjectTeamRoute
+  '/settings': typeof SettingsRoute
   '/team': typeof TeamRoute
 }
 export interface FileRouteTypes {
@@ -110,6 +119,7 @@ export interface FileRouteTypes {
     | '/models'
     | '/project-connectors'
     | '/project-team'
+    | '/settings'
     | '/team'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -121,6 +131,7 @@ export interface FileRouteTypes {
     | '/models'
     | '/project-connectors'
     | '/project-team'
+    | '/settings'
     | '/team'
   id:
     | '__root__'
@@ -132,6 +143,7 @@ export interface FileRouteTypes {
     | '/models'
     | '/project-connectors'
     | '/project-team'
+    | '/settings'
     | '/team'
   fileRoutesById: FileRoutesById
 }
@@ -144,6 +156,7 @@ export interface RootRouteChildren {
   ModelsRoute: typeof ModelsRoute
   ProjectConnectorsRoute: typeof ProjectConnectorsRoute
   ProjectTeamRoute: typeof ProjectTeamRoute
+  SettingsRoute: typeof SettingsRoute
   TeamRoute: typeof TeamRoute
 }
 
@@ -154,6 +167,13 @@ declare module '@tanstack/react-router' {
       path: '/team'
       fullPath: '/team'
       preLoaderRoute: typeof TeamRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/project-team': {
@@ -224,6 +244,7 @@ const rootRouteChildren: RootRouteChildren = {
   ModelsRoute: ModelsRoute,
   ProjectConnectorsRoute: ProjectConnectorsRoute,
   ProjectTeamRoute: ProjectTeamRoute,
+  SettingsRoute: SettingsRoute,
   TeamRoute: TeamRoute,
 }
 export const routeTree = rootRouteImport

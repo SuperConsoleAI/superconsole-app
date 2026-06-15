@@ -100,6 +100,15 @@ async fn sync_connectors(
     synced_at: &str,
 ) {
     let sql = match scope {
+        "account" => {
+            if crate::connectors::ensure_account_connectors_table(client, cfg)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            "SELECT service, status, credentials_encrypted FROM account_connectors WHERE user_id = ?"
+        }
         "org" => "SELECT service, status, credentials_encrypted FROM org_connectors WHERE org_id = ?",
         "project" => {
             "SELECT service, status, credentials_encrypted FROM connectors WHERE project_id = ?"
@@ -185,6 +194,7 @@ pub async fn sync_on_startup(app: &AppHandle) {
     }
 
     sync_llm(app, &client, &cfg, "account", &user_id, &synced_at).await;
+    sync_connectors(app, &client, &cfg, "account", &user_id, &synced_at).await;
     for org_id in &org_ids {
         sync_llm(app, &client, &cfg, "org", org_id, &synced_at).await;
         sync_connectors(app, &client, &cfg, "org", org_id, &synced_at).await;
@@ -202,7 +212,10 @@ pub async fn sync_on_update(app: &AppHandle, entity_type: &str, id: &str) {
     let synced_at = now();
 
     match entity_type {
-        "account" => sync_llm(app, &client, &cfg, "account", id, &synced_at).await,
+        "account" => {
+            sync_llm(app, &client, &cfg, "account", id, &synced_at).await;
+            sync_connectors(app, &client, &cfg, "account", id, &synced_at).await;
+        }
         "org" => {
             sync_llm(app, &client, &cfg, "org", id, &synced_at).await;
             sync_connectors(app, &client, &cfg, "org", id, &synced_at).await;

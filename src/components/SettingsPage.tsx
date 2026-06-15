@@ -1,12 +1,32 @@
 import { useEffect, useState } from "react";
-import { useRouter } from "@tanstack/react-router";
-import { ArrowLeft, BookOpen, Check, Copy, Search } from "lucide-react";
+import {
+  Bell,
+  BookOpen,
+  Blocks,
+  Check,
+  ChevronsUpDown,
+  Copy,
+  CreditCard,
+  type LucideIcon,
+  Palette,
+  Plug,
+  Search,
+  Settings as SettingsIcon,
+  Shield,
+  Sparkles,
+  Terminal,
+  Users,
+  Workflow,
+} from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   api,
+  CLI_PRESETS,
   CONNECTOR_REGISTRY,
   LLM_PROVIDERS,
   ORG_ROLES,
+  PROJECT_ROLES,
+  type ConnectorCategory,
   type ConnectorScope,
   type ConnectorView,
   type LlmKeyView,
@@ -15,234 +35,554 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { PresetIcon } from "@/components/PresetIcon";
 import { useTheme } from "@/components/theme-provider";
 import { useAuth } from "@/lib/auth-context";
 import { useWorkspaces } from "@/lib/workspace-context";
 import { cn } from "@/lib/utils";
 
-const SECTIONS: { group: string; items: string[] }[] = [
-  { group: "Personal", items: ["Account", "Security", "Appearance", "Notifications"] },
-  {
-    group: "Editor & Workflow",
-    items: ["General", "Keyboard", "Git & Worktrees", "Agents", "Terminal", "Links", "Models"],
-  },
-  {
-    group: "Organization",
-    items: ["Organization", "Teams", "Projects", "Connectors", "Hosts", "Integrations", "Billing", "API Keys"],
-  },
+type TopTab = "account" | "org" | "project";
+
+const TOP_TABS: { id: TopTab; label: string }[] = [
+  { id: "account", label: "Account" },
+  { id: "org", label: "Organisation" },
+  { id: "project", label: "Project" },
 ];
 
-export function SettingsPage() {
-  const router = useRouter();
-  const [section, setSection] = useState("Account");
-  const [query, setQuery] = useState("");
+const NAV: Record<TopTab, string[]> = {
+  account: [
+    "General",
+    "Appearance",
+    "Terminal",
+    "Models",
+    "Integrations",
+    "Connectors",
+    "Security",
+    "Notifications",
+  ],
+  org: ["General", "Team", "Models", "Integrations", "Connectors", "Billing"],
+  project: ["General", "Team", "Models", "Integrations", "Connectors", "Automations"],
+};
 
-  const filtered = SECTIONS.map((g) => ({
-    ...g,
-    items: g.items.filter((i) => i.toLowerCase().includes(query.toLowerCase())),
-  })).filter((g) => g.items.length > 0);
+const NAV_ICONS: Record<string, LucideIcon> = {
+  General: SettingsIcon,
+  Appearance: Palette,
+  Terminal: Terminal,
+  Models: Sparkles,
+  Integrations: Blocks,
+  Connectors: Plug,
+  Security: Shield,
+  Notifications: Bell,
+  Team: Users,
+  Billing: CreditCard,
+  Automations: Workflow,
+};
+
+export function SettingsPage() {
+  const { workspaces } = useWorkspaces();
+  const { activeCloudOrg } = useAuth();
+
+  const [tab, setTab] = useState<TopTab>("account");
+  const [query, setQuery] = useState("");
+  const [section, setSection] = useState<Record<TopTab, string>>({
+    account: "General",
+    org: "General",
+    project: "General",
+  });
+
+  // Project scope selection, shared across Project sub-sections.
+  const [workspaceId, setWorkspaceId] = useState<number | null>(null);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const [ensuring, setEnsuring] = useState(false);
+
+  const selectProject = async (id: number) => {
+    setWorkspaceId(id);
+    setProjectId(null);
+    setProjectError(null);
+    if (!activeCloudOrg) {
+      setProjectError("Select an organisation first.");
+      return;
+    }
+    setEnsuring(true);
+    try {
+      setProjectId(await api.ensureWorkspaceProject(id, activeCloudOrg.id));
+    } catch (e) {
+      setProjectError(String(e));
+    } finally {
+      setEnsuring(false);
+    }
+  };
+
+  // Default to the first workspace when entering the Project tab.
+  useEffect(() => {
+    if (tab === "project" && workspaceId === null && workspaces.length > 0) {
+      selectProject(workspaces[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, workspaces, activeCloudOrg]);
+
+  const active = section[tab];
+  const setActive = (s: string) =>
+    setSection((prev) => ({ ...prev, [tab]: s }));
+
+  const navItems = NAV[tab].filter((i) =>
+    i.toLowerCase().includes(query.toLowerCase()),
+  );
 
   return (
-    <div className="flex h-full">
-      <aside className="flex w-60 shrink-0 flex-col border-r bg-sidebar">
-        <div className="px-4 pb-1 pt-4">
+    <div className="flex h-full flex-col">
+      {/* Top bar: three-level tabs + inline scope switcher */}
+      <div className="flex shrink-0 items-center gap-5 border-b px-5">
+        {TOP_TABS.map((t) => (
           <button
-            className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-            onClick={() => router.history.back()}
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={cn(
+              "relative py-3 text-[13px] transition-colors",
+              tab === t.id
+                ? "font-medium text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full after:bg-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
           >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back
+            {t.label}
           </button>
-          <h1 className="font-display mt-3 text-lg font-semibold">Settings</h1>
-          <div className="relative mt-2">
-            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search settings..."
-              className="h-8 pl-8 text-xs"
-            />
+        ))}
+        {tab === "org" && (
+          <div className="ml-1">
+            <OrgSwitcher />
           </div>
-        </div>
+        )}
+        {tab === "project" && (
+          <div className="ml-1">
+            <ProjectSwitcher workspaceId={workspaceId} onSelect={selectProject} />
+          </div>
+        )}
+      </div>
 
-        <ScrollArea className="min-h-0 flex-1 px-2 py-2">
-          {filtered.map((group) => (
-            <div key={group.group} className="mb-3">
-              <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                {group.group}
-              </p>
-              {group.items.map((item) => (
+      <div className="flex min-h-0 flex-1">
+        <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar">
+          <div className="p-3 pb-1">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search settings..."
+                className="h-8 pl-8 text-xs"
+              />
+            </div>
+          </div>
+          <ScrollArea className="min-h-0 flex-1 px-2 py-2">
+            {navItems.map((item) => {
+              const Icon = NAV_ICONS[item];
+              return (
                 <button
                   key={item}
-                  onClick={() => setSection(item)}
+                  onClick={() => setActive(item)}
                   className={cn(
-                    "block w-full rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors",
-                    section === item
+                    "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors",
+                    active === item
                       ? "bg-accent font-medium text-accent-foreground"
                       : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                   )}
                 >
+                  {Icon && <Icon className="h-3.5 w-3.5 shrink-0" />}
                   {item}
                 </button>
-              ))}
-            </div>
-          ))}
-        </ScrollArea>
+              );
+            })}
+          </ScrollArea>
 
-        <div className="border-t p-3">
-          <button
-            className="flex items-center gap-2 px-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
-            onClick={() => openUrl("https://github.com").catch(() => {})}
-          >
-            <BookOpen className="h-3.5 w-3.5" />
-            Documentation
-          </button>
-        </div>
-      </aside>
-
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto max-w-2xl px-8 py-8">
-          <h2 className="font-display text-xl font-semibold">{section}</h2>
-          <div className="mt-6">
-            <SectionContent section={section} />
+          <div className="border-t p-3">
+            <button
+              className="flex items-center gap-2 px-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+              onClick={() => openUrl("https://github.com").catch(() => {})}
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              Documentation
+            </button>
           </div>
-        </div>
-      </ScrollArea>
+        </aside>
+
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="mx-auto max-w-2xl px-8 py-8">
+            <h2 className="font-display text-xl font-semibold">{active}</h2>
+            <div className="mt-6">
+              <Content
+                tab={tab}
+                section={active}
+                projectId={projectId}
+                projectError={projectError}
+                ensuring={ensuring}
+                hasWorkspaces={workspaces.length > 0}
+              />
+            </div>
+          </div>
+        </ScrollArea>
+      </div>
     </div>
   );
 }
 
-function SectionContent({ section }: { section: string }) {
-  switch (section) {
-    case "Account":
-      return <AccountSection />;
-    case "General":
-      return <GeneralSection />;
-    case "Appearance":
-      return <AppearanceSection />;
-    case "Integrations":
-      return <IntegrationsSection />;
-    case "API Keys":
-      return <ApiKeysSection />;
-    case "Models":
-      return <ModelsSection />;
-    case "Security":
-      return <SecuritySection />;
-    case "Teams":
-      return <TeamSection />;
-    case "Connectors":
-      return <ConnectorsSection />;
-    default:
-      return (
-        <div className="rounded-xl border border-dashed px-6 py-12 text-center">
-          <p className="text-sm text-muted-foreground">
-            {section} settings are coming soon.
-          </p>
-        </div>
-      );
+function Content({
+  tab,
+  section,
+  projectId,
+  projectError,
+  ensuring,
+  hasWorkspaces,
+}: {
+  tab: TopTab;
+  section: string;
+  projectId: string | null;
+  projectError: string | null;
+  ensuring: boolean;
+  hasWorkspaces: boolean;
+}) {
+  const { auth, activeCloudOrg } = useAuth();
+
+  if (tab === "account") {
+    switch (section) {
+      case "General":
+        return <AccountGeneralSection />;
+      case "Appearance":
+        return <AppearanceSection />;
+      case "Terminal":
+        return <TerminalSection />;
+      case "Models":
+        return auth ? (
+          <LlmKeyEditor
+            scope="account"
+            scopeId={auth.user.id}
+            description="Personal model keys that apply across every organisation you belong to."
+          />
+        ) : (
+          <SignInPrompt label="manage model keys" />
+        );
+      case "Integrations":
+        return auth ? (
+          <ConnectorManager
+            scope="account"
+            scopeId={auth.user.id}
+            category="integrations"
+          />
+        ) : (
+          <SignInPrompt label="manage integrations" />
+        );
+      case "Connectors":
+        return auth ? (
+          <ConnectorManager
+            scope="account"
+            scopeId={auth.user.id}
+            category="connectors"
+          />
+        ) : (
+          <SignInPrompt label="manage connectors" />
+        );
+      case "Security":
+        return <SecuritySection />;
+      case "Notifications":
+        return <NotificationsSection />;
+    }
   }
+
+  if (tab === "org") {
+    if (!auth) return <SignInPrompt label="manage your organisation" />;
+    if (!activeCloudOrg)
+      return <Hint>Select an organisation to continue.</Hint>;
+    switch (section) {
+      case "General":
+        return <OrgGeneralSection />;
+      case "Team":
+        return <TeamSection />;
+      case "Models":
+        return (
+          <LlmKeyEditor
+            scope="org"
+            scopeId={activeCloudOrg.id}
+            description={`Shared model keys for everyone in ${activeCloudOrg.name}.`}
+          />
+        );
+      case "Integrations":
+        return (
+          <ConnectorManager
+            scope="org"
+            scopeId={activeCloudOrg.id}
+            category="integrations"
+          />
+        );
+      case "Connectors":
+        return (
+          <ConnectorManager
+            scope="org"
+            scopeId={activeCloudOrg.id}
+            category="connectors"
+          />
+        );
+      case "Billing":
+        return <Placeholder name="Billing" />;
+    }
+  }
+
+  if (tab === "project") {
+    if (!auth) return <SignInPrompt label="manage projects" />;
+    if (!activeCloudOrg)
+      return <Hint>Select an organisation to continue.</Hint>;
+    if (!hasWorkspaces)
+      return <Hint>Add a workspace to create your first project.</Hint>;
+    if (ensuring) return <Hint>Linking project…</Hint>;
+    if (projectError) return <p className="text-xs text-destructive">{projectError}</p>;
+    if (!projectId) return <Hint>Select a project to continue.</Hint>;
+
+    switch (section) {
+      case "General":
+        return <ProjectGeneralSection projectId={projectId} />;
+      case "Team":
+        return <ProjectTeamSection projectId={projectId} />;
+      case "Models":
+        return (
+          <LlmKeyEditor
+            scope="project"
+            scopeId={projectId}
+            description="Per-project model keys. These override organisation and account keys."
+          />
+        );
+      case "Integrations":
+        return (
+          <ConnectorManager
+            scope="project"
+            scopeId={projectId}
+            category="integrations"
+          />
+        );
+      case "Connectors":
+        return (
+          <ConnectorManager
+            scope="project"
+            scopeId={projectId}
+            category="connectors"
+          />
+        );
+      case "Automations":
+        return <Placeholder name="Automations" />;
+    }
+  }
+
+  return <Placeholder name={section} />;
 }
 
-function AccountSection() {
-  const { auth, activeCloudOrg, setActiveCloudOrgId, signOut } = useAuth();
-  if (!auth) return null;
+function Hint({ children }: { children: React.ReactNode }) {
+  return <p className="text-sm text-muted-foreground">{children}</p>;
+}
 
+function Placeholder({ name }: { name: string }) {
+  return (
+    <div className="rounded-xl border border-dashed px-6 py-12 text-center">
+      <p className="text-sm text-muted-foreground">{name} is coming soon.</p>
+    </div>
+  );
+}
+
+function SignInPrompt({ label }: { label: string }) {
+  return (
+    <div className="rounded-xl border border-dashed px-6 py-12 text-center">
+      <p className="text-sm text-muted-foreground">Sign in to {label}.</p>
+    </div>
+  );
+}
+
+function OrgSwitcher() {
+  const { auth, activeCloudOrg, setActiveCloudOrgId } = useAuth();
+  const orgs = auth?.orgs ?? [];
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="flex max-w-[200px] items-center gap-2 rounded-md border bg-background px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors hover:border-foreground/30">
+          <span className="truncate">
+            {activeCloudOrg?.name ?? "No organisation"}
+          </span>
+          <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-[200px]">
+        {orgs.map((org) => (
+          <DropdownMenuItem
+            key={org.id}
+            onClick={() => setActiveCloudOrgId(org.id)}
+            className="flex items-center justify-between"
+          >
+            <span className="min-w-0">
+              <span className="block truncate text-[13px]">{org.name}</span>
+              <span className="block truncate text-[11px] capitalize text-muted-foreground">
+                {org.role} · {org.plan}
+              </span>
+            </span>
+            {org.id === activeCloudOrg?.id && (
+              <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-primary" />
+            )}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ProjectSwitcher({
+  workspaceId,
+  onSelect,
+}: {
+  workspaceId: number | null;
+  onSelect: (id: number) => void;
+}) {
+  const { workspaces } = useWorkspaces();
+  const current = workspaces.find((w) => w.id === workspaceId);
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="flex max-w-[200px] items-center gap-2 rounded-md border bg-background px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors hover:border-foreground/30">
+          <span className="truncate">
+            {current?.name ?? "Select a project"}
+          </span>
+          <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-[200px]">
+        {workspaces.map((w) => (
+          <DropdownMenuItem
+            key={w.id}
+            onClick={() => onSelect(w.id)}
+            className="flex items-center justify-between"
+          >
+            <span className="min-w-0">
+              <span className="block truncate text-[13px]">{w.name}</span>
+              <span className="block truncate text-[11px] text-muted-foreground">
+                {w.cli}
+              </span>
+            </span>
+            {w.id === workspaceId && (
+              <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-primary" />
+            )}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function AccountGeneralSection() {
+  const { auth, signOut } = useAuth();
+
+  return (
+    <div className="flex flex-col gap-6">
+      {auth && (
+        <div className="rounded-lg border bg-card px-4 py-3">
+          <p className="text-xs text-muted-foreground">Signed in as</p>
+          <p className="mt-0.5 text-sm font-medium">{auth.user.email}</p>
+          {auth.user.name && (
+            <p className="text-xs text-muted-foreground">{auth.user.name}</p>
+          )}
+          <div className="mt-3">
+            <Button size="sm" variant="outline" onClick={() => signOut()}>
+              Sign out
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <UpdatesSection />
+      <ApiKeysSection />
+    </div>
+  );
+}
+
+function NotificationsSection() {
+  return (
+    <div className="flex flex-col gap-6">
+      <IntegrationsSection />
+      <div>
+        <h3 className="text-sm font-medium">Desktop notifications</h3>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Native desktop alerts for completed jobs and inbox items are coming
+          soon.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function TerminalSection() {
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Terminal presets are the agent CLIs you can launch in a workspace. Each
+        opens a full interactive session in its own tab.
+      </p>
+      <div className="flex flex-col gap-1.5">
+        {CLI_PRESETS.map((p) => (
+          <div
+            key={p.id}
+            className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2.5"
+          >
+            <PresetIcon preset={p.id} className="h-5 w-5" />
+            <div className="min-w-0">
+              <span className="block text-[13px] font-medium">{p.label}</span>
+              <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                {p.id}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OrgGeneralSection() {
+  const { activeCloudOrg } = useAuth();
+  if (!activeCloudOrg) return null;
   return (
     <div className="flex flex-col gap-4">
       <div className="rounded-lg border bg-card px-4 py-3">
-        <p className="text-xs text-muted-foreground">Signed in as</p>
-        <p className="mt-0.5 text-sm font-medium">{auth.user.email}</p>
-        {auth.user.name && (
-          <p className="text-xs text-muted-foreground">{auth.user.name}</p>
-        )}
-      </div>
-
-      <div>
-        <h3 className="text-sm font-medium">Organization</h3>
-        <p className="mb-3 mt-1 text-xs leading-relaxed text-muted-foreground">
-          Organizations live in the cloud and scope your projects and
-          connectors. Agent sessions and files stay local.
+        <p className="text-sm font-medium">{activeCloudOrg.name}</p>
+        <p className="mt-0.5 text-xs capitalize text-muted-foreground">
+          {activeCloudOrg.role} · {activeCloudOrg.plan} plan
         </p>
-        <div className="flex flex-col gap-1.5">
-          {auth.orgs.map((org) => (
-            <button
-              key={org.id}
-              onClick={() => setActiveCloudOrgId(org.id)}
-              className={cn(
-                "flex items-center justify-between rounded-lg border px-3 py-2 text-left transition-colors",
-                org.id === activeCloudOrg?.id
-                  ? "border-primary ring-1 ring-primary"
-                  : "hover:border-foreground/30",
-              )}
-            >
-              <span>
-                <span className="block text-[13px] font-medium">{org.name}</span>
-                <span className="block text-[11px] capitalize text-muted-foreground">
-                  {org.role} · {org.plan}
-                </span>
-              </span>
-              {org.id === activeCloudOrg?.id && (
-                <Check className="h-4 w-4 text-primary" />
-              )}
-            </button>
-          ))}
-        </div>
       </div>
-
-      <div>
-        <Button size="sm" variant="outline" onClick={() => signOut()}>
-          Sign out
-        </Button>
-      </div>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Organisations live in the cloud and scope projects, team, model keys,
+        and connectors shared across everyone who belongs to them. Agent
+        sessions and files stay local to each device.
+      </p>
     </div>
   );
 }
 
-function GeneralSection() {
-  const [version, setVersion] = useState("");
-  const [status, setStatus] = useState<string | null>(null);
-  const [checking, setChecking] = useState(false);
-
-  useEffect(() => {
-    import("@tauri-apps/api/app").then(({ getVersion }) =>
-      getVersion().then(setVersion).catch(() => {}),
-    );
-  }, []);
-
-  const checkUpdates = async () => {
-    setChecking(true);
-    setStatus(null);
-    try {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
-      if (update) {
-        setStatus(`Update available: v${update.version}. Downloading...`);
-        await update.downloadAndInstall();
-        setStatus("Update installed. Restart SuperConsole to apply.");
-      } else {
-        setStatus("You're on the latest version.");
-      }
-    } catch {
-      setStatus(
-        "Update check failed. Updates require a configured release endpoint and signing key.",
-      );
-    } finally {
-      setChecking(false);
-    }
-  };
-
+function ProjectGeneralSection({ projectId }: { projectId: string }) {
+  const { workspaces } = useWorkspaces();
+  const ws = workspaces.find((w) => w.project_id === projectId);
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between rounded-lg border bg-card px-4 py-3">
-        <div>
-          <p className="text-sm font-medium">SuperConsole</p>
-          <p className="text-xs text-muted-foreground">Version {version || "..."}</p>
-        </div>
-        <Button size="sm" variant="outline" onClick={checkUpdates} disabled={checking}>
-          {checking ? "Checking..." : "Check for updates"}
-        </Button>
+      <div className="rounded-lg border bg-card px-4 py-3">
+        <p className="text-sm font-medium">{ws?.name ?? "Project"}</p>
+        {ws && (
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            {ws.path}
+          </p>
+        )}
       </div>
-      {status && <p className="text-xs text-muted-foreground">{status}</p>}
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Projects scope model keys, connectors, and team access to a single
+        client workspace. Project settings override organisation defaults.
+      </p>
     </div>
   );
 }
@@ -281,6 +621,55 @@ function AppearanceSection() {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function UpdatesSection() {
+  const [version, setVersion] = useState("");
+  const [status, setStatus] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    import("@tauri-apps/api/app").then(({ getVersion }) =>
+      getVersion().then(setVersion).catch(() => {}),
+    );
+  }, []);
+
+  const checkUpdates = async () => {
+    setChecking(true);
+    setStatus(null);
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (update) {
+        setStatus(`Update available: v${update.version}. Downloading...`);
+        await update.downloadAndInstall();
+        setStatus("Update installed. Restart SuperConsole to apply.");
+      } else {
+        setStatus("You're on the latest version.");
+      }
+    } catch {
+      setStatus(
+        "Update check failed. Updates require a configured release endpoint and signing key.",
+      );
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between rounded-lg border bg-card px-4 py-3">
+        <div>
+          <p className="text-sm font-medium">SuperConsole</p>
+          <p className="text-xs text-muted-foreground">Version {version || "..."}</p>
+        </div>
+        <Button size="sm" variant="outline" onClick={checkUpdates} disabled={checking}>
+          {checking ? "Checking..." : "Check for updates"}
+        </Button>
+      </div>
+      {status && <p className="text-xs text-muted-foreground">{status}</p>}
     </div>
   );
 }
@@ -456,22 +845,7 @@ function TeamSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId]);
 
-  if (!auth) {
-    return (
-      <div className="rounded-xl border border-dashed px-6 py-12 text-center">
-        <p className="text-sm text-muted-foreground">
-          Sign in to manage your team.
-        </p>
-      </div>
-    );
-  }
-  if (!activeCloudOrg) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        Select an organization in Account settings first.
-      </p>
-    );
-  }
+  if (!auth || !activeCloudOrg) return null;
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -631,113 +1005,170 @@ function TeamSection() {
   );
 }
 
-function ConnectorsSection() {
+function ProjectTeamSection({ projectId }: { projectId: string }) {
   const { auth, activeCloudOrg } = useAuth();
-  const { workspaces } = useWorkspaces();
-  const [tab, setTab] = useState<ConnectorScope>("project");
-  const [workspaceId, setWorkspaceId] = useState<number | null>(null);
-  const [projectId, setProjectId] = useState<string | null>(null);
-  const [projectError, setProjectError] = useState<string | null>(null);
-  const [ensuring, setEnsuring] = useState(false);
+  const [members, setMembers] = useState<MemberView[]>([]);
+  const [addable, setAddable] = useState<MemberView[]>([]);
+  const [userId, setUserId] = useState<string>("");
+  const [role, setRole] = useState<string>(PROJECT_ROLES[0].id);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  if (!auth) {
-    return (
-      <div className="rounded-xl border border-dashed px-6 py-12 text-center">
-        <p className="text-sm text-muted-foreground">
-          Sign in to manage connectors.
-        </p>
-      </div>
-    );
-  }
+  const canManage =
+    activeCloudOrg?.role === "owner" || activeCloudOrg?.role === "admin";
 
-  const selectProject = async (id: number) => {
-    setWorkspaceId(id);
-    setProjectId(null);
-    setProjectError(null);
-    if (!activeCloudOrg) {
-      setProjectError("Select an organization in Account settings first.");
-      return;
-    }
-    setEnsuring(true);
+  const load = async () => {
     try {
-      setProjectId(await api.ensureWorkspaceProject(id, activeCloudOrg.id));
+      const [list, add] = await Promise.all([
+        api.listProjectMembers(projectId),
+        api.listAddableProjectMembers(projectId),
+      ]);
+      setMembers(list);
+      setAddable(add);
+      setUserId(add[0]?.user_id ?? "");
     } catch (e) {
-      setProjectError(String(e));
-    } finally {
-      setEnsuring(false);
+      setError(String(e));
     }
   };
 
-  const tabs: { id: ConnectorScope; label: string }[] = [
-    { id: "project", label: "Project" },
-    { id: "org", label: "Organization" },
-  ];
+  useEffect(() => {
+    setMembers([]);
+    setAddable([]);
+    setError(null);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  if (!auth) return null;
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-5">
       <p className="text-xs leading-relaxed text-muted-foreground">
-        Connectors give agents scoped access to external services. Credentials
-        are encrypted and injected as environment variables at session start,
-        project connectors overriding org connectors. API key / token only for
-        now; OAuth flows come later.
+        Project members are drawn from your organisation and granted access to
+        this project's workspace, keys, and connectors.
       </p>
 
-      <div className="flex gap-1 rounded-lg border bg-card p-1">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              "flex-1 rounded-md px-3 py-1.5 text-[13px] transition-colors",
-              tab === t.id
-                ? "bg-accent font-medium text-accent-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "org" ? (
-        activeCloudOrg ? (
-          <ConnectorManager scope="org" scopeId={activeCloudOrg.id} />
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Select an organization in Account settings first.
-          </p>
-        )
-      ) : (
-        <div className="flex flex-col gap-4">
-          <div>
-            <h3 className="text-sm font-medium">Project</h3>
-            <p className="mb-2 mt-1 text-xs text-muted-foreground">
-              Connectors scoped to a single workspace and its client.
+      {canManage && (
+        <div className="flex flex-col gap-2 rounded-lg border bg-card p-3">
+          <h3 className="text-sm font-medium">Add a member</h3>
+          {addable.length > 0 ? (
+            <div className="flex gap-2">
+              <select
+                value={userId}
+                onChange={(e) => setUserId(e.target.value)}
+                className="h-8 flex-1 rounded-md border bg-background px-2 text-[13px]"
+              >
+                {addable.map((m) => (
+                  <option key={m.user_id ?? m.email} value={m.user_id ?? ""}>
+                    {m.name ?? m.email}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                className="h-8 rounded-md border bg-background px-2 text-[13px]"
+              >
+                {PROJECT_ROLES.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+              <Button
+                size="sm"
+                disabled={busy || !userId}
+                onClick={() =>
+                  run(() => api.addProjectMember(projectId, userId, role))
+                }
+              >
+                Add
+              </Button>
+            </div>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">
+              Everyone in your organisation already has access.
             </p>
-            <select
-              value={workspaceId ?? ""}
-              onChange={(e) => selectProject(Number(e.target.value))}
-              className="h-8 w-full rounded-md border bg-background px-2 text-[13px]"
-            >
-              <option value="" disabled>
-                Select a workspace...
-              </option>
-              {workspaces.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          {ensuring && (
-            <p className="text-xs text-muted-foreground">Linking project...</p>
           )}
-          {projectError && (
-            <p className="text-xs text-destructive">{projectError}</p>
-          )}
-          {projectId && <ConnectorManager scope="project" scopeId={projectId} />}
         </div>
       )}
+
+      <div className="flex flex-col gap-1.5">
+        {members.map((m) => {
+          const isSelf = m.user_id === auth.user.id;
+          return (
+            <div
+              key={m.user_id ?? m.email}
+              className="flex items-center justify-between rounded-lg border bg-card px-3 py-2"
+            >
+              <div className="min-w-0">
+                <span className="block truncate text-[13px] font-medium">
+                  {m.name ?? m.email}
+                </span>
+                <span className="block truncate text-[11px] text-muted-foreground">
+                  {m.email}
+                </span>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {canManage && !isSelf ? (
+                  <select
+                    value={m.role}
+                    disabled={busy}
+                    onChange={(e) =>
+                      run(() =>
+                        api.updateProjectMemberRole(
+                          projectId,
+                          m.user_id!,
+                          e.target.value,
+                        ),
+                      )
+                    }
+                    className="h-7 rounded-md border bg-background px-1.5 text-xs capitalize"
+                  >
+                    {PROJECT_ROLES.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-[11px] capitalize text-muted-foreground">
+                    {m.role}
+                  </span>
+                )}
+                {canManage && !isSelf && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs text-destructive"
+                    disabled={busy}
+                    onClick={() =>
+                      run(() => api.removeProjectMember(projectId, m.user_id!))
+                    }
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   );
 }
@@ -745,11 +1176,17 @@ function ConnectorsSection() {
 function ConnectorManager({
   scope,
   scopeId,
+  category,
 }: {
   scope: ConnectorScope;
   scopeId: string;
+  category: ConnectorCategory;
 }) {
-  const available = CONNECTOR_REGISTRY.filter((d) => d.scopes.includes(scope));
+  const available = CONNECTOR_REGISTRY.filter(
+    (d) => d.scopes.includes(scope) && d.category === category,
+  );
+  const inCategory = (svc: string) =>
+    CONNECTOR_REGISTRY.find((d) => d.id === svc)?.category === category;
   const [list, setList] = useState<ConnectorView[]>([]);
   const [service, setService] = useState<string>(available[0]?.id ?? "");
   const [values, setValues] = useState<Record<string, string>>({});
@@ -807,11 +1244,21 @@ function ConnectorManager({
   const labelFor = (svc: string) =>
     CONNECTOR_REGISTRY.find((d) => d.id === svc)?.label ?? svc;
 
+  const shown = list.filter((c) => inCategory(c.service));
+
   return (
     <div className="flex flex-col gap-4">
-      {list.length > 0 && (
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        {category === "integrations"
+          ? "Integrations connect agents to your dev and productivity tools."
+          : "Connectors give agents scoped access to external services and APIs."}{" "}
+        Credentials are encrypted and injected as environment variables at
+        session start; project overrides org, which overrides account.
+      </p>
+
+      {shown.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          {list.map((c) => (
+          {shown.map((c) => (
             <div
               key={c.service}
               className="flex items-center justify-between rounded-lg border bg-card px-3 py-2"
@@ -892,140 +1339,6 @@ function ConnectorManager({
   );
 }
 
-type ModelsTab = "account" | "org" | "project";
-
-function ModelsSection() {
-  const { auth, activeCloudOrg } = useAuth();
-  const { workspaces } = useWorkspaces();
-  const [tab, setTab] = useState<ModelsTab>("account");
-  const [workspaceId, setWorkspaceId] = useState<number | null>(null);
-  const [projectId, setProjectId] = useState<string | null>(null);
-  const [projectError, setProjectError] = useState<string | null>(null);
-  const [ensuring, setEnsuring] = useState(false);
-
-  if (!auth) {
-    return (
-      <div className="rounded-xl border border-dashed px-6 py-12 text-center">
-        <p className="text-sm text-muted-foreground">
-          Sign in to manage model API keys.
-        </p>
-      </div>
-    );
-  }
-
-  const selectProject = async (id: number) => {
-    setWorkspaceId(id);
-    setProjectId(null);
-    setProjectError(null);
-    if (!activeCloudOrg) {
-      setProjectError("Select an organization in Account settings first.");
-      return;
-    }
-    setEnsuring(true);
-    try {
-      const pid = await api.ensureWorkspaceProject(id, activeCloudOrg.id);
-      setProjectId(pid);
-    } catch (e) {
-      setProjectError(String(e));
-    } finally {
-      setEnsuring(false);
-    }
-  };
-
-  const tabs: { id: ModelsTab; label: string }[] = [
-    { id: "account", label: "Account" },
-    { id: "org", label: "Organization" },
-    { id: "project", label: "Project" },
-  ];
-
-  return (
-    <div className="flex flex-col gap-5">
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        API keys are encrypted and stored in the cloud. At session start, keys
-        resolve in order: project, then organization, then account, then your
-        workspace .env. Standard provider env vars are injected into the agent.
-      </p>
-
-      <div className="flex gap-1 rounded-lg border bg-card p-1">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              "flex-1 rounded-md px-3 py-1.5 text-[13px] transition-colors",
-              tab === t.id
-                ? "bg-accent font-medium text-accent-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "account" && (
-        <LlmKeyEditor
-          scope="account"
-          scopeId={auth.user.id}
-          description="Personal keys that apply across every organization you belong to."
-        />
-      )}
-
-      {tab === "org" && (
-        activeCloudOrg ? (
-          <LlmKeyEditor
-            scope="org"
-            scopeId={activeCloudOrg.id}
-            description={`Shared keys for everyone in ${activeCloudOrg.name}.`}
-          />
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Select an organization in Account settings first.
-          </p>
-        )
-      )}
-
-      {tab === "project" && (
-        <div className="flex flex-col gap-4">
-          <div>
-            <h3 className="text-sm font-medium">Project</h3>
-            <p className="mb-2 mt-1 text-xs text-muted-foreground">
-              Keys scoped to a single workspace and its client.
-            </p>
-            <select
-              value={workspaceId ?? ""}
-              onChange={(e) => selectProject(Number(e.target.value))}
-              className="h-8 w-full rounded-md border bg-background px-2 text-[13px]"
-            >
-              <option value="" disabled>
-                Select a workspace...
-              </option>
-              {workspaces.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          {ensuring && (
-            <p className="text-xs text-muted-foreground">Linking project...</p>
-          )}
-          {projectError && (
-            <p className="text-xs text-destructive">{projectError}</p>
-          )}
-          {projectId && (
-            <LlmKeyEditor
-              scope="project"
-              scopeId={projectId}
-              description="Per-project keys override organization and account keys."
-            />
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function LlmKeyEditor({
   scope,
   scopeId,
@@ -1097,7 +1410,7 @@ function LlmKeyEditor({
 
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-xs text-muted-foreground">{description}</p>
+      <p className="text-xs leading-relaxed text-muted-foreground">{description}</p>
 
       {keys.length > 0 && (
         <div className="flex flex-col gap-1.5">

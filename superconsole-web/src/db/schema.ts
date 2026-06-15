@@ -30,6 +30,7 @@ export const users = sqliteTable(
     workosId: text("workos_id").notNull(),
     email: text("email").notNull(),
     name: text("name"),
+    logoUrl: text("logo_url"),
     createdAt: createdAt(),
   },
   (t) => [
@@ -42,6 +43,7 @@ export const organizations = sqliteTable("organizations", {
   id: id(),
   name: text("name").notNull(),
   plan: text("plan").notNull().default("free"),
+  logoUrl: text("logo_url"),
   ownerId: text("owner_id")
     .notNull()
     .references(() => users.id, { onDelete: "restrict" }),
@@ -75,6 +77,7 @@ export const projects = sqliteTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     localPathHint: text("local_path_hint"),
+    logoUrl: text("logo_url"),
     createdAt: createdAt(),
   },
   (t) => [index("projects_org_idx").on(t.orgId)],
@@ -183,6 +186,27 @@ export const orgConnectors = sqliteTable(
   (t) => [
     index("org_connectors_org_idx").on(t.orgId),
     uniqueIndex("org_connectors_org_service_unq").on(t.orgId, t.service),
+  ],
+);
+
+export const accountConnectors = sqliteTable(
+  "account_connectors",
+  {
+    id: id(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    service: text("service").notNull(),
+    credentialsEncrypted: text("credentials_encrypted"),
+    status: text("status").notNull().default("disconnected"),
+    connectedBy: text("connected_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("account_connectors_user_idx").on(t.userId),
+    uniqueIndex("account_connectors_user_service_unq").on(t.userId, t.service),
   ],
 );
 

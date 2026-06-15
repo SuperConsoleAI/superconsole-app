@@ -22,6 +22,20 @@
       "when": 1781560000000,
       "tag": "0002_team_invitations",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1781529821561,
+      "tag": "0003_fast_silver_sable",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1781600000000,
+      "tag": "0004_logo_urls",
+      "breakpoints": true
     }
   ]
 }

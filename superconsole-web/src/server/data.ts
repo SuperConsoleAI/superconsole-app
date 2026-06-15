@@ -19,6 +19,7 @@ export interface OrgSummary {
   name: string;
   plan: string;
   role: string;
+  logoUrl: string | null;
 }
 
 export interface ConnectorSummary {
@@ -32,6 +33,7 @@ export interface ProjectSummary {
   id: string;
   name: string;
   localPathHint: string | null;
+  logoUrl: string | null;
   connectors: ConnectorSummary[];
 }
 
@@ -44,6 +46,7 @@ async function loadOrgs(db: Db, userId: string): Promise<OrgSummary[]> {
       name: organizations.name,
       plan: organizations.plan,
       role: orgMembers.role,
+      logoUrl: organizations.logoUrl,
     })
     .from(organizations)
     .innerJoin(orgMembers, eq(orgMembers.orgId, organizations.id))
@@ -119,6 +122,12 @@ export async function ensureUser(user: SessionUser): Promise<string> {
   let userId: string;
   if (existing.length > 0) {
     userId = existing[0].id;
+    if (user.profilePictureUrl) {
+      await db
+        .update(users)
+        .set({ logoUrl: user.profilePictureUrl })
+        .where(eq(users.id, userId));
+    }
   } else {
     userId = ulid();
     const name =
@@ -128,6 +137,7 @@ export async function ensureUser(user: SessionUser): Promise<string> {
       workosId: user.workosId,
       email: user.email,
       name,
+      logoUrl: user.profilePictureUrl ?? null,
     });
   }
 
@@ -148,7 +158,7 @@ export async function ensureUser(user: SessionUser): Promise<string> {
 }
 
 export interface DashboardData {
-  user: { email: string; name: string | null };
+  user: { email: string; name: string | null; logoUrl: string | null };
   orgs: OrgSummary[];
   activeOrg: OrgSummary | null;
   projects: ProjectSummary[];
@@ -163,6 +173,13 @@ export async function loadDashboard(
   const userId = await ensureUser(user);
   const orgs = await loadOrgs(db, userId);
 
+  const userRow = await db
+    .select({ logoUrl: users.logoUrl })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1)
+    .then((rows) => rows[0]);
+
   const activeOrg =
     orgs.find((o) => o.id === requestedOrgId) ?? orgs[0] ?? null;
 
@@ -175,6 +192,7 @@ export async function loadDashboard(
         id: projects.id,
         name: projects.name,
         localPathHint: projects.localPathHint,
+        logoUrl: projects.logoUrl,
       })
       .from(projects)
       .where(eq(projects.orgId, activeOrg.id))
@@ -198,6 +216,7 @@ export async function loadDashboard(
       id: p.id,
       name: p.name,
       localPathHint: p.localPathHint,
+      logoUrl: p.logoUrl,
       connectors: connectorRows
         .filter((c) => c.projectId === p.id)
         .map((c) => ({
@@ -230,7 +249,7 @@ export async function loadDashboard(
     [user.firstName, user.lastName].filter(Boolean).join(" ").trim() || null;
 
   return {
-    user: { email: user.email, name: displayName },
+    user: { email: user.email, name: displayName, logoUrl: userRow?.logoUrl ?? null },
     orgs,
     activeOrg,
     projects: projectList,

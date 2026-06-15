@@ -2,13 +2,18 @@ import { useEffect, useState } from "react";
 import { createServerFn } from "@tanstack/react-start";
 import { redirect } from "@tanstack/react-router";
 import { getSessionUser } from "./server/auth";
+import { errorText } from "./err";
 import {
   deleteConnector,
   listConnectors,
   setConnector,
   type ConnectorView,
 } from "./server/connectors";
-import { CONNECTOR_REGISTRY, type ConnectorScope } from "./connector-registry";
+import {
+  CONNECTOR_REGISTRY,
+  type ConnectorCategory,
+  type ConnectorScope,
+} from "./connector-registry";
 
 const fetchConnectors = createServerFn({ method: "GET" })
   .validator((d: { scope: ConnectorScope; scopeId: string }) => d)
@@ -44,11 +49,18 @@ const removeConnector = createServerFn({ method: "POST" })
 export function ConnectorManager({
   scope,
   scopeId,
+  category,
 }: {
   scope: ConnectorScope;
   scopeId: string;
+  category?: ConnectorCategory;
 }) {
-  const available = CONNECTOR_REGISTRY.filter((d) => d.scopes.includes(scope));
+  const available = CONNECTOR_REGISTRY.filter(
+    (d) => d.scopes.includes(scope) && (!category || d.category === category),
+  );
+  const inCategory = (svc: string) =>
+    !category ||
+    CONNECTOR_REGISTRY.find((d) => d.id === svc)?.category === category;
   const [list, setList] = useState<ConnectorView[]>([]);
   const [service, setService] = useState(available[0]?.id ?? "");
   const [values, setValues] = useState<Record<string, string>>({});
@@ -61,7 +73,7 @@ export function ConnectorManager({
   const reload = () => {
     fetchConnectors({ data: { scope, scopeId } })
       .then(setList)
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(errorText(e)));
   };
 
   useEffect(() => {
@@ -88,7 +100,7 @@ export function ConnectorManager({
       await fn();
       reload();
     } catch (e) {
-      setError(String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -97,12 +109,14 @@ export function ConnectorManager({
   const labelFor = (svc: string) =>
     CONNECTOR_REGISTRY.find((d) => d.id === svc)?.label ?? svc;
 
+  const shown = list.filter((c) => inCategory(c.service));
+
   return (
     <>
-      {list.length > 0 && (
+      {shown.length > 0 && (
         <div className="card">
           <div className="connector-list" style={{ marginTop: 0 }}>
-            {list.map((c) => (
+            {shown.map((c) => (
               <div key={c.service} className="connector-row">
                 <span>
                   {labelFor(c.service)}

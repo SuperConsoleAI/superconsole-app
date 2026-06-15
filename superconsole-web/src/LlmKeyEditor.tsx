@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
-import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { getSessionUser } from "../server/auth";
-import { loadDashboard } from "../server/data";
+import { redirect } from "@tanstack/react-router";
+import { getSessionUser } from "./server/auth";
+import { errorText } from "./err";
 import {
   deleteLlmKey,
   listLlmKeys,
   setLlmKey,
   type LlmKeyRow,
   type LlmScope,
-} from "../server/llm";
+} from "./server/llm";
 
 const PROVIDERS = [
   { id: "anthropic", label: "Anthropic" },
@@ -18,14 +18,6 @@ const PROVIDERS = [
   { id: "openrouter", label: "OpenRouter" },
   { id: "local", label: "Local" },
 ];
-
-const getMeta = createServerFn({ method: "GET" })
-  .validator((orgId: string | undefined) => orgId)
-  .handler(async ({ data }) => {
-    const user = await getSessionUser();
-    if (!user) throw redirect({ to: "/login" });
-    return loadDashboard(user, data);
-  });
 
 const fetchKeys = createServerFn({ method: "GET" })
   .validator((d: { scope: LlmScope; scopeId: string }) => d)
@@ -67,101 +59,13 @@ const removeKey = createServerFn({ method: "POST" })
     await deleteLlmKey(user, data.scope, data.scopeId, data.provider);
   });
 
-export const Route = createFileRoute("/models")({
-  validateSearch: (search: Record<string, unknown>) => ({
-    org: typeof search.org === "string" ? search.org : undefined,
-  }),
-  loaderDeps: ({ search }) => ({ org: search.org }),
-  loader: ({ deps }) => getMeta({ data: deps.org }),
-  component: Models,
-});
-
-type Tab = LlmScope;
-
-function Models() {
-  const data = Route.useLoaderData();
-  const [tab, setTab] = useState<Tab>("account");
-  const [projectId, setProjectId] = useState<string>(
-    data.projects[0]?.id ?? "",
-  );
-
-  const scopeId =
-    tab === "account" ? "" : tab === "org" ? (data.activeOrg?.id ?? "") : projectId;
-
-  return (
-    <div className="shell">
-      <div className="topbar">
-        <span className="brand">SuperConsole</span>
-        <div className="row" style={{ gap: 12 }}>
-          <Link to="/" search={{ org: undefined }} className="btn ghost">
-            Dashboard
-          </Link>
-          <Link to="/logout" className="btn ghost">
-            Sign out
-          </Link>
-        </div>
-      </div>
-
-      <div className="section-title">Model API keys</div>
-      <p className="muted" style={{ fontSize: 13, marginTop: -4 }}>
-        Keys are encrypted before storage. At session start the desktop app
-        resolves them in order: project, then organization, then account, then
-        the workspace .env file.
-      </p>
-
-      <div className="tabs">
-        {(["account", "org", "project"] as Tab[]).map((t) => (
-          <button
-            key={t}
-            className={tab === t ? "active" : ""}
-            onClick={() => setTab(t)}
-          >
-            {t === "account"
-              ? "Account"
-              : t === "org"
-                ? "Organization"
-                : "Project"}
-          </button>
-        ))}
-      </div>
-
-      {tab === "project" && (
-        <div className="card">
-          <div className="field">
-            <label className="muted" style={{ fontSize: 12 }}>
-              Project
-            </label>
-            {data.projects.length === 0 ? (
-              <span className="muted">No projects in this organization yet.</span>
-            ) : (
-              <select
-                className="select"
-                value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-              >
-                {data.projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-        </div>
-      )}
-
-      {tab === "org" && !data.activeOrg ? (
-        <div className="empty">No organization found for this account.</div>
-      ) : tab === "project" && !projectId ? (
-        <div className="empty">Select a project to manage its keys.</div>
-      ) : (
-        <Editor scope={tab} scopeId={scopeId} />
-      )}
-    </div>
-  );
-}
-
-function Editor({ scope, scopeId }: { scope: LlmScope; scopeId: string }) {
+export function LlmKeyEditor({
+  scope,
+  scopeId,
+}: {
+  scope: LlmScope;
+  scopeId: string;
+}) {
   const [keys, setKeys] = useState<LlmKeyRow[]>([]);
   const [provider, setProvider] = useState(PROVIDERS[0].id);
   const [apiKey, setApiKey] = useState("");
@@ -174,7 +78,7 @@ function Editor({ scope, scopeId }: { scope: LlmScope; scopeId: string }) {
   const reload = () => {
     fetchKeys({ data: { scope, scopeId } })
       .then(setKeys)
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(errorText(e)));
   };
 
   useEffect(() => {
@@ -210,7 +114,7 @@ function Editor({ scope, scopeId }: { scope: LlmScope; scopeId: string }) {
       });
       reload();
     } catch (e) {
-      setError(String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -223,7 +127,7 @@ function Editor({ scope, scopeId }: { scope: LlmScope; scopeId: string }) {
       await removeKey({ data: { scope, scopeId, provider: p } });
       reload();
     } catch (e) {
-      setError(String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
