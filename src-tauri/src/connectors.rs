@@ -459,6 +459,122 @@ pub fn connected_services(app: &AppHandle, workspace_id: i64) -> Vec<String> {
     services.iter().map(|s| label_for(s)).collect()
 }
 
+/// Raw service ids connected for the given scopes (project ∪ org ∪ account),
+/// de-duplicated. Cache-only. Used by the MCP tool layer to build the catalog.
+pub fn connected_service_ids(
+    db: &Db,
+    user_id: Option<&str>,
+    org_id: Option<&str>,
+    project_id: Option<&str>,
+) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut push = |service: &str| {
+        if connector_def(service).is_some() && !ids.iter().any(|s| s == service) {
+            ids.push(service.to_string());
+        }
+    };
+    if let Some(uid) = user_id {
+        for c in db.get_cached_connectors("account", uid) {
+            push(&c.service);
+        }
+    }
+    if let Some(oid) = org_id {
+        for c in db.get_cached_connectors("org", oid) {
+            push(&c.service);
+        }
+    }
+    if let Some(pid) = project_id {
+        for c in db.get_cached_connectors("project", pid) {
+            push(&c.service);
+        }
+    }
+    ids
+}
+
+/// Decrypted field map for a single service, applying project → org → account
+/// precedence (project overrides). Cache-only; never touches Turso. Returns
+/// None if the service is not connected for any of the given scopes.
+pub fn resolve_connector_fields(
+    db: &Db,
+    service: &str,
+    user_id: Option<&str>,
+    org_id: Option<&str>,
+    project_id: Option<&str>,
+) -> Option<HashMap<String, String>> {
+    let def = connector_def(service)?;
+    let mut found = false;
+    let mut out: HashMap<String, String> = HashMap::new();
+    let merge = |scope: &str, scope_id: &str, out: &mut HashMap<String, String>, found: &mut bool| {
+        for c in db.get_cached_connectors(scope, scope_id) {
+            if c.service != service {
+                continue;
+            }
+            *found = true;
+            let blob = parse_blob(c.credentials_encrypted.as_deref());
+            for f in def.fields {
+                if let Some(v) = field_string(&blob, f.key) {
+                    out.insert(f.key.to_string(), v);
+                }
+            }
+        }
+    };
+    if let Some(uid) = user_id {
+        merge("account", uid, &mut out, &mut found);
+    }
+    if let Some(oid) = org_id {
+        merge("org", oid, &mut out, &mut found);
+    }
+    if let Some(pid) = project_id {
+        merge("project", pid, &mut out, &mut found);
+    }
+    if found {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceConnector {
+    pub service: String,
+    pub label: String,
+    pub scope: String,
+}
+
+/// Connected connectors for a workspace, grouped by scope, for the jobs
+/// "restrict connectors" panel. Cache-only.
+pub fn workspace_connectors(app: &AppHandle, workspace_id: i64) -> Vec<WorkspaceConnector> {
+    let db = app.state::<Db>();
+    let mut out: Vec<WorkspaceConnector> = Vec::new();
+    let push = |service: &str, scope: &str, out: &mut Vec<WorkspaceConnector>| {
+        if connector_def(service).is_some()
+            && !out.iter().any(|c| c.service == service && c.scope == scope)
+        {
+            out.push(WorkspaceConnector {
+                service: service.to_string(),
+                label: label_for(service),
+                scope: scope.to_string(),
+            });
+        }
+    };
+    if let Some(user_id) = cached_user_id(&db) {
+        for c in db.get_cached_connectors("account", &user_id) {
+            push(&c.service, "account", &mut out);
+        }
+    }
+    if let Some(project_id) = db.get_workspace_project_id(workspace_id) {
+        if let Some(org_id) = db.get_project_org(&project_id) {
+            for c in db.get_cached_connectors("org", &org_id) {
+                push(&c.service, "org", &mut out);
+            }
+        }
+        for c in db.get_cached_connectors("project", &project_id) {
+            push(&c.service, "project", &mut out);
+        }
+    }
+    out
+}
+
 fn label_for(service: &str) -> String {
     let mut out = String::new();
     for (i, part) in service.split('_').enumerate() {

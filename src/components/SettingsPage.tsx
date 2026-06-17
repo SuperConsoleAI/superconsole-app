@@ -43,6 +43,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PresetIcon } from "@/components/PresetIcon";
 import { useTheme } from "@/components/theme-provider";
+import {
+  AccountSkillsSection,
+  OrgSkillsSection,
+  ProjectSkillsSection,
+} from "@/components/SkillsSettings";
 import { useAuth } from "@/lib/auth-context";
 import { useWorkspaces } from "@/lib/workspace-context";
 import { cn } from "@/lib/utils";
@@ -61,13 +66,14 @@ const NAV: Record<TopTab, string[]> = {
     "Appearance",
     "Terminal",
     "Models",
+    "Skills",
     "Integrations",
     "Connectors",
     "Security",
     "Notifications",
   ],
-  org: ["General", "Team", "Models", "Integrations", "Connectors", "Billing"],
-  project: ["General", "Team", "Models", "Integrations", "Connectors", "Automations"],
+  org: ["General", "Team", "Models", "Skills", "Integrations", "Connectors", "Billing"],
+  project: ["General", "Team", "Models", "Skills", "Integrations", "Connectors", "Automations"],
 };
 
 const NAV_ICONS: Record<string, LucideIcon> = {
@@ -75,6 +81,7 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   Appearance: Palette,
   Terminal: Terminal,
   Models: Sparkles,
+  Skills: Sparkles,
   Integrations: Blocks,
   Connectors: Plug,
   Security: Shield,
@@ -218,6 +225,7 @@ export function SettingsPage() {
               <Content
                 tab={tab}
                 section={active}
+                workspaceId={workspaceId}
                 projectId={projectId}
                 projectError={projectError}
                 ensuring={ensuring}
@@ -234,6 +242,7 @@ export function SettingsPage() {
 function Content({
   tab,
   section,
+  workspaceId,
   projectId,
   projectError,
   ensuring,
@@ -241,6 +250,7 @@ function Content({
 }: {
   tab: TopTab;
   section: string;
+  workspaceId: number | null;
   projectId: string | null;
   projectError: string | null;
   ensuring: boolean;
@@ -266,6 +276,8 @@ function Content({
         ) : (
           <SignInPrompt label="manage model keys" />
         );
+      case "Skills":
+        return <AccountSkillsSection />;
       case "Integrations":
         return auth ? (
           <ConnectorManager
@@ -310,6 +322,8 @@ function Content({
             description={`Shared model keys for everyone in ${activeCloudOrg.name}.`}
           />
         );
+      case "Skills":
+        return <OrgSkillsSection orgId={activeCloudOrg.id} />;
       case "Integrations":
         return (
           <ConnectorManager
@@ -353,6 +367,12 @@ function Content({
             scopeId={projectId}
             description="Per-project model keys. These override organisation and account keys."
           />
+        );
+      case "Skills":
+        return workspaceId !== null ? (
+          <ProjectSkillsSection workspaceId={workspaceId} />
+        ) : (
+          <Hint>Select a project to continue.</Hint>
         );
       case "Integrations":
         return (

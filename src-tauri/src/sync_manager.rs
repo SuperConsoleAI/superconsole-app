@@ -11,7 +11,9 @@
 // connectors for those orgs/projects. Sign-out wipes it entirely.
 
 use crate::cloud::{self, cell_opt, cell_text, rows, TursoConfig};
-use crate::db::{CachedConnector, CachedLlmKey, Db};
+use crate::db::{CachedConnector, CachedLlmKey, CachedOrgSkill, CachedSkill, Db};
+use crate::memory;
+use crate::wiki;
 use chrono::Utc;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
@@ -137,6 +139,90 @@ async fn sync_connectors(
     let _ = db.replace_cached_connectors(scope, scope_id, &connectors, synced_at);
 }
 
+// Mirror the Turso project_skill_index (metadata only) into the local
+// skill_index_cache so cross-device skill listings never hit Turso live.
+async fn sync_skills(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &TursoConfig,
+    project_id: &str,
+    synced_at: &str,
+) {
+    let cloud_skills =
+        crate::skills::fetch_cloud_skills(client, cfg, project_id).await;
+    let skills: Vec<CachedSkill> = cloud_skills
+        .into_iter()
+        .map(|(skill_name, tags, scope, active)| CachedSkill {
+            skill_name,
+            tags,
+            scope,
+            active,
+        })
+        .collect();
+    let db = app.state::<Db>();
+    let _ = db.replace_cached_skills(project_id, &skills, synced_at);
+}
+
+// Mirror the Turso org_skill_index (references to global-library skills) into
+// the local org_skill_cache.
+async fn sync_org_skills(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &TursoConfig,
+    org_id: &str,
+    synced_at: &str,
+) {
+    let refs = crate::skills::fetch_cloud_org_skills(client, cfg, org_id).await;
+    let skills: Vec<CachedOrgSkill> = refs
+        .into_iter()
+        .map(|(skill_name, tags)| CachedOrgSkill { skill_name, tags })
+        .collect();
+    let db = app.state::<Db>();
+    let _ = db.replace_cached_org_skills(org_id, &skills, synced_at);
+}
+
+// Mirror the Turso project_memory_index (metadata + summaries) into the local
+// memory_index_cache for cross-device restore.
+async fn sync_memory(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &TursoConfig,
+    project_id: &str,
+    synced_at: &str,
+) {
+    let rows = memory::fetch_cloud_memory(client, cfg, project_id).await;
+    let entries = memory::cached_memory_from(rows);
+    let db = app.state::<Db>();
+    let _ = db.replace_cached_memory(project_id, &entries, synced_at);
+}
+
+// Mirror the Turso wiki_index (full content) into the local wiki_index_cache.
+async fn sync_wiki(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &TursoConfig,
+    project_id: &str,
+    synced_at: &str,
+) {
+    let pages = wiki::fetch_cloud_wiki(client, cfg, project_id).await;
+    let db = app.state::<Db>();
+    let _ = db.replace_cached_wiki(project_id, &pages, synced_at);
+}
+
+// Mirror the Turso org_memory_index (shared facts, content included) into the
+// local org_memory_cache.
+async fn sync_org_memory(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &TursoConfig,
+    org_id: &str,
+    synced_at: &str,
+) {
+    let entries = memory::fetch_cloud_org_memory(client, cfg, org_id).await;
+    let db = app.state::<Db>();
+    let _ = db.replace_cached_org_memory(org_id, &entries, synced_at);
+}
+
 // Fetch the projects inside an org the user belongs to, then sync each
 // project's keys + connectors and record the project -> org mapping.
 async fn sync_org_projects(
@@ -169,6 +255,9 @@ async fn sync_org_projects(
         }
         sync_llm(app, client, cfg, "project", &project_id, synced_at).await;
         sync_connectors(app, client, cfg, "project", &project_id, synced_at).await;
+        sync_skills(app, client, cfg, &project_id, synced_at).await;
+        sync_memory(app, client, cfg, &project_id, synced_at).await;
+        sync_wiki(app, client, cfg, &project_id, synced_at).await;
     }
 }
 
@@ -198,6 +287,8 @@ pub async fn sync_on_startup(app: &AppHandle) {
     for org_id in &org_ids {
         sync_llm(app, &client, &cfg, "org", org_id, &synced_at).await;
         sync_connectors(app, &client, &cfg, "org", org_id, &synced_at).await;
+        sync_org_skills(app, &client, &cfg, org_id, &synced_at).await;
+        sync_org_memory(app, &client, &cfg, org_id, &synced_at).await;
         sync_org_projects(app, &client, &cfg, org_id, &synced_at).await;
     }
 }
@@ -219,11 +310,16 @@ pub async fn sync_on_update(app: &AppHandle, entity_type: &str, id: &str) {
         "org" => {
             sync_llm(app, &client, &cfg, "org", id, &synced_at).await;
             sync_connectors(app, &client, &cfg, "org", id, &synced_at).await;
+            sync_org_skills(app, &client, &cfg, id, &synced_at).await;
+            sync_org_memory(app, &client, &cfg, id, &synced_at).await;
             sync_org_projects(app, &client, &cfg, id, &synced_at).await;
         }
         "project" => {
             sync_llm(app, &client, &cfg, "project", id, &synced_at).await;
             sync_connectors(app, &client, &cfg, "project", id, &synced_at).await;
+            sync_skills(app, &client, &cfg, id, &synced_at).await;
+            sync_memory(app, &client, &cfg, id, &synced_at).await;
+            sync_wiki(app, &client, &cfg, id, &synced_at).await;
         }
         _ => {}
     }

@@ -7,18 +7,24 @@ File index for fast navigation. Read ARCHITECTURE.md first.
 | File | One-liner |
 |------|-----------|
 | `main.rs` | Entry point, calls `superconsole_lib::run()`. Don't touch. |
-| `lib.rs` | All `#[tauri::command]` handlers, plugin registration, app setup (DB init, scheduler/remote spawn). Add new commands here + register in `generate_handler!`. |
-| `db.rs` | SQLite via rusqlite. Schema (workspaces, organizations, jobs, inbox, settings, session_history) + all queries. Migrations are idempotent blocks in `Db::init`. |
-| `pty.rs` | PTY sessions via portable-pty. `SessionManager` map keyed by session id string. CLI presets in `cli_command()` (claude/droid/antigravity/shell). `.env` parsing, context-file detection, output reader thread → `pty-output` events. |
+| `lib.rs` | All `#[tauri::command]` handlers, plugin registration, app setup (DB init, scheduler/remote spawn). Add new commands here + register in `generate_handler!`. Also hosts the `superconsole mcp --session <token>` CLI subcommand that boots `mcp_server.rs`. |
+| `db.rs` | SQLite via rusqlite. Schema (workspaces, organizations, jobs, inbox, settings, session_history, chat_messages, chat_threads, skills/memory/wiki caches) + all queries. Migrations are idempotent blocks in `Db::init`. |
+| `pty.rs` | PTY sessions via portable-pty. `SessionManager` map keyed by session id string. CLI presets in `cli_command(cli, workspace, resume_id)` (claude/droid/codex/antigravity/shell) incl. per-CLI resume flags. `.env` parsing, context-file detection, output reader thread → `pty-output` events. |
 | `files.rs` | Workspace-sandboxed file ops (list/read/write/create/delete). `resolve()` is the path-safety gate — never bypass it. |
-| `scheduler.rs` | Cron parsing (`next_run`), 30s tick loop (`spawn`), `exec_in_workspace` = the ONE headless executor (scheduler + HTTP + Telegram all use it). |
+| `scheduler.rs` | Cron parsing (`next_run`), 30s tick loop (`spawn`), `exec_in_workspace` = the ONE headless executor (scheduler + HTTP + Telegram all use it). Branches on job `run_mode` (cli print-mode vs chat one-shot) and `job_command()` builds the CLI line (incl. `codex exec`). |
+| `cli_sessions.rs` | Reads native CLI transcripts off disk (Claude `~/.claude/projects/<enc>`, Droid `~/.factory/sessions/<enc>`, Codex `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filtered by recorded `cwd`). `list_sessions`/`read_session`; security-gated to `~/.claude`, `~/.factory`, `~/.antigravity`, `~/.codex`. |
 | `remote.rs` | Telegram long-poll bot (`spawn_telegram`), local tiny_http server (`spawn_http`), `ensure_api_token`, `notify_telegram`. |
 | `auth.rs` | WorkOS loopback OAuth (`127.0.0.1:4666`), keychain session storage, `upsert_user_and_orgs` + `accept_pending_invitations` to Turso. |
 | `cloud.rs` | Turso HTTP exec helper: `turso_config`, `turso_execute`, `rows`, `cell_text`, `cell_opt`. All cloud SQL goes through here. |
 | `crypto.rs` | AES-256-GCM encrypt/decrypt; HKDF key from `WORKOS_COOKIE_PASSWORD`, cached in keychain. Mirrors web `crypto.ts`. |
 | `sync_manager.rs` | Pulls Turso config into local `*_cache` tables (startup/manual/org-switch/30min tick) + `sync_on_update`. PTY/chat read cache only. |
-| `llm.rs` | LLM key CRUD per scope (account/org/project), `ensure_workspace_project` (locked + idempotent), `session_env` resolution, provider streaming adapters. |
-| `chat.rs` | Native chat: streams tokens via `chat-*` events through Anthropic/OpenAI-compatible/Gemini adapters; system prompt from context files + connected services. |
+| `llm.rs` | LLM key CRUD per scope (account/org/project), `ensure_workspace_project` (locked + idempotent), `session_env` resolution, provider streaming adapters, `one_shot_completion` (non-streaming, used by chat-mode jobs). |
+| `chat.rs` | Native chat: streams tokens via `chat-*` events through Anthropic/OpenAI-compatible/Gemini adapters; system prompt from context files + connected services + skills/memory/wiki; runs a native tool-calling loop via `mcp::execute`. |
+| `mcp.rs` | In-process MCP tool layer: `ToolCtx` (+ AES-encrypted session token, 30-day TTL), `ToolSpec` registry (always-loaded + context tools + generic `connector_request`), BM25-lite tool search, `execute`, `native_ctx`. `write_mcp_config`/`ensure_mcp_config` auto-write + pre-approve the `superconsole` server for Claude (`.mcp.json`) and Droid (`.factory/mcp.json`). |
+| `mcp_server.rs` | stdio JSON-RPC MCP server (launched by `superconsole mcp --session <token>`); proxies tool calls into `mcp::execute`. |
+| `skills.rs` | Skills registry CRUD (phase 18); local cache + Turso sync; injected into chat/CLI system prompt. |
+| `memory.rs` | Long-term memory CRUD (phase 19); local cache + Turso sync; injected into system prompt. |
+| `wiki.rs` | Project wiki CRUD (phase 20); local cache + Turso sync; injected into system prompt. |
 | `team.rs` | Org + project membership and invitation CRUD; permission checks (owner/admin manage, last-owner guard, members must be org members). |
 | `connectors.rs` | Connector `REGISTRY` (fields + env mapping), encrypted-blob CRUD, `session_env` injection (project>org + telegram fallback), `connected_services`. |
 
@@ -46,8 +52,9 @@ Config: `tauri.conf.json` (window/titlebar/updater/bundle), `capabilities/defaul
 | `components/FilePanel.tsx` | Lazy file tree, create/delete, 4s auto-refresh. |
 | `components/FileEditor.tsx` | Textarea editor + markdown preview, Cmd+S save. |
 | `components/InboxView.tsx` | Inbox feed, markdown output, approve/reject flow. |
-| `components/TasksView.tsx` | Org-wide job list (toggle/run/delete). |
-| `components/JobsDialog.tsx` | Per-workspace job CRUD + schedule presets + recent session history. |
+| `components/TasksView.tsx` | Org-wide job list (toggle/run/delete), redesigned for run modes + triggers. |
+| `components/JobsDialog.tsx` | Per-workspace job CRUD: run mode (cli/chat), trigger (cron/api/github), allowed connectors, schedule presets + recent session history. |
+| `components/SessionsView.tsx` | History page: CLI tab (session_history + native on-disk sessions per CLI, Open=resume in a new tab, three-dot Delete) and Chat tab (one thread per project, provider icon + model badge, star/rename/move/delete). |
 | `components/SettingsPage.tsx` | /settings page: section nav; Account/Security, General (updates), Appearance, Integrations (Telegram), API Keys (HTTP), Models (LLM keys), Teams, Connectors. Large file — sections are co-located components. |
 | `components/AddWorkspaceDialog.tsx` | Folder picker + name + CLI choice. |
 | `components/PresetIcon.tsx` | Theme-aware CLI brand icon (falls back to terminal glyph). |
@@ -64,7 +71,9 @@ Config: `tauri.conf.json` (window/titlebar/updater/bundle), `capabilities/defaul
 
 - New backend capability → command in `lib.rs` → wrapper in `api.ts` → component.
 - New route/panel → `router.tsx` route tree + Sidebar/TopBar nav.
-- New CLI preset → `pty.rs::cli_command` + `scheduler.rs::job_command` + `CLI_PRESETS` in `api.ts` + icon in preset-icons.
+- New CLI preset → `pty.rs::cli_command` (+ resume flag) + `scheduler.rs::job_command` + `CLI_PRESETS` in `api.ts` + icon in preset-icons. Native session read/resume → `cli_sessions.rs` (encoding + dir layout).
+- New MCP tool → add a `ToolSpec` in `mcp.rs` (always-loaded vs context-gated); it is exposed to both native chat (`mcp::execute`) and the stdio server (`mcp_server.rs`).
+- New skill/memory/wiki capability → CRUD in `skills.rs`/`memory.rs`/`wiki.rs` + Turso Drizzle migration + system-prompt injection + TopBar dialog.
 - Schema change (local) → idempotent migration in `db.rs::Db::init`.
 - Schema change (cloud) → Drizzle migration in `superconsole-web/drizzle/` (+ journal) and a matching idempotent `ensure_*` in the relevant Rust module.
 - New connector/LLM provider → mirror in `connectors.rs`/`llm.rs`, `src/lib/api.ts`, and `superconsole-web/src/connector-registry.ts`.

@@ -285,3 +285,100 @@ export const orgSettings = sqliteTable(
   },
   (t) => [primaryKey({ columns: [t.orgId, t.key] })],
 );
+
+// Phase 18 — Skills. Metadata only; skill content lives in workspace files
+// (.superconsole/skills/*.md) on disk and is never stored in the DB.
+export const projectSkillIndex = sqliteTable(
+  "project_skill_index",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    skillName: text("skill_name").notNull(),
+    tags: text("tags"),
+    scope: text("scope").notNull().default("project"),
+    active: text("active").notNull().default("1"),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("project_skill_index_project_idx").on(t.projectId),
+    uniqueIndex("project_skill_index_unq").on(t.projectId, t.skillName),
+  ],
+);
+
+export const orgSkillIndex = sqliteTable(
+  "org_skill_index",
+  {
+    id: id(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    skillName: text("skill_name").notNull(),
+    tags: text("tags"),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("org_skill_index_org_idx").on(t.orgId),
+    uniqueIndex("org_skill_index_unq").on(t.orgId, t.skillName),
+  ],
+);
+
+export const projectMemoryIndex = sqliteTable(
+  "project_memory_index",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    category: text("category").notNull(),
+    slug: text("slug").notNull(),
+    title: text("title"),
+    summary: text("summary"),
+    tags: text("tags"),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("project_memory_index_project_idx").on(t.projectId),
+    uniqueIndex("project_memory_index_unq").on(t.projectId, t.category, t.slug),
+  ],
+);
+
+export const orgMemoryIndex = sqliteTable(
+  "org_memory_index",
+  {
+    id: id(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    slug: text("slug").notNull(),
+    title: text("title"),
+    body: text("body"),
+    tags: text("tags"),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("org_memory_index_org_idx").on(t.orgId),
+    uniqueIndex("org_memory_index_unq").on(t.orgId, t.slug),
+  ],
+);
+
+export const wikiIndex = sqliteTable(
+  "wiki_index",
+  {
+    id: id(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    slug: text("slug").notNull(),
+    title: text("title"),
+    summary: text("summary"),
+    tags: text("tags"),
+    content: text("content"),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("wiki_index_project_idx").on(t.projectId),
+    uniqueIndex("wiki_index_unq").on(t.projectId, t.slug),
+  ],
+);

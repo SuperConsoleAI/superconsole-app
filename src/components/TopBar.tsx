@@ -1,19 +1,25 @@
 import { useState } from "react";
 import { useRouter } from "@tanstack/react-router";
 import {
+  Brain,
   CalendarClock,
   ChevronLeft,
   ChevronRight,
+  Folder,
   FolderOpen,
-  FolderTree,
+  Library,
   Moon,
   PanelLeft,
+  ScrollText,
   Sun,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useTheme } from "@/components/theme-provider";
 import { JobsDialog } from "@/components/JobsDialog";
+import { SkillsDialog } from "@/components/SkillsDialog";
+import { MemoryDialog } from "@/components/MemoryDialog";
+import { WikiDialog } from "@/components/WikiDialog";
 import { type Workspace } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +41,9 @@ export function TopBar({
   const { theme, setTheme } = useTheme();
   const router = useRouter();
   const [jobsOpen, setJobsOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [wikiOpen, setWikiOpen] = useState(false);
 
   return (
     <header
@@ -49,7 +58,7 @@ export function TopBar({
             className={cn("h-7 w-7", !sidebarOpen && "text-primary")}
             onClick={onToggleSidebar}
           >
-            <PanelLeft className="h-4 w-4" />
+            <PanelLeft className="h-4 w-4" strokeWidth={1} />
           </Button>
         </TooltipTrigger>
         <TooltipContent>{sidebarOpen ? "Hide sidebar" : "Show sidebar"}</TooltipContent>
@@ -61,7 +70,7 @@ export function TopBar({
         className="h-7 w-7"
         onClick={() => router.history.back()}
       >
-        <ChevronLeft className="h-4 w-4" />
+        <ChevronLeft className="h-4 w-4" strokeWidth={1} />
       </Button>
       <Button
         variant="ghost"
@@ -69,14 +78,14 @@ export function TopBar({
         className="h-7 w-7"
         onClick={() => router.history.forward()}
       >
-        <ChevronRight className="h-4 w-4" />
+        <ChevronRight className="h-4 w-4" strokeWidth={1} />
       </Button>
 
       {workspace && (
         <Tooltip>
           <TooltipTrigger asChild>
             <div className="ml-1 flex min-w-0 cursor-default items-center gap-1.5">
-              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
+              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" strokeWidth={1} />
               <span className="truncate text-[13px] font-medium">{workspace.name}</span>
             </div>
           </TooltipTrigger>
@@ -93,9 +102,51 @@ export function TopBar({
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7"
+                  onClick={() => setSkillsOpen(true)}
+                >
+                  <ScrollText className="h-4 w-4" strokeWidth={1} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Skills</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setMemoryOpen(true)}
+                >
+                  <Brain className="h-4 w-4" strokeWidth={1} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Memory</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setWikiOpen(true)}
+                >
+                  <Library className="h-4 w-4" strokeWidth={1} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Wiki</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
                   onClick={() => setJobsOpen(true)}
                 >
-                  <CalendarClock className="h-4 w-4" />
+                  <CalendarClock className="h-4 w-4" strokeWidth={1} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Scheduled jobs</TooltipContent>
@@ -109,7 +160,7 @@ export function TopBar({
                   className={cn("h-7 w-7", filesOpen && "text-primary")}
                   onClick={onToggleFiles}
                 >
-                  <FolderTree className="h-4 w-4" />
+                  <Folder className="h-4 w-4" strokeWidth={1} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Files</TooltipContent>
@@ -123,12 +174,33 @@ export function TopBar({
           className="h-7 w-7"
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
         >
-          {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          {theme === "dark" ? (
+            <Sun className="h-4 w-4" strokeWidth={1} />
+          ) : (
+            <Moon className="h-4 w-4" strokeWidth={1} />
+          )}
         </Button>
       </div>
 
       {workspace && (
-        <JobsDialog workspaceId={workspace.id} open={jobsOpen} onOpenChange={setJobsOpen} />
+        <>
+          <JobsDialog workspaceId={workspace.id} open={jobsOpen} onOpenChange={setJobsOpen} />
+          <SkillsDialog
+            workspaceId={workspace.id}
+            open={skillsOpen}
+            onOpenChange={setSkillsOpen}
+          />
+          <MemoryDialog
+            workspaceId={workspace.id}
+            open={memoryOpen}
+            onOpenChange={setMemoryOpen}
+          />
+          <WikiDialog
+            workspaceId={workspace.id}
+            open={wikiOpen}
+            onOpenChange={setWikiOpen}
+          />
+        </>
       )}
     </header>
   );

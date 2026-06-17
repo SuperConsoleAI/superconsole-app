@@ -24,6 +24,7 @@ import { FileEditor } from "@/components/FileEditor";
 import { AddWorkspaceDialog } from "@/components/AddWorkspaceDialog";
 import { SettingsPage } from "@/components/SettingsPage";
 import { TasksView } from "@/components/TasksView";
+import { SessionsView } from "@/components/SessionsView";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -79,6 +80,7 @@ function Shell() {
 
   const inboxActive = !!matchRoute({ to: "/inbox" });
   const tasksActive = !!matchRoute({ to: "/tasks" });
+  const sessionsActive = !!matchRoute({ to: "/sessions" });
   const settingsActive = !!matchRoute({ to: "/settings" });
 
   const activeId = params.workspaceId ? Number(params.workspaceId) : null;
@@ -87,6 +89,12 @@ function Shell() {
   const activeTabId = activeId !== null ? (activeTabByWs[activeId] ?? "") : "";
   const openedFile = search.file ?? null;
   const filesOpen = search.files ?? false;
+
+  useEffect(() => {
+    if (activeId !== null) {
+      api.ensureMcpConfig(activeId).catch(() => {});
+    }
+  }, [activeId]);
 
   const goToWorkspace = (id: number, extra?: Partial<WorkspaceSearch>) => {
     const ws = workspaces.find((w) => w.id === id);
@@ -145,6 +153,7 @@ function Shell() {
             unreadCount={unread}
             inboxActive={inboxActive}
             tasksActive={tasksActive}
+            sessionsActive={sessionsActive}
             onOrgChange={(id) => {
               setActiveOrgId(id);
               navigate({ to: "/" });
@@ -155,6 +164,7 @@ function Shell() {
             onRemove={handleRemove}
             onInbox={() => navigate({ to: "/inbox" })}
             onTasks={() => navigate({ to: "/tasks" })}
+            onSessions={() => navigate({ to: "/sessions" })}
             onSettings={() => navigate({ to: "/settings" })}
           />
         ) : (
@@ -165,12 +175,14 @@ function Shell() {
             unreadCount={unread}
             inboxActive={inboxActive}
             tasksActive={tasksActive}
+            sessionsActive={sessionsActive}
             orgName={organizations.find((o) => o.id === activeOrgId)?.name ?? "Personal"}
             onExpand={() => setSidebarOpen(true)}
             onSelect={(id) => goToWorkspace(id)}
             onAdd={() => setAddOpen(true)}
             onInbox={() => navigate({ to: "/inbox" })}
             onTasks={() => navigate({ to: "/tasks" })}
+            onSessions={() => navigate({ to: "/sessions" })}
             onSettings={() => navigate({ to: "/settings" })}
           />
         )}
@@ -381,6 +393,46 @@ const tasksRoute = createRoute({
   component: TasksRoute,
 });
 
+function SessionsRoute() {
+  const { workspaces, organizations, activeOrgId, openedIds, openTab, openResumeTab, openWorkspace } =
+    useWorkspaces();
+  const navigate = useNavigate();
+  const lastProjectId = openedIds.length ? openedIds[openedIds.length - 1] : null;
+  return (
+    <div className="absolute inset-0 bg-background">
+      <SessionsView
+        workspaces={workspaces}
+        organizations={organizations}
+        activeOrgId={activeOrgId}
+        lastProjectId={lastProjectId}
+        onOpenChat={(id) => {
+          openTab(id, "chat");
+          navigate({
+            to: "/workspace/$workspaceId",
+            params: { workspaceId: String(id) },
+            search: {},
+          });
+        }}
+        onResume={(workspaceId, cli, sessionId) => {
+          openWorkspace(workspaceId, cli);
+          openResumeTab(workspaceId, cli, sessionId);
+          navigate({
+            to: "/workspace/$workspaceId",
+            params: { workspaceId: String(workspaceId) },
+            search: {},
+          });
+        }}
+      />
+    </div>
+  );
+}
+
+const sessionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "sessions",
+  component: SessionsRoute,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "settings",
@@ -405,6 +457,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   inboxRoute,
   tasksRoute,
+  sessionsRoute,
   settingsRoute,
   workspaceRoute,
 ]);

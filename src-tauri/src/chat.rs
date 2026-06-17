@@ -38,7 +38,7 @@ struct ChatError {
 
 const SYSTEM_PROMPT_FILES: &[&str] = &["CLAUDE.md", "brand-voice.md", "HEARTBEAT.md"];
 
-fn build_system_prompt(app: &AppHandle, workspace_id: i64) -> String {
+pub(crate) fn build_system_prompt(app: &AppHandle, workspace_id: i64) -> String {
     let path = {
         let db = app.state::<Db>();
         db.get_workspace(workspace_id).ok().map(|w| w.path)
@@ -67,6 +67,37 @@ fn build_system_prompt(app: &AppHandle, workspace_id: i64) -> String {
              Tell the user when a task can use one of these connected tools.",
             services.join(", ")
         ));
+    }
+
+    let skills = crate::skills::active_skills(app, workspace_id);
+    if !skills.is_empty() {
+        let list = skills
+            .iter()
+            .map(|(name, desc)| {
+                if desc.is_empty() {
+                    format!("- {}", name)
+                } else {
+                    format!("- {}: {}", name, desc)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        sections.push(format!(
+            "# Skills available\n\nThe following skills are active for this project. Each is a reusable \
+             instruction set. Only the names and descriptions are listed here; ask the user to run a \
+             skill (e.g. /{}) to load its full instructions on demand.\n\n{}",
+            skills[0].0, list
+        ));
+    }
+
+    let memory = crate::memory::memory_context(app, workspace_id);
+    if !memory.is_empty() {
+        sections.push(memory);
+    }
+
+    let wiki = crate::wiki::wiki_context(app, workspace_id);
+    if !wiki.is_empty() {
+        sections.push(wiki);
     }
 
     sections.join("\n\n---\n\n")
@@ -102,18 +133,25 @@ pub async fn chat_send(
 
     let system = build_system_prompt(&app, workspace_id);
 
-    if let Err(e) = stream(
-        &app,
-        &request_id,
-        &provider,
-        &model,
-        &system,
-        &messages,
-        key.as_deref(),
-        base_url.as_deref(),
-    )
-    .await
-    {
+    // Tool-calling is supported for Anthropic + OpenAI-compatible cloud
+    // providers. Gemini and local keep plain text streaming.
+    let ctx = crate::mcp::native_ctx(&app, workspace_id);
+    let tools_supported = matches!(provider.as_str(), "anthropic" | "openai" | "openrouter");
+    let result = if let (true, Some(ctx)) = (tools_supported, ctx) {
+        run_tool_loop(
+            &app, &request_id, &provider, &model, &system, &messages, key.as_deref(),
+            base_url.as_deref(), &ctx,
+        )
+        .await
+    } else {
+        stream(
+            &app, &request_id, &provider, &model, &system, &messages, key.as_deref(),
+            base_url.as_deref(),
+        )
+        .await
+    };
+
+    if let Err(e) = result {
         let _ = app.emit(
             "chat-error",
             ChatError {
@@ -125,6 +163,120 @@ pub async fn chat_send(
     }
 
     let _ = app.emit("chat-done", ChatSignal { request_id });
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct ToolCall {
+    id: String,
+    name: String,
+    args: String,
+}
+
+struct TurnResult {
+    text: String,
+    tool_calls: Vec<ToolCall>,
+}
+
+const MAX_TOOL_ITERS: usize = 8;
+
+/// Multi-turn loop: stream a turn, execute any tool calls with project-scoped
+/// credentials, append the results, and continue until the model stops calling
+/// tools. Text is streamed to the UI live via chat-token events throughout.
+#[allow(clippy::too_many_arguments)]
+async fn run_tool_loop(
+    app: &AppHandle,
+    request_id: &str,
+    provider: &str,
+    model: &str,
+    system: &str,
+    init: &[ChatMsg],
+    key: Option<&str>,
+    base_url: Option<&str>,
+    ctx: &crate::mcp::ToolCtx,
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let anthropic = provider == "anthropic";
+
+    let cw = crate::mcp::context_window(model);
+    let (specs, _bridge) = {
+        let db = app.state::<Db>();
+        crate::mcp::exposed_specs(&db, ctx, cw)
+    };
+    let tools: Vec<Value> = if anthropic {
+        specs.iter().map(|s| s.to_anthropic()).collect()
+    } else {
+        specs.iter().map(|s| s.to_openai()).collect()
+    };
+
+    // Provider-shaped running message history.
+    let mut messages: Vec<Value> = init
+        .iter()
+        .map(|m| json!({ "role": m.role, "content": m.content }))
+        .collect();
+
+    for _ in 0..MAX_TOOL_ITERS {
+        let req = build_turn_request(
+            &client, provider, model, system, &messages, &tools, key, base_url,
+        )?;
+        let resp = req.send().await.map_err(|e| format!("request failed: {}", e))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("{} — {}", status, truncate(&body, 500)));
+        }
+        let turn = collect_turn(provider, resp, app, request_id).await?;
+
+        if turn.tool_calls.is_empty() {
+            return Ok(());
+        }
+
+        // Execute tools and append assistant + result messages.
+        let mut results: Vec<(ToolCall, String)> = Vec::new();
+        for call in &turn.tool_calls {
+            let args: Value = serde_json::from_str(&call.args).unwrap_or_else(|_| json!({}));
+            let out = {
+                let db = app.state::<Db>();
+                crate::mcp::execute(&db, ctx, &call.name, args).await
+            };
+            let text = match out {
+                Ok(v) => v.to_string(),
+                Err(e) => json!({ "error": e }).to_string(),
+            };
+            results.push((call.clone(), text));
+        }
+
+        if anthropic {
+            let mut content: Vec<Value> = Vec::new();
+            if !turn.text.is_empty() {
+                content.push(json!({"type": "text", "text": turn.text}));
+            }
+            for call in &turn.tool_calls {
+                let input: Value = serde_json::from_str(&call.args).unwrap_or_else(|_| json!({}));
+                content.push(json!({"type": "tool_use", "id": call.id, "name": call.name, "input": input}));
+            }
+            messages.push(json!({"role": "assistant", "content": content}));
+            let result_blocks: Vec<Value> = results
+                .iter()
+                .map(|(c, t)| json!({"type": "tool_result", "tool_use_id": c.id, "content": t}))
+                .collect();
+            messages.push(json!({"role": "user", "content": result_blocks}));
+        } else {
+            let tool_calls: Vec<Value> = turn
+                .tool_calls
+                .iter()
+                .map(|c| json!({"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.args}}))
+                .collect();
+            messages.push(json!({
+                "role": "assistant",
+                "content": if turn.text.is_empty() { Value::Null } else { json!(turn.text) },
+                "tool_calls": tool_calls
+            }));
+            for (c, t) in &results {
+                messages.push(json!({"role": "tool", "tool_call_id": c.id, "content": t}));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -307,4 +459,189 @@ fn build_request(
             Ok(rb)
         }
     }
+}
+
+// --- tool-aware request + streaming collectors ---
+
+#[allow(clippy::too_many_arguments)]
+fn build_turn_request(
+    client: &reqwest::Client,
+    provider: &str,
+    model: &str,
+    system: &str,
+    messages: &[Value],
+    tools: &[Value],
+    key: Option<&str>,
+    base_url: Option<&str>,
+) -> Result<reqwest::RequestBuilder, String> {
+    if provider == "anthropic" {
+        let base = base_url.unwrap_or("https://api.anthropic.com");
+        let url = format!("{}/v1/messages", base.trim_end_matches('/'));
+        let mut body = json!({
+            "model": model,
+            "max_tokens": 4096,
+            "stream": true,
+            "messages": messages,
+        });
+        if !system.is_empty() {
+            body["system"] = json!(system);
+        }
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+        }
+        Ok(client
+            .post(url)
+            .header("x-api-key", key.unwrap_or(""))
+            .header("anthropic-version", "2023-06-01")
+            .json(&body))
+    } else {
+        let default = match provider {
+            "openrouter" => "https://openrouter.ai/api/v1",
+            _ => "https://api.openai.com/v1",
+        };
+        let base = base_url.unwrap_or(default);
+        let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+        let mut msgs: Vec<Value> = Vec::new();
+        if !system.is_empty() {
+            msgs.push(json!({ "role": "system", "content": system }));
+        }
+        msgs.extend(messages.iter().cloned());
+        let mut body = json!({ "model": model, "messages": msgs, "stream": true });
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+        }
+        let mut rb = client.post(url).json(&body);
+        if let Some(k) = key {
+            if !k.is_empty() {
+                rb = rb.bearer_auth(k);
+            }
+        }
+        if provider == "openrouter" {
+            rb = rb.header("X-Title", "SuperConsole");
+        }
+        Ok(rb)
+    }
+}
+
+/// Stream one turn, emitting text tokens live and accumulating any tool calls.
+async fn collect_turn(
+    provider: &str,
+    resp: reqwest::Response,
+    app: &AppHandle,
+    request_id: &str,
+) -> Result<TurnResult, String> {
+    let mut resp = resp;
+    let mut buffer = String::new();
+    let mut text = String::new();
+    // Keyed by streaming block/tool index.
+    let mut tools: std::collections::BTreeMap<i64, (String, String, String)> =
+        std::collections::BTreeMap::new();
+
+    let emit = |t: &str| {
+        if !t.is_empty() {
+            let _ = app.emit(
+                "chat-token",
+                ChatToken { request_id: request_id.to_string(), content: t.to_string() },
+            );
+        }
+    };
+
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(pos) = buffer.find('\n') {
+            let line: String = buffer.drain(..=pos).collect();
+            let line = line.trim_end_matches(['\r', '\n']);
+            let Some(payload) = line.strip_prefix("data:").map(|s| s.trim()) else {
+                continue;
+            };
+            if payload.is_empty() {
+                continue;
+            }
+            if payload == "[DONE]" {
+                return Ok(TurnResult { text, tool_calls: finalize(tools) });
+            }
+            let Ok(v) = serde_json::from_str::<Value>(payload) else {
+                continue;
+            };
+            if provider == "anthropic" {
+                match v["type"].as_str() {
+                    Some("content_block_start") => {
+                        let idx = v["index"].as_i64().unwrap_or(0);
+                        let block = &v["content_block"];
+                        if block["type"] == "tool_use" {
+                            tools.insert(
+                                idx,
+                                (
+                                    block["id"].as_str().unwrap_or("").to_string(),
+                                    block["name"].as_str().unwrap_or("").to_string(),
+                                    String::new(),
+                                ),
+                            );
+                        }
+                    }
+                    Some("content_block_delta") => {
+                        let idx = v["index"].as_i64().unwrap_or(0);
+                        match v["delta"]["type"].as_str() {
+                            Some("text_delta") => {
+                                let t = v["delta"]["text"].as_str().unwrap_or("");
+                                text.push_str(t);
+                                emit(t);
+                            }
+                            Some("input_json_delta") => {
+                                if let Some(e) = tools.get_mut(&idx) {
+                                    e.2.push_str(v["delta"]["partial_json"].as_str().unwrap_or(""));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some("message_stop") => {
+                        return Ok(TurnResult { text, tool_calls: finalize(tools) });
+                    }
+                    _ => {}
+                }
+            } else {
+                let delta = &v["choices"][0]["delta"];
+                if let Some(t) = delta["content"].as_str() {
+                    text.push_str(t);
+                    emit(t);
+                }
+                if let Some(calls) = delta["tool_calls"].as_array() {
+                    for c in calls {
+                        let idx = c["index"].as_i64().unwrap_or(0);
+                        let entry = tools.entry(idx).or_insert((String::new(), String::new(), String::new()));
+                        if let Some(id) = c["id"].as_str() {
+                            if !id.is_empty() {
+                                entry.0 = id.to_string();
+                            }
+                        }
+                        if let Some(n) = c["function"]["name"].as_str() {
+                            if !n.is_empty() {
+                                entry.1 = n.to_string();
+                            }
+                        }
+                        if let Some(a) = c["function"]["arguments"].as_str() {
+                            entry.2.push_str(a);
+                        }
+                    }
+                }
+                if v["choices"][0]["finish_reason"].is_string() {
+                    return Ok(TurnResult { text, tool_calls: finalize(tools) });
+                }
+            }
+        }
+    }
+    Ok(TurnResult { text, tool_calls: finalize(tools) })
+}
+
+fn finalize(tools: std::collections::BTreeMap<i64, (String, String, String)>) -> Vec<ToolCall> {
+    tools
+        .into_values()
+        .filter(|(_, name, _)| !name.is_empty())
+        .map(|(id, name, args)| ToolCall {
+            id,
+            name,
+            args: if args.trim().is_empty() { "{}".into() } else { args },
+        })
+        .collect()
 }

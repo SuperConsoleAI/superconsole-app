@@ -81,7 +81,7 @@ pub fn parse_env_file(path: &Path) -> Vec<(String, String)> {
 
 const CONTEXT_FILE_CANDIDATES: &[&str] = &["CLAUDE.md", "README.md", "AGENTS.md", "HEARTBEAT.md"];
 
-pub fn cli_command(cli: &str, workspace: &Path) -> CommandBuilder {
+pub fn cli_command(cli: &str, workspace: &Path, resume_id: Option<&str>) -> CommandBuilder {
     let mut cmd = match cli {
         "claude" => {
             let mut c = CommandBuilder::new("claude");
@@ -94,10 +94,29 @@ pub fn cli_command(cli: &str, workspace: &Path) -> CommandBuilder {
                     c.arg(format!("Project README.md context:\n\n{}", truncated));
                 }
             }
+            if let Some(id) = resume_id {
+                c.arg("--resume");
+                c.arg(id);
+            }
             c
         }
-        "droid" => CommandBuilder::new("droid"),
+        "droid" => {
+            let mut c = CommandBuilder::new("droid");
+            if let Some(id) = resume_id {
+                c.arg("--resume");
+                c.arg(id);
+            }
+            c
+        }
         "antigravity" => CommandBuilder::new("agy"),
+        "codex" => {
+            let mut c = CommandBuilder::new("codex");
+            if let Some(id) = resume_id {
+                c.arg("resume");
+                c.arg(id);
+            }
+            c
+        }
         "shell" => {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
             let mut c = CommandBuilder::new(shell);
@@ -122,6 +141,7 @@ pub fn start_session(
     cols: u16,
     llm_env: &[(String, String)],
     key_providers: &[String],
+    resume_id: Option<&str>,
 ) -> Result<SessionInfo, String> {
     let workspace = Path::new(workspace_path);
     let info = SessionInfo {
@@ -149,7 +169,7 @@ pub fn start_session(
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = cli_command(cli, workspace);
+    let mut cmd = cli_command(cli, workspace, resume_id);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
 

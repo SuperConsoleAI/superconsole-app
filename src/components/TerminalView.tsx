@@ -50,6 +50,7 @@ export function TerminalView({
         tab.cli,
         term.rows,
         term.cols,
+        tab.resumeId,
       );
       onSessionInfo(tab.id, info);
       onSessionState(tab.id, true);

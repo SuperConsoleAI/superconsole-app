@@ -421,3 +421,110 @@ pub fn session_env(app: &AppHandle, workspace_id: i64) -> SessionEnv {
 
     SessionEnv { env, providers }
 }
+
+/// Headless, non-streaming single completion. Shared by the scheduler's chat
+/// run mode. Resolves the same project > org > account credentials as chat.rs
+/// and returns the full assistant text. No tool calls (jobs are deterministic).
+pub async fn one_shot_completion(
+    app: &AppHandle,
+    workspace_id: i64,
+    provider: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+) -> Result<String, String> {
+    use serde_json::{json, Value};
+
+    let creds = resolve_provider_credentials(app, workspace_id, provider);
+    let key = creds.as_ref().and_then(|c| c.api_key.clone());
+    let base_url = creds.as_ref().and_then(|c| c.base_url.clone());
+    if provider != "local" && key.is_none() {
+        return Err("No API key configured for this provider".into());
+    }
+
+    let client = reqwest::Client::new();
+    let req = match provider {
+        "anthropic" => {
+            let base = base_url.as_deref().unwrap_or("https://api.anthropic.com");
+            let url = format!("{}/v1/messages", base.trim_end_matches('/'));
+            let mut body = json!({
+                "model": model,
+                "max_tokens": 4096,
+                "messages": [{ "role": "user", "content": user }],
+            });
+            if !system.is_empty() {
+                body["system"] = json!(system);
+            }
+            client
+                .post(url)
+                .header("x-api-key", key.unwrap_or_default())
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+        }
+        "gemini" => {
+            let base = base_url
+                .as_deref()
+                .unwrap_or("https://generativelanguage.googleapis.com/v1beta");
+            let url = format!(
+                "{}/models/{}:generateContent?key={}",
+                base.trim_end_matches('/'),
+                model,
+                key.unwrap_or_default()
+            );
+            let mut body = json!({
+                "contents": [{ "role": "user", "parts": [{ "text": user }] }],
+            });
+            if !system.is_empty() {
+                body["systemInstruction"] = json!({ "parts": [{ "text": system }] });
+            }
+            client.post(url).json(&body)
+        }
+        _ => {
+            let default = match provider {
+                "openrouter" => "https://openrouter.ai/api/v1",
+                "local" => "http://localhost:11434/v1",
+                _ => "https://api.openai.com/v1",
+            };
+            let base = base_url.as_deref().unwrap_or(default);
+            let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+            let mut msgs: Vec<Value> = Vec::new();
+            if !system.is_empty() {
+                msgs.push(json!({ "role": "system", "content": system }));
+            }
+            msgs.push(json!({ "role": "user", "content": user }));
+            let mut rb = client.post(url).json(&json!({ "model": model, "messages": msgs }));
+            if let Some(k) = &key {
+                if !k.is_empty() {
+                    rb = rb.bearer_auth(k);
+                }
+            }
+            rb
+        }
+    };
+
+    let resp = req.send().await.map_err(|e| format!("request failed: {}", e))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let snippet: String = body.chars().take(500).collect();
+        return Err(format!("{} — {}", status, snippet));
+    }
+    let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let text = match provider {
+        "anthropic" => v["content"]
+            .as_array()
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter_map(|b| b["text"].as_str())
+                    .collect::<String>()
+            })
+            .unwrap_or_default(),
+        "gemini" => v["candidates"][0]["content"]["parts"]
+            .as_array()
+            .map(|parts| parts.iter().filter_map(|p| p["text"].as_str()).collect::<String>())
+            .unwrap_or_default(),
+        _ => v["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string(),
+    };
+    Ok(text.trim().to_string())
+}

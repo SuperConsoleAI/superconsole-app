@@ -66,6 +66,7 @@ export interface SessionTab {
   id: string;
   cli: string;
   label: string;
+  resumeId?: string;
 }
 
 export interface FileEntry {
@@ -83,6 +84,30 @@ export interface Job {
   enabled: boolean;
   last_run: string | null;
   next_run: string | null;
+  run_mode: "cli" | "chat";
+  run_config: string;
+  trigger_type: "cron" | "api" | "github";
+  trigger_config: string;
+  allowed_connectors: string;
+}
+
+export interface JobRunConfig {
+  cli?: string;
+  model?: string;
+  provider?: string;
+}
+
+export interface JobTriggerConfig {
+  cron?: string;
+  repo?: string;
+  event?: string;
+  branch?: string;
+}
+
+export interface WorkspaceConnector {
+  service: string;
+  label: string;
+  scope: "account" | "org" | "project";
 }
 
 export interface InboxItem {
@@ -103,11 +128,35 @@ export interface SessionLog {
   ended_at: string | null;
 }
 
+export interface CliSession {
+  id: string;
+  cli: string;
+  workspace_path: string;
+  file_path: string;
+  size_bytes: number;
+  modified_at: string;
+  message_count: number;
+}
+
+export interface CliSessionMessage {
+  role: string;
+  content: string;
+  timestamp?: string | null;
+  model?: string | null;
+}
+
 export const CLI_PRESETS = [
   { id: "claude", label: "Claude Code" },
   { id: "droid", label: "Droid" },
   { id: "antigravity", label: "Antigravity" },
+  { id: "codex", label: "Codex" },
 ] as const;
+
+export interface ChatThreadMeta {
+  project_id: string;
+  name: string | null;
+  is_star: boolean;
+}
 
 export interface ChatMessage {
   id: number;
@@ -342,6 +391,76 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
   },
 ];
 
+export interface Skill {
+  name: string;
+  description: string;
+  tags: string[];
+  scope: string;
+  version: number;
+  auto: boolean;
+  active: boolean;
+  file_path: string;
+  source: string;
+}
+
+export interface LibrarySkill {
+  name: string;
+  description: string;
+  tags: string[];
+  category: string;
+  body: string;
+}
+
+export interface OrgSkillView {
+  name: string;
+  tags: string[];
+  in_library: boolean;
+}
+
+export interface MemoryEntry {
+  category: string;
+  slug: string;
+  title: string;
+  date: string;
+  body: string;
+  tags: string[];
+  summary: string;
+  source: string;
+}
+
+export interface OrgMemoryEntry {
+  slug: string;
+  title: string;
+  body: string;
+  tags: string[];
+}
+
+export const MEMORY_CATEGORIES = [
+  { id: "preferences", label: "Preferences" },
+  { id: "decisions", label: "Decisions" },
+  { id: "facts", label: "Key Facts" },
+  { id: "patterns", label: "Patterns" },
+  { id: "recent", label: "Recent Actions" },
+] as const;
+
+export interface WikiPage {
+  slug: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  updated: string;
+  body: string;
+  source: string;
+}
+
+export const SKILL_CATEGORIES = [
+  { id: "all", label: "All" },
+  { id: "content", label: "Content" },
+  { id: "research", label: "Research" },
+  { id: "dev", label: "Dev" },
+  { id: "ops", label: "Ops" },
+] as const;
+
 export const api = {
   authStatus: () => invoke<AuthInfo | null>("auth_status"),
   signIn: () => invoke<string>("sign_in"),
@@ -352,8 +471,22 @@ export const api = {
   listOrganizations: () => invoke<Organization[]>("list_organizations"),
   addOrganization: (name: string) => invoke<Organization>("add_organization", { name }),
   removeWorkspace: (id: number) => invoke<void>("remove_workspace", { id }),
-  startSession: (workspaceId: number, sessionId: string, cli: string, rows: number, cols: number) =>
-    invoke<SessionInfo>("start_session", { workspaceId, sessionId, cli, rows, cols }),
+  startSession: (
+    workspaceId: number,
+    sessionId: string,
+    cli: string,
+    rows: number,
+    cols: number,
+    resumeSessionId?: string,
+  ) =>
+    invoke<SessionInfo>("start_session", {
+      workspaceId,
+      sessionId,
+      cli,
+      rows,
+      cols,
+      resumeSessionId,
+    }),
   writeSession: (sessionId: string, data: string) =>
     invoke<void>("write_session", { sessionId, data }),
   resizeSession: (sessionId: string, rows: number, cols: number) =>
@@ -374,9 +507,48 @@ export const api = {
     invoke<void>("create_entry", { workspaceId, rel, isDir }),
   deleteEntry: (workspaceId: number, rel: string) =>
     invoke<void>("delete_entry", { workspaceId, rel }),
+  listCliSessions: (workspacePath: string, cli: string) =>
+    invoke<CliSession[]>("list_cli_sessions", { workspacePath, cli }),
+  readCliSession: (filePath: string, cli: string) =>
+    invoke<CliSessionMessage[]>("read_cli_session", { filePath, cli }),
   listJobs: (workspaceId: number) => invoke<Job[]>("list_jobs", { workspaceId }),
-  addJob: (workspaceId: number, name: string, command: string, schedule: string) =>
-    invoke<Job>("add_job", { workspaceId, name, command, schedule }),
+  addJob: (
+    workspaceId: number,
+    name: string,
+    command: string,
+    schedule: string,
+    extra?: {
+      runMode?: string;
+      runConfig?: string;
+      triggerType?: string;
+      triggerConfig?: string;
+      allowedConnectors?: string;
+    },
+  ) => invoke<Job>("add_job", { workspaceId, name, command, schedule, ...extra }),
+  updateJob: (
+    id: number,
+    name: string,
+    command: string,
+    schedule: string,
+    runMode: string,
+    runConfig: string,
+    triggerType: string,
+    triggerConfig: string,
+    allowedConnectors: string,
+  ) =>
+    invoke<Job>("update_job", {
+      id,
+      name,
+      command,
+      schedule,
+      runMode,
+      runConfig,
+      triggerType,
+      triggerConfig,
+      allowedConnectors,
+    }),
+  listWorkspaceConnectors: (workspaceId: number) =>
+    invoke<WorkspaceConnector[]>("list_workspace_connectors", { workspaceId }),
   setJobEnabled: (id: number, enabled: boolean) =>
     invoke<void>("set_job_enabled", { id, enabled }),
   deleteJob: (id: number) => invoke<void>("delete_job", { id }),
@@ -439,6 +611,17 @@ export const api = {
     invoke<ChatMessage>("add_chat_message", { projectId, role, content, provider, model }),
   clearChatMessages: (projectId: string) =>
     invoke<void>("clear_chat_messages", { projectId }),
+  deleteCliSession: (id: number) => invoke<void>("delete_cli_session", { id }),
+  getChatThread: (projectId: string) =>
+    invoke<ChatThreadMeta>("get_chat_thread", { projectId }),
+  renameChatThread: (projectId: string, name: string) =>
+    invoke<void>("rename_chat_thread", { projectId, name }),
+  starChatThread: (projectId: string, isStar: boolean) =>
+    invoke<void>("star_chat_thread", { projectId, isStar }),
+  deleteChatThread: (projectId: string) =>
+    invoke<void>("delete_chat_thread", { projectId }),
+  moveChatThread: (fromProject: string, toProject: string) =>
+    invoke<void>("move_chat_thread", { fromProject, toProject }),
   clearLocalCloudData: () => invoke<void>("clear_local_cloud_data"),
   listOrgMembers: (orgId: string) =>
     invoke<MemberView[]>("list_org_members", { orgId }),
@@ -470,4 +653,94 @@ export const api = {
   ) => invoke<void>("set_connector", { scope, scopeId, service, fields }),
   deleteConnector: (scope: ConnectorScope, scopeId: string, service: string) =>
     invoke<void>("delete_connector", { scope, scopeId, service }),
+  listSkills: (workspaceId: number) =>
+    invoke<Skill[]>("list_skills", { workspaceId }),
+  scanDetectedSkills: (workspaceId: number) =>
+    invoke<Skill[]>("scan_detected_skills", { workspaceId }),
+  readWorkspaceSkill: (workspaceId: number, filePath: string) =>
+    invoke<string>("read_workspace_skill", { workspaceId, filePath }),
+  createSkill: (
+    workspaceId: number,
+    name: string,
+    description: string,
+    tags: string[],
+    body: string,
+  ) => invoke<Skill>("create_skill", { workspaceId, name, description, tags, body }),
+  updateSkill: (workspaceId: number, name: string, content: string) =>
+    invoke<Skill>("update_skill", { workspaceId, name, content }),
+  deleteSkill: (workspaceId: number, name: string) =>
+    invoke<void>("delete_skill", { workspaceId, name }),
+  setSkillActive: (workspaceId: number, name: string, active: boolean) =>
+    invoke<void>("set_skill_active", { workspaceId, name, active }),
+  listSkillLibrary: () => invoke<LibrarySkill[]>("list_skill_library"),
+  // Account scope: machine-global library.
+  listGlobalSkills: () => invoke<Skill[]>("list_global_skills"),
+  getGlobalSkill: (name: string) => invoke<string>("get_global_skill", { name }),
+  createGlobalSkill: (name: string, description: string, tags: string[], body: string) =>
+    invoke<Skill>("create_global_skill", { name, description, tags, body }),
+  updateGlobalSkill: (name: string, content: string) =>
+    invoke<void>("update_global_skill", { name, content }),
+  deleteGlobalSkill: (name: string) => invoke<void>("delete_global_skill", { name }),
+  installLibrarySkillGlobal: (name: string) =>
+    invoke<Skill>("install_library_skill_global", { name }),
+  importGlobalSkillFromUrl: (url: string, name: string | null) =>
+    invoke<Skill>("import_global_skill_from_url", { url, name }),
+  // Org scope: references to global-library skills.
+  listOrgSkills: (orgId: string) => invoke<OrgSkillView[]>("list_org_skills", { orgId }),
+  attachOrgSkill: (orgId: string, name: string) =>
+    invoke<void>("attach_org_skill", { orgId, name }),
+  detachOrgSkill: (orgId: string, name: string) =>
+    invoke<void>("detach_org_skill", { orgId, name }),
+  // Project scope: references to global skills + materialize into the repo.
+  attachSkillToProject: (workspaceId: number, name: string) =>
+    invoke<Skill>("attach_skill_to_project", { workspaceId, name }),
+  detachSkillFromProject: (workspaceId: number, name: string) =>
+    invoke<void>("detach_skill_from_project", { workspaceId, name }),
+  materializeSkillToWorkspace: (workspaceId: number, name: string) =>
+    invoke<Skill>("materialize_skill_to_workspace", { workspaceId, name }),
+
+  // Phase 19: memory.
+  listMemory: (workspaceId: number) =>
+    invoke<MemoryEntry[]>("list_memory", { workspaceId }),
+  searchMemory: (workspaceId: number, query: string) =>
+    invoke<MemoryEntry[]>("search_memory", { workspaceId, query }),
+  writeMemory: (
+    workspaceId: number,
+    category: string,
+    title: string,
+    body: string,
+    tags: string[],
+  ) => invoke<MemoryEntry>("write_memory", { workspaceId, category, title, body, tags }),
+  deleteMemory: (workspaceId: number, category: string, slug: string) =>
+    invoke<void>("delete_memory", { workspaceId, category, slug }),
+  wipeMemory: (workspaceId: number) => invoke<void>("wipe_memory", { workspaceId }),
+  listOrgMemory: (orgId: string) =>
+    invoke<OrgMemoryEntry[]>("list_org_memory", { orgId }),
+  writeOrgMemory: (orgId: string, title: string, body: string, tags: string[]) =>
+    invoke<OrgMemoryEntry>("write_org_memory", { orgId, title, body, tags }),
+  deleteOrgMemory: (orgId: string, slug: string) =>
+    invoke<void>("delete_org_memory", { orgId, slug }),
+
+  // Phase 20: wiki.
+  listWiki: (workspaceId: number) => invoke<WikiPage[]>("list_wiki", { workspaceId }),
+  readWiki: (workspaceId: number, slug: string) =>
+    invoke<string>("read_wiki", { workspaceId, slug }),
+  searchWiki: (workspaceId: number, query: string) =>
+    invoke<WikiPage[]>("search_wiki", { workspaceId, query }),
+  writeWiki: (
+    workspaceId: number,
+    slug: string | null,
+    title: string,
+    summary: string,
+    tags: string[],
+    body: string,
+  ) => invoke<WikiPage>("write_wiki", { workspaceId, slug, title, summary, tags, body }),
+  deleteWiki: (workspaceId: number, slug: string) =>
+    invoke<void>("delete_wiki", { workspaceId, slug }),
+  seedWikiFromFiles: (workspaceId: number) =>
+    invoke<WikiPage[]>("seed_wiki_from_files", { workspaceId }),
+
+  // Phase 16: MCP tool infrastructure.
+  ensureMcpConfig: (workspaceId: number) =>
+    invoke<string>("ensure_mcp_config", { workspaceId }),
 };

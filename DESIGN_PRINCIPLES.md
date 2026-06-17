@@ -35,8 +35,10 @@ Conventions used in this codebase. Match them when adding code.
 ## Backend conventions
 
 - Every filesystem operation on workspace content goes through `files.rs::resolve` (path sandbox).
-- Every headless agent execution goes through `scheduler::exec_in_workspace` (single funnel → inbox + telegram).
-- DB migrations: append idempotent `CREATE TABLE IF NOT EXISTS` / guarded `ALTER TABLE` blocks in `Db::init`. Never edit existing migration blocks.
+- Every headless agent execution goes through `scheduler::exec_in_workspace` (single funnel → inbox + telegram); the job's `run_mode` selects CLI print-mode vs chat one-shot.
+- Agent tools live in one place: add a `ToolSpec` in `mcp.rs` so both the native chat loop (`mcp::execute`) and the stdio MCP server expose it identically. Don't fork tool logic per transport.
+- New CLI preset: add it to `pty.rs::cli_command` (with its resume flag), `scheduler.rs::job_command`, `cli_sessions.rs` (on-disk layout/encoding for read+resume), `CLI_PRESETS` in `api.ts`, and a preset icon.
+- DB migrations: append idempotent `CREATE TABLE IF NOT EXISTS` / guarded `ALTER TABLE` blocks in `Db::init`. Never edit existing migration blocks. Local-only tables (e.g. `chat_threads`) stay out of Turso.
 - Settings keys are whitelisted in `lib.rs::set_setting`. Add new keys there explicitly.
 
 ## Cloud conventions

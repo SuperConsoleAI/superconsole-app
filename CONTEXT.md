@@ -56,5 +56,26 @@ Patterns, constraints, and gotchas specific to this codebase.
 - Secret precedence (LLM keys + connectors): project → org → account/local → `.env` → skip. Project overrides org. Telegram resolves project → org → local `telegram_token` setting → skip.
 - Encryption parity: AES-256-GCM, key = HKDF-SHA256(`WORKOS_COOKIE_PASSWORD`), salt `superconsole-llm-keys-v1`, info `aes-256-gcm`, format `base64(nonce[12] || ct||tag)`. Connector creds are an encrypted JSON blob in `credentials_encrypted`. Keep `crypto.rs` and the web `crypto.ts` identical.
 - Registries (LLM providers + connectors) are mirrored in three places: `src-tauri/src/connectors.rs`, `src/lib/api.ts`, and `superconsole-web/src/connector-registry.ts`. Keep service ids, field keys, scopes, and env mappings identical.
-- Native chat: `chat.rs` streams provider tokens via `chat-token`/`chat-done`/`chat-error` events; messages are stored locally in `chat_messages` keyed by project; the system prompt is built from CLAUDE.md/brand-voice.md/HEARTBEAT.md plus the project's connected services.
+- Native chat: `chat.rs` streams provider tokens via `chat-token`/`chat-done`/`chat-error` events; messages are stored locally in `chat_messages` keyed by project; the system prompt is built from CLAUDE.md/brand-voice.md/HEARTBEAT.md plus the project's connected services, skills, memory, and wiki. Chat runs a native tool-calling loop backed by `mcp::execute`.
 - `ensure_workspace_project` is serialized via a process Mutex and reuses an existing cloud project by (org_id, local_path_hint) before inserting — keeps Turso from accumulating duplicate project rows.
+
+## MCP tools (phase 16)
+
+- `mcp.rs` is an in-process tool layer shared by native chat (`mcp::execute`) and the stdio MCP server (`mcp_server.rs`). Tools are `ToolSpec`s: always-loaded (skills/memory/wiki/files), context-gated, plus a generic `connector_request`. A BM25-lite search lets agents discover tools without loading every schema.
+- The stdio server is launched as `superconsole mcp --session <token>` (subcommand in `lib.rs`). The token is an AES-256-GCM blob (`ToolCtx`) carrying workspace/project identity with a 30-day TTL; it is regenerated per session launch.
+- Per-CLI MCP config is written on session launch (fresh token), merging with existing servers + git-excluding the generated files:
+  - **Claude**: project `.mcp.json` + pre-approval in `.claude/settings.local.json` (`enabledMcpjsonServers`).
+  - **Droid**: project `.factory/mcp.json` (auto-loaded).
+  - **Codex**: global `~/.codex/config.toml` `[mcp_servers.superconsole]` via `toml_edit` (no project scope, so last-launched workspace wins on token).
+  - **Antigravity**: project `.gemini/settings.json` (`trust: true`) for the CLI + global `~/.gemini/config/mcp_config.json` for the editor (config still lives under `~/.gemini` on disk).
+  - Claude/Droid go through `write_mcp_config`; the others via `write_codex_mcp_config` / `write_antigravity_mcp_config`.
+
+## Jobs: run modes + triggers (phase 16b)
+
+- Jobs carry `run_mode` (`cli` print-mode vs `chat` one-shot via `llm::one_shot_completion`), `run_config`, `trigger_type` (`cron`/`api`/`github`), `trigger_config`, and `allowed_connectors`. `scheduler::exec_in_workspace` branches on `run_mode`; `job_command` builds the CLI line per preset (incl. `codex exec`).
+
+## Native CLI sessions (read + resume)
+
+- `cli_sessions.rs` reads transcripts directly off disk, always fresh, security-gated to `~/.claude`, `~/.factory`, `~/.antigravity`, `~/.codex`. Path encoding differs per CLI: Claude maps every non-alphanumeric char to `-`; Droid replaces only `/` with `-` (dots kept); Codex stores by date (`sessions/YYYY/MM/DD`) and is filtered by the `cwd` recorded in each file's first line.
+- Opening a session resumes it in a NEW terminal tab: `start_session` takes `resume_session_id`, and `pty::cli_command` appends the per-CLI flag (`claude/droid --resume <id>`, `codex resume <id>`).
+- `chat_threads` is a local-only table (project_id PK, name, is_star, created_at) backing the History page's Chat tab: rename, star, delete, and move (merges messages + metadata into the destination project).

@@ -39,6 +39,7 @@ fn job_command(cli: &str, prompt: &str) -> (String, Vec<String>) {
         "claude" => ("claude".into(), vec!["-p".into(), prompt.into()]),
         "droid" => ("droid".into(), vec!["exec".into(), prompt.into()]),
         "antigravity" => ("agy".into(), vec![prompt.into()]),
+        "codex" => ("codex".into(), vec!["exec".into(), prompt.into()]),
         other => (other.to_string(), vec![prompt.to_string()]),
     }
 }
@@ -58,36 +59,57 @@ pub async fn exec_in_workspace(
         db.get_workspace(workspace_id)?
     };
 
-    let (program, args) = job_command(&ws.cli, command);
-    let ws_path = ws.path.clone();
+    // Ad-hoc triggers (HTTP / Telegram) carry no job and keep the cli path.
+    let job = job_id.and_then(|jid| app.state::<Db>().get_job(jid).ok());
+    let run_mode = job.as_ref().map(|j| j.run_mode.as_str()).unwrap_or("cli");
+    let run_config: serde_json::Value = job
+        .as_ref()
+        .and_then(|j| serde_json::from_str(&j.run_config).ok())
+        .unwrap_or_default();
 
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        let mut cmd = Command::new(&program);
-        cmd.args(&args).current_dir(&ws_path);
-        for (k, v) in crate::pty::parse_env_file(&Path::new(&ws_path).join(".env")) {
-            cmd.env(k, v);
+    let body = if run_mode == "chat" {
+        // Native chat one-shot executor: headless completion → inbox.
+        let provider = run_config["provider"].as_str().unwrap_or("anthropic");
+        let model = run_config["model"].as_str().unwrap_or("claude-sonnet-4-5");
+        let system = crate::chat::build_system_prompt(app, workspace_id);
+        match crate::llm::one_shot_completion(app, workspace_id, provider, model, &system, command)
+            .await
+        {
+            Ok(t) => t,
+            Err(e) => format!("**Chat job failed**: {}", e),
         }
-        cmd.output()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let body = match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if out.status.success() {
-                stdout.trim().to_string()
-            } else {
-                format!(
-                    "**Job failed** (exit {})\n\n{}\n{}",
-                    out.status.code().unwrap_or(-1),
-                    stdout.trim(),
-                    stderr.trim()
-                )
+    } else {
+        let cli = run_config["cli"].as_str().unwrap_or(&ws.cli).to_string();
+        let (program, args) = job_command(&cli, command);
+        let ws_path = ws.path.clone();
+        let output = tauri::async_runtime::spawn_blocking(move || {
+            let mut cmd = Command::new(&program);
+            cmd.args(&args).current_dir(&ws_path);
+            for (k, v) in crate::pty::parse_env_file(&Path::new(&ws_path).join(".env")) {
+                cmd.env(k, v);
             }
+            cmd.output()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if out.status.success() {
+                    stdout.trim().to_string()
+                } else {
+                    format!(
+                        "**Job failed** (exit {})\n\n{}\n{}",
+                        out.status.code().unwrap_or(-1),
+                        stdout.trim(),
+                        stderr.trim()
+                    )
+                }
+            }
+            Err(e) => format!("**Failed to launch {}**: {}", cli, e),
         }
-        Err(e) => format!("**Failed to launch {}**: {}", ws.cli, e),
     };
 
     let title = format!("{} — {}", ws.name, title_suffix);

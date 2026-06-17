@@ -29,6 +29,7 @@ interface WorkspaceContextValue {
   setAddOpen: (open: boolean) => void;
   openWorkspace: (id: number, defaultCli: string) => void;
   openTab: (workspaceId: number, cli: string) => void;
+  openResumeTab: (workspaceId: number, cli: string, resumeId: string) => void;
   closeTab: (workspaceId: number, tabId: string) => void;
   activateTab: (workspaceId: number, tabId: string) => void;
   addWorkspace: (name: string, path: string, cli: string) => Promise<Workspace>;
@@ -119,6 +120,28 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const openResumeTab = useCallback(
+    (workspaceId: number, cli: string, resumeId: string) => {
+      const id = `${workspaceId}:${cli}:resume:${resumeId}`;
+      setTabsByWs((prev) => {
+        const tabs = prev[workspaceId] ?? [];
+        if (tabs.some((t) => t.id === id)) {
+          setActiveTabByWs((a) => ({ ...a, [workspaceId]: id }));
+          return prev;
+        }
+        const tab: SessionTab = {
+          id,
+          cli,
+          label: `${cliLabel(cli)} (resumed)`,
+          resumeId,
+        };
+        setActiveTabByWs((a) => ({ ...a, [workspaceId]: id }));
+        return { ...prev, [workspaceId]: [...tabs, tab] };
+      });
+    },
+    [],
+  );
+
   const openWorkspace = useCallback(
     (id: number, defaultCli: string) => {
       setOpenedIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
@@ -208,6 +231,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         setAddOpen,
         openWorkspace,
         openTab,
+        openResumeTab,
         closeTab,
         activateTab,
         addWorkspace,

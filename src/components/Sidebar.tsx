@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Check,
   ChevronsUpDown,
   FolderOpen,
+  History,
   Inbox,
   ListTodo,
   Plus,
   Settings,
+  Sparkles,
   Terminal,
   Trash2,
 } from "lucide-react";
@@ -32,8 +34,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { CLI_PRESETS, type Organization, type Workspace } from "@/lib/api";
+import { api, CLI_PRESETS, type Organization, type OrgSkillView, type Workspace } from "@/lib/api";
 import { AccountMenu } from "@/components/AccountMenu";
+import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 
 interface SidebarRailProps {
@@ -43,12 +46,14 @@ interface SidebarRailProps {
   unreadCount: number;
   inboxActive: boolean;
   tasksActive: boolean;
+  sessionsActive: boolean;
   orgName: string;
   onExpand: () => void;
   onSelect: (id: number) => void;
   onAdd: () => void;
   onInbox: () => void;
   onTasks: () => void;
+  onSessions: () => void;
   onSettings: () => void;
 }
 
@@ -59,12 +64,14 @@ export function SidebarRail({
   unreadCount,
   inboxActive,
   tasksActive,
+  sessionsActive,
   orgName,
   onExpand,
   onSelect,
   onAdd,
   onInbox,
   onTasks,
+  onSessions,
   onSettings,
 }: SidebarRailProps) {
   const railButton = (active: boolean) =>
@@ -103,6 +110,15 @@ export function SidebarRail({
           </button>
         </TooltipTrigger>
         <TooltipContent side="right">Tasks</TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button className={railButton(sessionsActive)} onClick={onSessions}>
+            <History className="h-4 w-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Sessions</TooltipContent>
       </Tooltip>
 
       <div className="my-1 h-px w-6 bg-sidebar-border" />
@@ -153,6 +169,7 @@ interface SidebarProps {
   unreadCount: number;
   inboxActive: boolean;
   tasksActive: boolean;
+  sessionsActive: boolean;
   onOrgChange: (id: number) => void;
   onNewOrg: (name: string) => Promise<void>;
   onSelect: (id: number) => void;
@@ -160,6 +177,7 @@ interface SidebarProps {
   onRemove: (id: number) => void;
   onInbox: () => void;
   onTasks: () => void;
+  onSessions: () => void;
   onSettings: () => void;
 }
 
@@ -175,6 +193,7 @@ export function Sidebar({
   unreadCount,
   inboxActive,
   tasksActive,
+  sessionsActive,
   onOrgChange,
   onNewOrg,
   onSelect,
@@ -182,6 +201,7 @@ export function Sidebar({
   onRemove,
   onInbox,
   onTasks,
+  onSessions,
   onSettings,
 }: SidebarProps) {
   const [orgDialogOpen, setOrgDialogOpen] = useState(false);
@@ -273,6 +293,25 @@ export function Sidebar({
           />
           <span className="text-[13px] font-medium">Tasks</span>
         </div>
+
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={onSessions}
+          onKeyDown={(e) => e.key === "Enter" && onSessions()}
+          className={cn(
+            "relative mt-0.5 flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors",
+            sessionsActive ? "bg-accent" : "hover:bg-accent/50",
+          )}
+        >
+          {sessionsActive && (
+            <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-primary" />
+          )}
+          <History
+            className={cn("h-4 w-4", sessionsActive ? "text-primary" : "text-muted-foreground")}
+          />
+          <span className="text-[13px] font-medium">Sessions</span>
+        </div>
       </div>
 
       <div className="px-4 pb-2">
@@ -350,6 +389,8 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
+      <OrgSkillsRail onSettings={onSettings} />
+
       <div className="flex flex-col gap-2 border-t border-sidebar-border p-3">
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" className="flex-1 justify-center" onClick={onAdd}>
@@ -384,5 +425,52 @@ export function Sidebar({
         </DialogContent>
       </Dialog>
     </aside>
+  );
+}
+
+function OrgSkillsRail({ onSettings }: { onSettings: () => void }) {
+  const { activeCloudOrg } = useAuth();
+  const [skills, setSkills] = useState<OrgSkillView[]>([]);
+
+  useEffect(() => {
+    if (!activeCloudOrg) {
+      setSkills([]);
+      return;
+    }
+    api
+      .listOrgSkills(activeCloudOrg.id)
+      .then(setSkills)
+      .catch(() => setSkills([]));
+  }, [activeCloudOrg]);
+
+  if (!activeCloudOrg || skills.length === 0) return null;
+
+  return (
+    <div className="border-t border-sidebar-border px-2 py-2">
+      <button
+        onClick={onSettings}
+        className="flex w-full items-center gap-1.5 px-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <Sparkles className="h-3 w-3" />
+        Org skills
+      </button>
+      <div className="flex flex-col gap-0.5">
+        {skills.map((s) => (
+          <div
+            key={s.name}
+            className="flex items-center gap-2 rounded-md px-2.5 py-1 text-[12px] text-muted-foreground"
+            title={s.in_library ? "Available to agents" : "Not on this machine yet"}
+          >
+            <span
+              className={cn(
+                "h-1.5 w-1.5 shrink-0 rounded-full",
+                s.in_library ? "bg-emerald-500" : "bg-amber-500",
+              )}
+            />
+            <span className="truncate">{s.name}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
