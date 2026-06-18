@@ -63,6 +63,7 @@ pub struct SessionLog {
     pub cli: String,
     pub started_at: String,
     pub ended_at: Option<String>,
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +109,7 @@ pub struct UsageEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: i64,
+    pub session_id: String,
     pub project_id: String,
     pub role: String,
     pub content: String,
@@ -117,10 +119,19 @@ pub struct ChatMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ChatThreadMeta {
+pub struct ChatSession {
+    pub id: String,
     pub project_id: String,
     pub name: Option<String>,
     pub is_star: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub message_count: i64,
+    pub last_at: Option<String>,
+    pub preview: Option<String>,
+    pub first_user: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -319,6 +330,15 @@ impl Db {
             }
         }
 
+        // Optional user-assigned label for CLI sessions (rename + search).
+        let has_session_label = conn
+            .prepare("SELECT label FROM session_history LIMIT 1")
+            .is_ok();
+        if !has_session_label {
+            conn.execute_batch("ALTER TABLE session_history ADD COLUMN label TEXT;")
+                .map_err(|e| e.to_string())?;
+        }
+
         // Local mirror of cloud (Turso) data, scoped to the signed-in user.
         // PTY injection reads only from here; Turso is never hit at session
         // start. scope is account|org|project, scope_id the matching cloud id.
@@ -352,6 +372,7 @@ impl Db {
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id TEXT NOT NULL,
+                session_id TEXT,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 provider TEXT,
@@ -360,16 +381,65 @@ impl Db {
             );
             CREATE INDEX IF NOT EXISTS chat_messages_project_idx
                 ON chat_messages(project_id);
-            -- Per-chat metadata (custom name, starred). Local only; one row per
-            -- project (chat is one thread per project).
+            CREATE INDEX IF NOT EXISTS chat_messages_session_idx
+                ON chat_messages(session_id);
+            -- Legacy per-project chat metadata (pre multi-session). Kept only as
+            -- a migration source; superseded by chat_sessions.
             CREATE TABLE IF NOT EXISTS chat_threads (
                 project_id TEXT PRIMARY KEY,
                 name TEXT,
                 is_star INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );",
+            );
+            -- Multi-session chat: many sessions per project. Local only.
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                name TEXT,
+                is_star INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS chat_sessions_project_idx
+                ON chat_sessions(project_id);",
         )
         .map_err(|e| e.to_string())?;
+
+        // Multi-session chat migration. Pre-existing DBs have chat_messages
+        // without session_id; add it, then fold each project's messages into a
+        // single session, carrying over the legacy chat_threads name/star.
+        let has_session_col = conn
+            .prepare("SELECT session_id FROM chat_messages LIMIT 1")
+            .is_ok();
+        if !has_session_col {
+            conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN session_id TEXT;")
+                .map_err(|e| e.to_string())?;
+        }
+        let pending: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT DISTINCT project_id FROM chat_messages WHERE session_id IS NULL")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for pid in pending {
+            let sid = ulid::Ulid::new().to_string();
+            conn.execute(
+                "INSERT INTO chat_sessions (id, project_id, name, is_star)
+                 SELECT ?1, ?2,
+                        (SELECT name FROM chat_threads WHERE project_id = ?2),
+                        COALESCE((SELECT is_star FROM chat_threads WHERE project_id = ?2), 0)",
+                rusqlite::params![sid, pid],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE chat_messages SET session_id = ?1 WHERE project_id = ?2 AND session_id IS NULL",
+                rusqlite::params![sid, pid],
+            )
+            .map_err(|e| e.to_string())?;
+        }
 
         // Phase 18 — Skills.
         // `project_skills` is the local working index over the on-disk skill
@@ -912,7 +982,7 @@ impl Db {
     pub fn list_session_history(&self, workspace_id: i64) -> Result<Vec<SessionLog>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, cli, started_at, ended_at FROM session_history WHERE workspace_id = ?1 ORDER BY started_at DESC LIMIT 30")
+            .prepare("SELECT id, workspace_id, cli, started_at, ended_at, label FROM session_history WHERE workspace_id = ?1 ORDER BY started_at DESC LIMIT 30")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([workspace_id], |r| {
@@ -922,10 +992,22 @@ impl Db {
                     cli: r.get(2)?,
                     started_at: r.get(3)?,
                     ended_at: r.get(4)?,
+                    label: r.get(5)?,
                 })
             })
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn rename_session_log(&self, id: i64, label: Option<&str>) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        let trimmed = label.map(|s| s.trim()).filter(|s| !s.is_empty());
+        conn.execute(
+            "UPDATE session_history SET label = ?1 WHERE id = ?2",
+            rusqlite::params![trimmed, id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn delete_session_log(&self, id: i64) -> Result<(), String> {
@@ -1347,33 +1429,103 @@ impl Db {
     fn chat_message_from_row(r: &rusqlite::Row) -> rusqlite::Result<ChatMessage> {
         Ok(ChatMessage {
             id: r.get(0)?,
-            project_id: r.get(1)?,
-            role: r.get(2)?,
-            content: r.get(3)?,
-            provider: r.get(4)?,
-            model: r.get(5)?,
-            created_at: r.get(6)?,
+            session_id: r.get(1)?,
+            project_id: r.get(2)?,
+            role: r.get(3)?,
+            content: r.get(4)?,
+            provider: r.get(5)?,
+            model: r.get(6)?,
+            created_at: r.get(7)?,
         })
+    }
+
+    fn chat_session_from_row(r: &rusqlite::Row) -> rusqlite::Result<ChatSession> {
+        Ok(ChatSession {
+            id: r.get(0)?,
+            project_id: r.get(1)?,
+            name: r.get(2)?,
+            is_star: r.get::<_, i64>(3)? != 0,
+            created_at: r.get(4)?,
+            updated_at: r.get(5)?,
+            message_count: r.get(6)?,
+            last_at: r.get(7)?,
+            preview: r.get(8)?,
+            first_user: r.get(9)?,
+            provider: r.get(10)?,
+            model: r.get(11)?,
+        })
+    }
+
+    const CHAT_SESSION_SELECT: &'static str =
+        "SELECT s.id, s.project_id, s.name, s.is_star, s.created_at, s.updated_at,
+            (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id),
+            (SELECT created_at FROM chat_messages m WHERE m.session_id = s.id ORDER BY m.id DESC LIMIT 1),
+            (SELECT content FROM chat_messages m WHERE m.session_id = s.id ORDER BY m.id DESC LIMIT 1),
+            (SELECT content FROM chat_messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.id ASC LIMIT 1),
+            (SELECT provider FROM chat_messages m WHERE m.session_id = s.id AND m.provider IS NOT NULL ORDER BY m.id DESC LIMIT 1),
+            (SELECT model FROM chat_messages m WHERE m.session_id = s.id AND m.model IS NOT NULL ORDER BY m.id DESC LIMIT 1)
+         FROM chat_sessions s";
+
+    pub fn create_chat_session(&self, project_id: &str) -> Result<ChatSession, String> {
+        let conn = self.0.lock().unwrap();
+        let id = ulid::Ulid::new().to_string();
+        conn.execute(
+            "INSERT INTO chat_sessions (id, project_id) VALUES (?1, ?2)",
+            rusqlite::params![id, project_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.query_row(
+            &format!("{} WHERE s.id = ?1", Self::CHAT_SESSION_SELECT),
+            [&id],
+            Self::chat_session_from_row,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn list_chat_sessions(&self, project_id: &str) -> Result<Vec<ChatSession>, String> {
+        let conn = self.0.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "{} WHERE s.project_id = ?1 ORDER BY s.is_star DESC, s.updated_at DESC",
+                Self::CHAT_SESSION_SELECT
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([project_id], Self::chat_session_from_row)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
     pub fn add_chat_message(
         &self,
-        project_id: &str,
+        session_id: &str,
         role: &str,
         content: &str,
         provider: Option<&str>,
         model: Option<&str>,
     ) -> Result<ChatMessage, String> {
         let conn = self.0.lock().unwrap();
+        let project_id: String = conn
+            .query_row(
+                "SELECT project_id FROM chat_sessions WHERE id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| "chat session not found".to_string())?;
         conn.execute(
-            "INSERT INTO chat_messages (project_id, role, content, provider, model)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![project_id, role, content, provider, model],
+            "INSERT INTO chat_messages (session_id, project_id, role, content, provider, model)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![session_id, project_id, role, content, provider, model],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?1",
+            [session_id],
         )
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         conn.query_row(
-            "SELECT id, project_id, role, content, provider, model, created_at
+            "SELECT id, session_id, project_id, role, content, provider, model, created_at
              FROM chat_messages WHERE id = ?1",
             [id],
             Self::chat_message_from_row,
@@ -1381,103 +1533,63 @@ impl Db {
         .map_err(|e| e.to_string())
     }
 
-    pub fn list_chat_messages(&self, project_id: &str) -> Result<Vec<ChatMessage>, String> {
+    pub fn list_chat_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT id, project_id, role, content, provider, model, created_at
-                 FROM chat_messages WHERE project_id = ?1 ORDER BY id",
+                "SELECT id, session_id, project_id, role, content, provider, model, created_at
+                 FROM chat_messages WHERE session_id = ?1 ORDER BY id",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([project_id], Self::chat_message_from_row)
+            .query_map([session_id], Self::chat_message_from_row)
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
-    pub fn clear_chat_messages(&self, project_id: &str) -> Result<(), String> {
+    pub fn rename_chat_session(&self, id: &str, name: &str) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
+        let trimmed = name.trim();
+        let value: Option<&str> = if trimmed.is_empty() { None } else { Some(trimmed) };
         conn.execute(
-            "DELETE FROM chat_messages WHERE project_id = ?1",
-            [project_id],
+            "UPDATE chat_sessions SET name = ?2 WHERE id = ?1",
+            rusqlite::params![id, value],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    pub fn get_chat_thread(&self, project_id: &str) -> Result<ChatThreadMeta, String> {
-        let conn = self.0.lock().unwrap();
-        conn.query_row(
-            "SELECT project_id, name, is_star FROM chat_threads WHERE project_id = ?1",
-            [project_id],
-            |r| {
-                Ok(ChatThreadMeta {
-                    project_id: r.get(0)?,
-                    name: r.get(1)?,
-                    is_star: r.get::<_, i64>(2)? != 0,
-                })
-            },
-        )
-        .or_else(|_| {
-            Ok(ChatThreadMeta {
-                project_id: project_id.to_string(),
-                name: None,
-                is_star: false,
-            })
-        })
-    }
-
-    pub fn rename_chat_thread(&self, project_id: &str, name: &str) -> Result<(), String> {
+    pub fn star_chat_session(&self, id: &str, is_star: bool) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO chat_threads (project_id, name) VALUES (?1, ?2)
-             ON CONFLICT(project_id) DO UPDATE SET name = ?2",
-            (project_id, name),
+            "UPDATE chat_sessions SET is_star = ?2 WHERE id = ?1",
+            rusqlite::params![id, if is_star { 1 } else { 0 }],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    pub fn star_chat_thread(&self, project_id: &str, is_star: bool) -> Result<(), String> {
+    pub fn delete_chat_session(&self, id: &str) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
-        let v = if is_star { 1 } else { 0 };
-        conn.execute(
-            "INSERT INTO chat_threads (project_id, is_star) VALUES (?1, ?2)
-             ON CONFLICT(project_id) DO UPDATE SET is_star = ?2",
-            (project_id, v),
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    pub fn delete_chat_thread(&self, project_id: &str) -> Result<(), String> {
-        let conn = self.0.lock().unwrap();
-        conn.execute("DELETE FROM chat_messages WHERE project_id = ?1", [project_id])
+        conn.execute("DELETE FROM chat_messages WHERE session_id = ?1", [id])
             .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM chat_threads WHERE project_id = ?1", [project_id])
+        conn.execute("DELETE FROM chat_sessions WHERE id = ?1", [id])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    pub fn move_chat_thread(&self, from_project: &str, to_project: &str) -> Result<(), String> {
+    pub fn move_chat_session(&self, id: &str, to_project: &str) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
-        // Merge messages into the destination thread, then carry over metadata.
         conn.execute(
-            "UPDATE chat_messages SET project_id = ?2 WHERE project_id = ?1",
-            (from_project, to_project),
+            "UPDATE chat_sessions SET project_id = ?2 WHERE id = ?1",
+            rusqlite::params![id, to_project],
         )
         .map_err(|e| e.to_string())?;
         conn.execute(
-            "INSERT INTO chat_threads (project_id, name, is_star)
-             SELECT ?2, name, is_star FROM chat_threads WHERE project_id = ?1
-             ON CONFLICT(project_id) DO UPDATE SET
-               name = COALESCE(chat_threads.name, excluded.name),
-               is_star = MAX(chat_threads.is_star, excluded.is_star)",
-            (from_project, to_project),
+            "UPDATE chat_messages SET project_id = ?2 WHERE session_id = ?1",
+            rusqlite::params![id, to_project],
         )
         .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM chat_threads WHERE project_id = ?1", [from_project])
-            .map_err(|e| e.to_string())?;
         Ok(())
     }
 

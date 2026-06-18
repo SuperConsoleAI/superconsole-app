@@ -85,6 +85,7 @@ pub async fn exec_in_workspace(
         let output = tauri::async_runtime::spawn_blocking(move || {
             let mut cmd = Command::new(&program);
             cmd.args(&args).current_dir(&ws_path);
+            cmd.env("PATH", crate::pty::enriched_path());
             for (k, v) in crate::pty::parse_env_file(&Path::new(&ws_path).join(".env")) {
                 cmd.env(k, v);
             }

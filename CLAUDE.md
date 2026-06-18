@@ -6,7 +6,7 @@ Engineering quick-reference. Read `ARCHITECTURE.md` for the full picture, `CODEB
 - Tauri 2 desktop app: Rust backend + React 19 frontend. **Local-first with an optional cloud layer.**
 - Local SQLite owns everything agents do (terminals, jobs, inbox, chat, files). Turso (cloud) owns identity, orgs/projects, team, LLM keys, connectors. Only config/identity leaves the device.
 - UI never touches disk/process/cloud directly — everything goes through `invoke()` wrappers in `src/lib/api.ts`. Rust commands return `Result<T, String>`.
-- Terminals live in the root `Shell`, not in route outlets, so PTY sessions survive navigation. Chat is its own tab type (`{workspaceId}:chat`).
+- Terminals live in the root `Shell`, not in route outlets, so PTY sessions survive navigation. Chat is tab-per-session: a picker tab `{workspaceId}:chat` (box of the last 10 chats + "start new chat"), draft tabs `{workspaceId}:chat:draft:{n}` (unsaved, become a session tab on first message), and concrete session tabs `{workspaceId}:chat:{sessionId}`. Driven by `workspace-context` (`openChatPicker`/`openChatSession`/`newChatDraft`/`bindChatDraftToSession`); each chat tab renders its own `ChatView` keyed by `tabId`.
 
 ## Backend modules
 - Local: `db.rs` (SQLite + migrations), `pty.rs` (PTY sessions + per-CLI resume + usage screen-scrape on exit), `files.rs` (sandboxed FS, `resolve()` gate), `scheduler.rs` (cron tick + `exec_in_workspace` funnel, run-mode branching), `remote.rs` (Telegram + HTTP triggers), `cli_sessions.rs` (read/resume native CLI transcripts off disk), `usage.rs` (usage monitoring: pricing/cost estimate, aggregation core, Turso shared-total rollup, `record_usage`; raw `usage_events` local-only, 3 aggregate tables cache cross-machine totals).
@@ -36,6 +36,7 @@ Engineering quick-reference. Read `ARCHITECTURE.md` for the full picture, `CODEB
 - cron needs a seconds field — handled in `scheduler::next_run`, don't parse cron elsewhere.
 - xterm must `.fit()` via `requestAnimationFrame` after becoming visible.
 - Don't hand-edit `components/ui/` (shadcn) or `src-tauri/icons/` (regenerate).
+- Spawned CLIs/jobs must use `pty::enriched_path()` for `PATH` — a bundled `.app` launched from Finder only inherits `/usr/bin:/bin:/usr/sbin:/sbin`, so Homebrew/npm/bun/cargo CLIs won't resolve without it (resolved once from the login shell + well-known dirs).
 
 ## Commands
 - `npm run tauri dev` (Vite :1420 + Rust debug) · `npm run build` (tsc + vite) · `cd src-tauri && cargo check`

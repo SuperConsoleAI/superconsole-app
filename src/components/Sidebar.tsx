@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   BarChart3,
   Check,
@@ -9,7 +9,6 @@ import {
   ListTodo,
   Plus,
   Settings,
-  Sparkles,
   Terminal,
   Trash2,
 } from "lucide-react";
@@ -35,9 +34,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { api, CLI_PRESETS, type Organization, type OrgSkillView, type Workspace } from "@/lib/api";
+import { CLI_PRESETS, type Organization, type Workspace } from "@/lib/api";
 import { AccountMenu } from "@/components/AccountMenu";
-import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 
 interface SidebarRailProps {
@@ -426,8 +424,6 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
-      <OrgSkillsRail onSettings={onSettings} />
-
       <div className="flex flex-col gap-2 border-t border-sidebar-border p-3">
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" className="flex-1 justify-center" onClick={onAdd}>
@@ -465,49 +461,4 @@ export function Sidebar({
   );
 }
 
-function OrgSkillsRail({ onSettings }: { onSettings: () => void }) {
-  const { activeCloudOrg } = useAuth();
-  const [skills, setSkills] = useState<OrgSkillView[]>([]);
 
-  useEffect(() => {
-    if (!activeCloudOrg) {
-      setSkills([]);
-      return;
-    }
-    api
-      .listOrgSkills(activeCloudOrg.id)
-      .then(setSkills)
-      .catch(() => setSkills([]));
-  }, [activeCloudOrg]);
-
-  if (!activeCloudOrg || skills.length === 0) return null;
-
-  return (
-    <div className="border-t border-sidebar-border px-2 py-2">
-      <button
-        onClick={onSettings}
-        className="flex w-full items-center gap-1.5 px-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <Sparkles className="h-3 w-3" />
-        Org skills
-      </button>
-      <div className="flex flex-col gap-0.5">
-        {skills.map((s) => (
-          <div
-            key={s.name}
-            className="flex items-center gap-2 rounded-md px-2.5 py-1 text-[12px] text-muted-foreground"
-            title={s.in_library ? "Available to agents" : "Not on this machine yet"}
-          >
-            <span
-              className={cn(
-                "h-1.5 w-1.5 shrink-0 rounded-full",
-                s.in_library ? "bg-emerald-500" : "bg-amber-500",
-              )}
-            />
-            <span className="truncate">{s.name}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}

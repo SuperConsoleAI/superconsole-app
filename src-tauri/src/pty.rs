@@ -79,6 +79,82 @@ pub fn parse_env_file(path: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+// macOS GUI apps launched from Finder/Launchpad inherit a minimal PATH
+// (`/usr/bin:/bin:/usr/sbin:/sbin`), so CLIs installed via Homebrew, npm, bun,
+// cargo, etc. are not found. Resolve the user's real login-shell PATH once and
+// merge it with the current PATH plus well-known install dirs.
+static USER_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn login_shell_path() -> Option<String> {
+    let shell = std::env::var("SHELL").ok()?;
+    // Run a login+interactive shell so profile/rc files (where PATH is usually
+    // exported) are sourced; bracket the value to ignore any rc-file noise.
+    let out = std::process::Command::new(&shell)
+        .args(["-ilc", "printf '__SC__%s__SC__' \"$PATH\""])
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    let start = s.find("__SC__")? + "__SC__".len();
+    let rest = &s[start..];
+    let end = rest.find("__SC__")?;
+    let path = &rest[..end];
+    if path.trim().is_empty() {
+        None
+    } else {
+        Some(path.to_string())
+    }
+}
+
+/// PATH suitable for spawning user-installed CLIs from a bundled GUI app.
+pub fn enriched_path() -> String {
+    USER_PATH
+        .get_or_init(|| {
+            let mut seen = std::collections::HashSet::new();
+            let mut dirs: Vec<String> = Vec::new();
+            let mut push = |p: &str| {
+                if !p.is_empty() && seen.insert(p.to_string()) {
+                    dirs.push(p.to_string());
+                }
+            };
+            if let Some(lp) = login_shell_path() {
+                for p in lp.split(':') {
+                    push(p);
+                }
+            }
+            if let Ok(cur) = std::env::var("PATH") {
+                for p in cur.split(':') {
+                    push(p);
+                }
+            }
+            let home = std::env::var("HOME").unwrap_or_default();
+            for d in [
+                "/opt/homebrew/bin",
+                "/opt/homebrew/sbin",
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            ] {
+                push(d);
+            }
+            if !home.is_empty() {
+                for sub in [
+                    ".local/bin",
+                    ".bun/bin",
+                    ".cargo/bin",
+                    ".npm-global/bin",
+                    ".volta/bin",
+                    ".deno/bin",
+                ] {
+                    push(&format!("{}/{}", home, sub));
+                }
+            }
+            dirs.join(":")
+        })
+        .clone()
+}
+
 const CONTEXT_FILE_CANDIDATES: &[&str] = &["CLAUDE.md", "README.md", "AGENTS.md", "HEARTBEAT.md"];
 
 pub fn cli_command(cli: &str, workspace: &Path, resume_id: Option<&str>) -> CommandBuilder {
@@ -172,6 +248,7 @@ pub fn start_session(
     let mut cmd = cli_command(cli, workspace, resume_id);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    cmd.env("PATH", enriched_path());
 
     // Precedence: project > org > account > .env. Apply .env first, then the
     // resolved LLM env (account->org->project order) so LLM keys override .env.

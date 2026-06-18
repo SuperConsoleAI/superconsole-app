@@ -8,7 +8,7 @@ File index for fast navigation. Read ARCHITECTURE.md first.
 |------|-----------|
 | `main.rs` | Entry point, calls `superconsole_lib::run()`. Don't touch. |
 | `lib.rs` | All `#[tauri::command]` handlers, plugin registration, app setup (DB init, scheduler/remote spawn). Add new commands here + register in `generate_handler!`. Also hosts the `superconsole mcp --session <token>` CLI subcommand that boots `mcp_server.rs`. |
-| `db.rs` | SQLite via rusqlite. Schema (workspaces, organizations, jobs, inbox, settings, session_history, chat_messages, chat_threads, skills/memory/wiki caches) + all queries. Migrations are idempotent blocks in `Db::init`. |
+| `db.rs` | SQLite via rusqlite. Schema (workspaces, organizations, jobs, inbox, settings, session_history, chat_messages, chat_sessions, skills/memory/wiki caches) + all queries. Migrations are idempotent blocks in `Db::init`. |
 | `pty.rs` | PTY sessions via portable-pty. `SessionManager` map keyed by session id string. CLI presets in `cli_command(cli, workspace, resume_id)` (claude/droid/codex/antigravity/shell) incl. per-CLI resume flags. `.env` parsing, context-file detection, output reader thread → `pty-output` events. |
 | `files.rs` | Workspace-sandboxed file ops (list/read/write/create/delete). `resolve()` is the path-safety gate — never bypass it. |
 | `scheduler.rs` | Cron parsing (`next_run`), 30s tick loop (`spawn`), `exec_in_workspace` = the ONE headless executor (scheduler + HTTP + Telegram all use it). Branches on job `run_mode` (cli print-mode vs chat one-shot) and `job_command()` builds the CLI line (incl. `codex exec`). |
@@ -43,7 +43,7 @@ Config: `tauri.conf.json` (window/titlebar/updater/bundle), `capabilities/defaul
 | `lib/auth-context.tsx` | Cloud identity state: WorkOS user, orgs, active cloud org; `ensureWorkspaceProject` helper. |
 | `lib/utils.ts` | `cn()` only. |
 | `components/TerminalView.tsx` | xterm instance per tab; starts session, streams events, resize, exit overlay, embeds CommandInput. |
-| `components/ChatView.tsx` | Native chat tab: message list + bottom composer `[input][provider][model][send]`, streams `chat-*` events. |
+| `components/ChatView.tsx` | Native chat, tab-per-session (picker box of last 10 chats / draft / concrete session by `tabId`). Session created lazily on first message; draft promotes to a session tab. Message list + bottom composer `[input][provider][model][send]`, streams `chat-*` events. |
 | `components/LoginScreen.tsx` | WorkOS sign-in entry (pre-auth gate). |
 | `components/AccountMenu.tsx` | Signed-in user menu (org switch, sign out). |
 | `components/TabStrip.tsx` | Per-workspace tabs + browser-style "+" dropdown (new terminal/chat) + CLI launcher icons. |
@@ -55,7 +55,7 @@ Config: `tauri.conf.json` (window/titlebar/updater/bundle), `capabilities/defaul
 | `components/InboxView.tsx` | Inbox feed, markdown output, approve/reject flow. |
 | `components/TasksView.tsx` | Org-wide job list (toggle/run/delete), redesigned for run modes + triggers. |
 | `components/JobsDialog.tsx` | Per-workspace job CRUD: run mode (cli/chat), trigger (cron/api/github), allowed connectors, schedule presets + recent session history. |
-| `components/SessionsView.tsx` | History page: CLI tab (session_history + native on-disk sessions per CLI, Open=resume in a new tab, three-dot Delete) and Chat tab (one thread per project, provider icon + model badge, star/rename/move/delete). |
+| `components/SessionsView.tsx` | Full-width history page: CLI tab (session_history + native on-disk sessions per CLI, default name + rename/Delete, project name + time on the right) and Chat tab (one row per chat session, provider icon + model badge, star/rename/move/delete; click opens that session). |
 | `components/UsageView.tsx` | Usage monitoring page (phase 21): project/org/account level toggle + period toggle (month/year/all), metric cards, token breakdown, provider-colored breakdowns (model/provider/cli/member/project/org), 365-day activity heatmap (tokens/cost), markdown cost-report export. Reads `api.getUsage(level, id)`. |
 | `components/SettingsPage.tsx` | /settings page: section nav; Account/Security, General (updates), Appearance, Integrations (Telegram), API Keys (HTTP), Models (LLM keys), Teams, Connectors. Large file — sections are co-located components. |
 | `components/AddWorkspaceDialog.tsx` | Folder picker + name + CLI choice. |

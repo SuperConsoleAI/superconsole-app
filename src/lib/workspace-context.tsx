@@ -30,6 +30,19 @@ interface WorkspaceContextValue {
   openWorkspace: (id: number, defaultCli: string) => void;
   openTab: (workspaceId: number, cli: string) => void;
   openResumeTab: (workspaceId: number, cli: string, resumeId: string) => void;
+  // Multi-session chat: each session (and the picker) is its own tab.
+  // Picker tab id `{ws}:chat`; session tab `{ws}:chat:{sessionId}`; a fresh
+  // draft `{ws}:chat:draft:{n}` until its first message creates a session.
+  openChatPicker: (workspaceId: number) => void;
+  openChatSession: (workspaceId: number, sessionId: string, label?: string) => void;
+  newChatDraft: (workspaceId: number) => void;
+  setChatTabLabel: (workspaceId: number, tabId: string, label: string) => void;
+  bindChatDraftToSession: (
+    workspaceId: number,
+    draftTabId: string,
+    sessionId: string,
+    label: string,
+  ) => void;
   closeTab: (workspaceId: number, tabId: string) => void;
   activateTab: (workspaceId: number, tabId: string) => void;
   addWorkspace: (name: string, path: string, cli: string) => Promise<Workspace>;
@@ -77,15 +90,16 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     setTabsByWs((prev) => {
       const tabs = prev[workspaceId] ?? [];
       if (cli === "chat") {
-        const existing = tabs.find((t) => t.cli === "chat");
+        const pickerId = `${workspaceId}:chat`;
+        const existing = tabs.find((t) => t.id === pickerId);
         if (existing) {
           setActiveTabByWs((a) => ({ ...a, [workspaceId]: existing.id }));
           return prev;
         }
         const tab: SessionTab = {
-          id: `${workspaceId}:chat`,
+          id: pickerId,
           cli: "chat",
-          label: "Chat",
+          label: "Chats",
         };
         setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
         return { ...prev, [workspaceId]: [...tabs, tab] };
@@ -138,6 +152,88 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         setActiveTabByWs((a) => ({ ...a, [workspaceId]: id }));
         return { ...prev, [workspaceId]: [...tabs, tab] };
       });
+    },
+    [],
+  );
+
+  // The picker tab is the plain `{ws}:chat` tab handled by openTab.
+  const openChatPicker = useCallback(
+    (workspaceId: number) => {
+      setOpenedIds((ids) => (ids.includes(workspaceId) ? ids : [...ids, workspaceId]));
+      openTab(workspaceId, "chat");
+    },
+    [openTab],
+  );
+
+  const activateOrAddChatTab = useCallback(
+    (workspaceId: number, tab: SessionTab) => {
+      setOpenedIds((ids) => (ids.includes(workspaceId) ? ids : [...ids, workspaceId]));
+      setTabsByWs((prev) => {
+        const tabs = prev[workspaceId] ?? [];
+        if (tabs.some((t) => t.id === tab.id)) {
+          setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
+          return prev;
+        }
+        setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
+        return { ...prev, [workspaceId]: [...tabs, tab] };
+      });
+    },
+    [],
+  );
+
+  const openChatSession = useCallback(
+    (workspaceId: number, sessionId: string, label?: string) => {
+      activateOrAddChatTab(workspaceId, {
+        id: `${workspaceId}:chat:${sessionId}`,
+        cli: "chat",
+        label: label?.trim() || "Chat",
+      });
+    },
+    [activateOrAddChatTab],
+  );
+
+  // Always open a fresh draft tab so a new chat never shows a prior
+  // conversation, even if an earlier draft is still pending a reply.
+  const newChatDraft = useCallback(
+    (workspaceId: number) => {
+      activateOrAddChatTab(workspaceId, {
+        id: `${workspaceId}:chat:draft:${Date.now()}`,
+        cli: "chat",
+        label: "New chat",
+      });
+    },
+    [activateOrAddChatTab],
+  );
+
+  const setChatTabLabel = useCallback(
+    (workspaceId: number, tabId: string, label: string) => {
+      const next = label.trim() || "Chat";
+      setTabsByWs((prev) => {
+        const tabs = prev[workspaceId] ?? [];
+        return {
+          ...prev,
+          [workspaceId]: tabs.map((t) => (t.id === tabId ? { ...t, label: next } : t)),
+        };
+      });
+    },
+    [],
+  );
+
+  // Once a draft's first message creates a real session, rebrand the tab so it
+  // dedupes with reopens and shows the chat title.
+  const bindChatDraftToSession = useCallback(
+    (workspaceId: number, draftTabId: string, sessionId: string, label: string) => {
+      const newId = `${workspaceId}:chat:${sessionId}`;
+      setTabsByWs((prev) => {
+        const tabs = prev[workspaceId] ?? [];
+        const next = tabs.map((t) =>
+          t.id === draftTabId ? { ...t, id: newId, label: label.trim() || "Chat" } : t,
+        );
+        return { ...prev, [workspaceId]: next };
+      });
+      setActiveTabByWs((a) =>
+        a[workspaceId] === draftTabId ? { ...a, [workspaceId]: newId } : a,
+      );
     },
     [],
   );
@@ -232,6 +328,11 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         openWorkspace,
         openTab,
         openResumeTab,
+        openChatPicker,
+        openChatSession,
+        newChatDraft,
+        setChatTabLabel,
+        bindChatDraftToSession,
         closeTab,
         activateTab,
         addWorkspace,

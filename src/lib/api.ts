@@ -126,6 +126,7 @@ export interface SessionLog {
   cli: string;
   started_at: string;
   ended_at: string | null;
+  label: string | null;
 }
 
 export interface CliSession {
@@ -152,14 +153,24 @@ export const CLI_PRESETS = [
   { id: "codex", label: "Codex" },
 ] as const;
 
-export interface ChatThreadMeta {
+export interface ChatSession {
+  id: string;
   project_id: string;
   name: string | null;
   is_star: boolean;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_at: string | null;
+  preview: string | null;
+  first_user: string | null;
+  provider: string | null;
+  model: string | null;
 }
 
 export interface ChatMessage {
   id: number;
+  session_id: string;
   project_id: string;
   role: "user" | "assistant";
   content: string;
@@ -664,29 +675,31 @@ export const api = {
     invoke<void>("chat_send", { requestId, workspaceId, provider, model, messages }),
   hasProviderKey: (workspaceId: number, provider: string) =>
     invoke<boolean>("has_provider_key", { workspaceId, provider }),
-  listChatMessages: (projectId: string) =>
-    invoke<ChatMessage[]>("list_chat_messages", { projectId }),
+  listChatSessions: (projectId: string) =>
+    invoke<ChatSession[]>("list_chat_sessions", { projectId }),
+  createChatSession: (projectId: string) =>
+    invoke<ChatSession>("create_chat_session", { projectId }),
+  listChatMessages: (sessionId: string) =>
+    invoke<ChatMessage[]>("list_chat_messages", { sessionId }),
   addChatMessage: (
-    projectId: string,
+    sessionId: string,
     role: string,
     content: string,
     provider: string | null,
     model: string | null,
   ) =>
-    invoke<ChatMessage>("add_chat_message", { projectId, role, content, provider, model }),
-  clearChatMessages: (projectId: string) =>
-    invoke<void>("clear_chat_messages", { projectId }),
+    invoke<ChatMessage>("add_chat_message", { sessionId, role, content, provider, model }),
   deleteCliSession: (id: number) => invoke<void>("delete_cli_session", { id }),
-  getChatThread: (projectId: string) =>
-    invoke<ChatThreadMeta>("get_chat_thread", { projectId }),
-  renameChatThread: (projectId: string, name: string) =>
-    invoke<void>("rename_chat_thread", { projectId, name }),
-  starChatThread: (projectId: string, isStar: boolean) =>
-    invoke<void>("star_chat_thread", { projectId, isStar }),
-  deleteChatThread: (projectId: string) =>
-    invoke<void>("delete_chat_thread", { projectId }),
-  moveChatThread: (fromProject: string, toProject: string) =>
-    invoke<void>("move_chat_thread", { fromProject, toProject }),
+  renameCliSession: (id: number, label: string | null) =>
+    invoke<void>("rename_cli_session", { id, label }),
+  renameChatSession: (id: string, name: string) =>
+    invoke<void>("rename_chat_session", { id, name }),
+  starChatSession: (id: string, isStar: boolean) =>
+    invoke<void>("star_chat_session", { id, isStar }),
+  deleteChatSession: (id: string) =>
+    invoke<void>("delete_chat_session", { id }),
+  moveChatSession: (id: string, toProject: string) =>
+    invoke<void>("move_chat_session", { id, toProject }),
   // Reads the local usage cache (mirror of the Turso shared totals). Returns a
   // zeroed row if the entity has no usage yet.
   getUsage: (level: UsageLevel, id: string) =>

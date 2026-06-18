@@ -54,6 +54,7 @@ function Shell() {
     setAddOpen,
     openWorkspace,
     openTab,
+    openChatPicker,
     closeTab,
     activateTab,
     addWorkspace,
@@ -201,7 +202,11 @@ function Shell() {
               liveSessions={liveSessions}
               onActivate={(tabId) => activateTab(activeWorkspace.id, tabId)}
               onClose={(tabId) => closeTab(activeWorkspace.id, tabId)}
-              onOpen={(cli) => openTab(activeWorkspace.id, cli)}
+              onOpen={(cli) =>
+                cli === "chat"
+                  ? openChatPicker(activeWorkspace.id)
+                  : openTab(activeWorkspace.id, cli)
+              }
             />
           )}
 
@@ -219,6 +224,7 @@ function Shell() {
                       key={tab.id}
                       workspace={ws}
                       visible={isActiveTab}
+                      tabId={tab.id}
                       onRouteToPty={(text) => {
                         const target = (tabsByWs[ws.id] ?? []).find(
                           (t) => t.cli !== "chat",
@@ -400,8 +406,16 @@ const tasksRoute = createRoute({
 });
 
 function SessionsRoute() {
-  const { workspaces, organizations, activeOrgId, openedIds, openTab, openResumeTab, openWorkspace } =
-    useWorkspaces();
+  const {
+    workspaces,
+    organizations,
+    activeOrgId,
+    openedIds,
+    openChatPicker,
+    openChatSession,
+    openResumeTab,
+    openWorkspace,
+  } = useWorkspaces();
   const navigate = useNavigate();
   const lastProjectId = openedIds.length ? openedIds[openedIds.length - 1] : null;
   return (
@@ -411,8 +425,9 @@ function SessionsRoute() {
         organizations={organizations}
         activeOrgId={activeOrgId}
         lastProjectId={lastProjectId}
-        onOpenChat={(id) => {
-          openTab(id, "chat");
+        onOpenChat={(id, sessionId) => {
+          if (sessionId) openChatSession(id, sessionId);
+          else openChatPicker(id);
           navigate({
             to: "/workspace/$workspaceId",
             params: { workspaceId: String(id) },

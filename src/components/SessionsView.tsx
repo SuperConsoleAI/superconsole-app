@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 import {
   api,
-  type ChatMessage,
+  CLI_PRESETS,
+  type ChatSession,
   type CliSession,
   type Organization,
   type SessionLog,
@@ -23,6 +24,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PresetIcon } from "@/components/PresetIcon";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -57,6 +59,20 @@ function fmtWhen(s: string | null): string {
   });
 }
 
+function fmtRelative(s: string | null): string {
+  const d = parseUtc(s);
+  if (!d) return "";
+  const diff = Date.now() - d.getTime();
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}min ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 function duration(start: string, end: string | null): string {
   const a = parseUtc(start);
   const b = parseUtc(end);
@@ -71,17 +87,9 @@ interface CliRow extends SessionLog {
   wsName: string;
 }
 
-interface ChatThread {
+interface ChatRow extends ChatSession {
   workspaceId: number;
-  projectId: string;
   wsName: string;
-  count: number;
-  lastAt: string;
-  name: string;
-  starred: boolean;
-  preview: string;
-  provider: string | null;
-  model: string | null;
 }
 
 function snippet(s: string): string {
@@ -89,19 +97,16 @@ function snippet(s: string): string {
   return one.length > 64 ? one.slice(0, 64) + "..." : one || "Untitled chat";
 }
 
-// Map an LLM provider id to a preset icon key (reusing the CLI icon set).
-function providerPreset(provider: string | null): string | null {
-  switch ((provider ?? "").toLowerCase()) {
-    case "anthropic":
-      return "claude";
-    case "openai":
-      return "codex";
-    case "gemini":
-    case "google":
-      return "gemini";
-    default:
-      return null;
-  }
+// Display name for a chat session: custom name, else first user message.
+function chatTitle(s: ChatSession): string {
+  return s.name?.trim() || snippet(s.first_user ?? s.preview ?? "");
+}
+
+const cliLabel = (id: string) => CLI_PRESETS.find((p) => p.id === id)?.label ?? id;
+
+// Default display name for a CLI session when the user hasn't renamed it.
+function cliName(s: SessionLog): string {
+  return s.label?.trim() || `${cliLabel(s.cli)} session`;
 }
 
 export function SessionsView({
@@ -116,7 +121,7 @@ export function SessionsView({
   organizations: Organization[];
   activeOrgId: number;
   lastProjectId: number | null;
-  onOpenChat: (workspaceId: number) => void;
+  onOpenChat: (workspaceId: number, sessionId?: string) => void;
   onResume: (workspaceId: number, cli: string, sessionId: string) => void;
 }) {
   const [tab, setTab] = useState<"cli" | "chat">("cli");
@@ -124,7 +129,7 @@ export function SessionsView({
   const [orgFilter, setOrgFilter] = useState<number | "all">(activeOrgId);
   const [projFilter, setProjFilter] = useState<number | "all">(lastProjectId ?? "all");
   const [cli, setCli] = useState<CliRow[]>([]);
-  const [threads, setThreads] = useState<ChatThread[]>([]);
+  const [threads, setThreads] = useState<ChatRow[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [native, setNative] = useState<Record<number, CliSession[] | "loading">>({});
 
@@ -182,43 +187,24 @@ export function SessionsView({
     Promise.all(
       workspaces
         .filter((w) => w.project_id)
-        .map(async (w): Promise<ChatThread | null> => {
-          const pid = w.project_id as string;
+        .map(async (w): Promise<ChatRow[]> => {
           try {
-            const [msgs, meta] = await Promise.all([
-              api.listChatMessages(pid),
-              api
-                .getChatThread(pid)
-                .catch(() => ({ project_id: pid, name: null, is_star: false })),
-            ]);
-            if (msgs.length === 0) return null;
-            const last = msgs[msgs.length - 1] as ChatMessage;
-            const firstUser =
-              (msgs.find((m) => m.role === "user") as ChatMessage | undefined)?.content ??
-              last.content;
-            return {
-              workspaceId: w.id,
-              projectId: pid,
-              wsName: w.name,
-              count: msgs.length,
-              lastAt: last.created_at,
-              name: meta.name?.trim() || snippet(firstUser),
-              starred: meta.is_star,
-              preview: last.content,
-              provider: last.provider,
-              model: last.model,
-            };
+            const list = await api.listChatSessions(w.project_id as string);
+            return list
+              .filter((s) => s.message_count > 0)
+              .map((s) => ({ ...s, workspaceId: w.id, wsName: w.name }));
           } catch {
-            return null;
+            return [];
           }
         }),
-    ).then((list) => {
-      const valid = list.filter((t): t is ChatThread => t !== null);
-      valid.sort(
+    ).then((lists) => {
+      const flat = lists.flat();
+      flat.sort(
         (a, b) =>
-          Number(b.starred) - Number(a.starred) || b.lastAt.localeCompare(a.lastAt),
+          Number(b.is_star) - Number(a.is_star) ||
+          (b.last_at ?? b.updated_at).localeCompare(a.last_at ?? a.updated_at),
       );
-      setThreads(valid);
+      setThreads(flat);
     });
   }, [workspaces]);
 
@@ -226,23 +212,35 @@ export function SessionsView({
     load();
   }, [load]);
 
-  const [renameTarget, setRenameTarget] = useState<ChatThread | null>(null);
+  const [renameTarget, setRenameTarget] = useState<ChatRow | null>(null);
   const [renameValue, setRenameValue] = useState("");
-  const [moveTarget, setMoveTarget] = useState<ChatThread | null>(null);
+  const [moveTarget, setMoveTarget] = useState<ChatRow | null>(null);
+  const [cliRenameTarget, setCliRenameTarget] = useState<CliRow | null>(null);
+  const [cliRenameValue, setCliRenameValue] = useState("");
 
   const deleteCli = (id: number) => {
     api.deleteCliSession(id).then(load).catch(console.error);
   };
-  const toggleStar = (t: ChatThread) => {
-    api.starChatThread(t.projectId, !t.starred).then(load).catch(console.error);
+  const submitCliRename = () => {
+    if (!cliRenameTarget) return;
+    api
+      .renameCliSession(cliRenameTarget.id, cliRenameValue.trim() || null)
+      .then(() => {
+        setCliRenameTarget(null);
+        load();
+      })
+      .catch(console.error);
   };
-  const deleteChat = (t: ChatThread) => {
-    api.deleteChatThread(t.projectId).then(load).catch(console.error);
+  const toggleStar = (t: ChatRow) => {
+    api.starChatSession(t.id, !t.is_star).then(load).catch(console.error);
+  };
+  const deleteChat = (t: ChatRow) => {
+    api.deleteChatSession(t.id).then(load).catch(console.error);
   };
   const submitRename = () => {
     if (!renameTarget) return;
     api
-      .renameChatThread(renameTarget.projectId, renameValue.trim())
+      .renameChatSession(renameTarget.id, renameValue.trim())
       .then(() => {
         setRenameTarget(null);
         load();
@@ -253,7 +251,7 @@ export function SessionsView({
     const dest = workspaces.find((w) => w.id === toWorkspaceId);
     if (!moveTarget || !dest?.project_id) return;
     api
-      .moveChatThread(moveTarget.projectId, dest.project_id)
+      .moveChatSession(moveTarget.id, dest.project_id)
       .then(() => {
         setMoveTarget(null);
         load();
@@ -271,7 +269,10 @@ export function SessionsView({
       cli.filter(
         (r) =>
           matches(r.workspace_id) &&
-          (!q || r.wsName.toLowerCase().includes(q) || r.cli.toLowerCase().includes(q)),
+          (!q ||
+            r.wsName.toLowerCase().includes(q) ||
+            r.cli.toLowerCase().includes(q) ||
+            (r.label ?? "").toLowerCase().includes(q)),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [cli, allowedWs, projFilter, q],
@@ -282,9 +283,9 @@ export function SessionsView({
         (t) =>
           matches(t.workspaceId) &&
           (!q ||
-            t.name.toLowerCase().includes(q) ||
+            chatTitle(t).toLowerCase().includes(q) ||
             t.wsName.toLowerCase().includes(q) ||
-            t.preview.toLowerCase().includes(q) ||
+            (t.preview ?? "").toLowerCase().includes(q) ||
             (t.provider ?? "").toLowerCase().includes(q)),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -354,7 +355,7 @@ export function SessionsView({
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-3xl px-5 pt-4">
+      <div className="w-full px-5 pt-4">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" strokeWidth={1} />
           <Input
@@ -367,7 +368,7 @@ export function SessionsView({
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto flex max-w-3xl flex-col px-5 py-3">
+        <div className="flex flex-col px-5 py-3">
           {tab === "cli" ? (
             filteredCli.length === 0 ? (
               <Empty icon={<Terminal />} text="No CLI sessions recorded yet." />
@@ -388,10 +389,15 @@ export function SessionsView({
                           strokeWidth={1.5}
                         />
                         <PresetIcon preset={s.cli} className="h-4 w-4 shrink-0" />
-                        <span className="min-w-0 flex-1 truncate text-sm font-medium">{s.wsName}</span>
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                          {cliName(s)}
+                        </span>
                         {!s.ended_at && (
                           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
                         )}
+                        <span className="hidden max-w-[26%] shrink-0 truncate text-xs text-muted-foreground sm:inline">
+                          {s.wsName}
+                        </span>
                         <span className="shrink-0 text-xs text-muted-foreground">
                           {fmtWhen(s.started_at)}
                           {s.ended_at && ` · ${duration(s.started_at, s.ended_at)}`}
@@ -404,6 +410,15 @@ export function SessionsView({
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => {
+                              setCliRenameTarget(s);
+                              setCliRenameValue(s.label ?? "");
+                            }}
+                          >
+                            <Pencil className="mr-2 h-3.5 w-3.5" /> Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
                           <DropdownMenuItem
                             className="text-destructive focus:text-destructive"
                             onClick={() => deleteCli(s.id)}
@@ -428,30 +443,28 @@ export function SessionsView({
           ) : (
             <div className="divide-y divide-border">
               {filteredThreads.map((t) => {
-                const preset = providerPreset(t.provider);
                 return (
                   <div
-                    key={t.workspaceId}
+                    key={t.id}
                     className="group flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-accent/50"
                   >
                     <button
                       className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-2.5 text-left"
-                      onClick={() => onOpenChat(t.workspaceId)}
+                      onClick={() => onOpenChat(t.workspaceId, t.id)}
                     >
-                      {preset ? (
-                        <PresetIcon preset={preset} className="h-4 w-4 shrink-0" />
-                      ) : (
-                        <MessageSquare
-                          className="h-4 w-4 shrink-0 text-muted-foreground"
-                          strokeWidth={1}
-                        />
-                      )}
-                      {t.starred && (
+                      <ProviderIcon
+                        provider={t.provider}
+                        className="h-4 w-4 shrink-0 opacity-80"
+                      />
+                      {t.is_star && (
                         <Star className="h-3 w-3 shrink-0 fill-amber-400 text-amber-400" />
                       )}
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{t.name}</span>
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                        {chatTitle(t)}
+                      </span>
                       {t.model && (
-                        <span className="hidden max-w-[28%] shrink-0 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground md:inline">
+                        <span className="hidden max-w-[28%] shrink-0 items-center gap-1 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground md:inline-flex">
+                          <ProviderIcon model={t.model} className="h-3 w-3 shrink-0 opacity-50" />
                           {t.model}
                         </span>
                       )}
@@ -459,7 +472,7 @@ export function SessionsView({
                         {t.wsName}
                       </span>
                       <span className="shrink-0 text-xs text-muted-foreground">
-                        {fmtWhen(t.lastAt)}
+                        {fmtRelative(t.last_at ?? t.updated_at)}
                       </span>
                     </button>
                     <DropdownMenu>
@@ -471,11 +484,11 @@ export function SessionsView({
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem onClick={() => toggleStar(t)}>
                           <Star className="mr-2 h-3.5 w-3.5" />
-                          {t.starred ? "Unstar" : "Star"}
+                          {t.is_star ? "Unstar" : "Star"}
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           onClick={() => {
-                            setRenameValue(t.name);
+                            setRenameValue(t.name ?? "");
                             setRenameTarget(t);
                           }}
                         >
@@ -520,6 +533,27 @@ export function SessionsView({
             <Button onClick={submitRename} disabled={!renameValue.trim()}>
               Save
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!cliRenameTarget} onOpenChange={(o) => !o && setCliRenameTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename session</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={cliRenameValue}
+            onChange={(e) => setCliRenameValue(e.target.value)}
+            placeholder="Session name (leave blank to clear)"
+            onKeyDown={(e) => e.key === "Enter" && submitCliRename()}
+            autoFocus
+          />
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCliRenameTarget(null)}>
+              Cancel
+            </Button>
+            <Button onClick={submitCliRename}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

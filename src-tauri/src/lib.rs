@@ -416,25 +416,30 @@ async fn sync_cloud_cache(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_chat_messages(db: State<Db>, project_id: String) -> Result<Vec<ChatMessage>, String> {
-    db.list_chat_messages(&project_id)
+fn list_chat_sessions(db: State<Db>, project_id: String) -> Result<Vec<db::ChatSession>, String> {
+    db.list_chat_sessions(&project_id)
+}
+
+#[tauri::command]
+fn create_chat_session(db: State<Db>, project_id: String) -> Result<db::ChatSession, String> {
+    db.create_chat_session(&project_id)
+}
+
+#[tauri::command]
+fn list_chat_messages(db: State<Db>, session_id: String) -> Result<Vec<ChatMessage>, String> {
+    db.list_chat_messages(&session_id)
 }
 
 #[tauri::command]
 fn add_chat_message(
     db: State<Db>,
-    project_id: String,
+    session_id: String,
     role: String,
     content: String,
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<ChatMessage, String> {
-    db.add_chat_message(&project_id, &role, &content, provider.as_deref(), model.as_deref())
-}
-
-#[tauri::command]
-fn clear_chat_messages(db: State<Db>, project_id: String) -> Result<(), String> {
-    db.clear_chat_messages(&project_id)
+    db.add_chat_message(&session_id, &role, &content, provider.as_deref(), model.as_deref())
 }
 
 #[tauri::command]
@@ -443,28 +448,28 @@ fn delete_cli_session(db: State<Db>, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_chat_thread(db: State<Db>, project_id: String) -> Result<db::ChatThreadMeta, String> {
-    db.get_chat_thread(&project_id)
+fn rename_cli_session(db: State<Db>, id: i64, label: Option<String>) -> Result<(), String> {
+    db.rename_session_log(id, label.as_deref())
 }
 
 #[tauri::command]
-fn rename_chat_thread(db: State<Db>, project_id: String, name: String) -> Result<(), String> {
-    db.rename_chat_thread(&project_id, &name)
+fn rename_chat_session(db: State<Db>, id: String, name: String) -> Result<(), String> {
+    db.rename_chat_session(&id, &name)
 }
 
 #[tauri::command]
-fn star_chat_thread(db: State<Db>, project_id: String, is_star: bool) -> Result<(), String> {
-    db.star_chat_thread(&project_id, is_star)
+fn star_chat_session(db: State<Db>, id: String, is_star: bool) -> Result<(), String> {
+    db.star_chat_session(&id, is_star)
 }
 
 #[tauri::command]
-fn delete_chat_thread(db: State<Db>, project_id: String) -> Result<(), String> {
-    db.delete_chat_thread(&project_id)
+fn delete_chat_session(db: State<Db>, id: String) -> Result<(), String> {
+    db.delete_chat_session(&id)
 }
 
 #[tauri::command]
-fn move_chat_thread(db: State<Db>, from_project: String, to_project: String) -> Result<(), String> {
-    db.move_chat_thread(&from_project, &to_project)
+fn move_chat_session(db: State<Db>, id: String, to_project: String) -> Result<(), String> {
+    db.move_chat_session(&id, &to_project)
 }
 
 /// Remove all locally cached cloud data + the derived encryption key from this
@@ -560,15 +565,16 @@ pub fn run() {
             sync_org_cache,
             chat::chat_send,
             chat::has_provider_key,
+            list_chat_sessions,
+            create_chat_session,
             list_chat_messages,
             add_chat_message,
-            clear_chat_messages,
             delete_cli_session,
-            get_chat_thread,
-            rename_chat_thread,
-            star_chat_thread,
-            delete_chat_thread,
-            move_chat_thread,
+            rename_cli_session,
+            rename_chat_session,
+            star_chat_session,
+            delete_chat_session,
+            move_chat_session,
             clear_local_cloud_data,
             team::list_org_members,
             team::invite_org_member,
