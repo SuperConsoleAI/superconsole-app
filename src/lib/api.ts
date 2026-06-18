@@ -168,6 +168,71 @@ export interface ChatMessage {
   created_at: string;
 }
 
+// Phase 21: usage monitoring. One canonical aggregate shape is reused at every
+// level (project/org/account) so a single display path renders all three.
+export type UsageLevel = "project" | "org" | "account";
+
+// A daily/hourly/monthly bucket inside a rolling window (usage_24h/7d/30d/12m).
+export interface UsageBucket {
+  date: string;
+  tokens_prompt: number;
+  tokens_completion: number;
+  cost_usd: number;
+  sessions: number;
+}
+
+// One year's totals inside analytics_lifetime, keyed by year (e.g. "2026").
+export interface UsageYear {
+  tokens_prompt: number;
+  tokens_completion: number;
+  cost_usd: number;
+  sessions: number;
+  cache_hits: number;
+}
+
+// One day in heatmap_365d, keyed by "YYYY-MM-DD".
+export interface UsageHeatDay {
+  cost_usd: number;
+  sessions: number;
+  tokens: number;
+}
+
+// Generic breakdown entry; fields present depend on the map (by_model carries
+// provider, by_project carries name, etc.). All numeric fields are optional.
+export interface UsageBreakdown {
+  cost_usd?: number;
+  sessions?: number;
+  tokens?: number;
+  tokens_prompt?: number;
+  tokens_completion?: number;
+  provider?: string;
+  name?: string;
+}
+
+export interface UsageRow {
+  id: string;
+  tokens_prompt_lifetime: number;
+  tokens_prompt_cached_lifetime: number;
+  tokens_completion_lifetime: number;
+  tokens_reasoning_lifetime: number;
+  cost_lifetime_usd: number;
+  sessions_lifetime: number;
+  cache_hits_lifetime: number;
+  analytics_lifetime: Record<string, UsageYear>;
+  usage_24h: UsageBucket[];
+  usage_7d: UsageBucket[];
+  usage_30d: UsageBucket[];
+  usage_12m: UsageBucket[];
+  by_model: Record<string, UsageBreakdown>;
+  by_provider: Record<string, UsageBreakdown>;
+  by_cli: Record<string, UsageBreakdown>;
+  by_member: Record<string, UsageBreakdown>;
+  by_project: Record<string, UsageBreakdown>;
+  by_org: Record<string, UsageBreakdown>;
+  heatmap_365d: Record<string, UsageHeatDay>;
+  updated_at?: string;
+}
+
 // Common models per provider; users can also type a custom model id.
 export const CHAT_PROVIDERS = [
   {
@@ -622,6 +687,10 @@ export const api = {
     invoke<void>("delete_chat_thread", { projectId }),
   moveChatThread: (fromProject: string, toProject: string) =>
     invoke<void>("move_chat_thread", { fromProject, toProject }),
+  // Reads the local usage cache (mirror of the Turso shared totals). Returns a
+  // zeroed row if the entity has no usage yet.
+  getUsage: (level: UsageLevel, id: string) =>
+    invoke<UsageRow>("get_usage", { level, id }),
   clearLocalCloudData: () => invoke<void>("clear_local_cloud_data"),
   listOrgMembers: (orgId: string) =>
     invoke<MemberView[]>("list_org_members", { orgId }),

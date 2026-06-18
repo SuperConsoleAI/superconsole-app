@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  BarChart3,
   Check,
   ChevronsUpDown,
   FolderOpen,
@@ -47,6 +48,7 @@ interface SidebarRailProps {
   inboxActive: boolean;
   tasksActive: boolean;
   sessionsActive: boolean;
+  usageActive: boolean;
   orgName: string;
   onExpand: () => void;
   onSelect: (id: number) => void;
@@ -54,6 +56,7 @@ interface SidebarRailProps {
   onInbox: () => void;
   onTasks: () => void;
   onSessions: () => void;
+  onUsage: () => void;
   onSettings: () => void;
 }
 
@@ -65,6 +68,7 @@ export function SidebarRail({
   inboxActive,
   tasksActive,
   sessionsActive,
+  usageActive,
   orgName,
   onExpand,
   onSelect,
@@ -72,6 +76,7 @@ export function SidebarRail({
   onInbox,
   onTasks,
   onSessions,
+  onUsage,
   onSettings,
 }: SidebarRailProps) {
   const railButton = (active: boolean) =>
@@ -119,6 +124,15 @@ export function SidebarRail({
           </button>
         </TooltipTrigger>
         <TooltipContent side="right">Sessions</TooltipContent>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button className={railButton(usageActive)} onClick={onUsage}>
+            <BarChart3 className="h-4 w-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Usage</TooltipContent>
       </Tooltip>
 
       <div className="my-1 h-px w-6 bg-sidebar-border" />
@@ -170,6 +184,7 @@ interface SidebarProps {
   inboxActive: boolean;
   tasksActive: boolean;
   sessionsActive: boolean;
+  usageActive: boolean;
   onOrgChange: (id: number) => void;
   onNewOrg: (name: string) => Promise<void>;
   onSelect: (id: number) => void;
@@ -178,6 +193,7 @@ interface SidebarProps {
   onInbox: () => void;
   onTasks: () => void;
   onSessions: () => void;
+  onUsage: () => void;
   onSettings: () => void;
 }
 
@@ -194,6 +210,7 @@ export function Sidebar({
   inboxActive,
   tasksActive,
   sessionsActive,
+  usageActive,
   onOrgChange,
   onNewOrg,
   onSelect,
@@ -202,6 +219,7 @@ export function Sidebar({
   onInbox,
   onTasks,
   onSessions,
+  onUsage,
   onSettings,
 }: SidebarProps) {
   const [orgDialogOpen, setOrgDialogOpen] = useState(false);
@@ -311,6 +329,25 @@ export function Sidebar({
             className={cn("h-4 w-4", sessionsActive ? "text-primary" : "text-muted-foreground")}
           />
           <span className="text-[13px] font-medium">Sessions</span>
+        </div>
+
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={onUsage}
+          onKeyDown={(e) => e.key === "Enter" && onUsage()}
+          className={cn(
+            "relative mt-0.5 flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors",
+            usageActive ? "bg-accent" : "hover:bg-accent/50",
+          )}
+        >
+          {usageActive && (
+            <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-primary" />
+          )}
+          <BarChart3
+            className={cn("h-4 w-4", usageActive ? "text-primary" : "text-muted-foreground")}
+          />
+          <span className="text-[13px] font-medium">Usage</span>
         </div>
       </div>
 

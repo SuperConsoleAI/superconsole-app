@@ -25,6 +25,7 @@ import { AddWorkspaceDialog } from "@/components/AddWorkspaceDialog";
 import { SettingsPage } from "@/components/SettingsPage";
 import { TasksView } from "@/components/TasksView";
 import { SessionsView } from "@/components/SessionsView";
+import { UsageView } from "@/components/UsageView";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -81,6 +82,7 @@ function Shell() {
   const inboxActive = !!matchRoute({ to: "/inbox" });
   const tasksActive = !!matchRoute({ to: "/tasks" });
   const sessionsActive = !!matchRoute({ to: "/sessions" });
+  const usageActive = !!matchRoute({ to: "/usage" });
   const settingsActive = !!matchRoute({ to: "/settings" });
 
   const activeId = params.workspaceId ? Number(params.workspaceId) : null;
@@ -154,6 +156,7 @@ function Shell() {
             inboxActive={inboxActive}
             tasksActive={tasksActive}
             sessionsActive={sessionsActive}
+            usageActive={usageActive}
             onOrgChange={(id) => {
               setActiveOrgId(id);
               navigate({ to: "/" });
@@ -165,6 +168,7 @@ function Shell() {
             onInbox={() => navigate({ to: "/inbox" })}
             onTasks={() => navigate({ to: "/tasks" })}
             onSessions={() => navigate({ to: "/sessions" })}
+            onUsage={() => navigate({ to: "/usage" })}
             onSettings={() => navigate({ to: "/settings" })}
           />
         ) : (
@@ -176,6 +180,7 @@ function Shell() {
             inboxActive={inboxActive}
             tasksActive={tasksActive}
             sessionsActive={sessionsActive}
+            usageActive={usageActive}
             orgName={organizations.find((o) => o.id === activeOrgId)?.name ?? "Personal"}
             onExpand={() => setSidebarOpen(true)}
             onSelect={(id) => goToWorkspace(id)}
@@ -183,6 +188,7 @@ function Shell() {
             onInbox={() => navigate({ to: "/inbox" })}
             onTasks={() => navigate({ to: "/tasks" })}
             onSessions={() => navigate({ to: "/sessions" })}
+            onUsage={() => navigate({ to: "/usage" })}
             onSettings={() => navigate({ to: "/settings" })}
           />
         )}
@@ -433,6 +439,21 @@ const sessionsRoute = createRoute({
   component: SessionsRoute,
 });
 
+function UsageRoute() {
+  const { workspaces } = useWorkspaces();
+  return (
+    <div className="absolute inset-0 bg-background">
+      <UsageView workspaces={workspaces} />
+    </div>
+  );
+}
+
+const usageRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "usage",
+  component: UsageRoute,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "settings",
@@ -458,6 +479,7 @@ const routeTree = rootRoute.addChildren([
   inboxRoute,
   tasksRoute,
   sessionsRoute,
+  usageRoute,
   settingsRoute,
   workspaceRoute,
 ]);

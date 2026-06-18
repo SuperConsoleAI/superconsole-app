@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub struct Session {
     pub workspace_id: i64,
@@ -195,14 +195,22 @@ pub fn start_session(
     let app_handle = app.clone();
     let sid = session_id.to_string();
     let providers: Vec<String> = key_providers.to_vec();
+    let cli_name = cli.to_string();
+    let ws_id = workspace_id;
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
         let mut auth_error_reported = false;
+        // Rolling tail of recent output for end-of-session usage parsing.
+        let mut tail = String::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    tail.push_str(&data);
+                    if tail.len() > 6000 {
+                        tail = tail.chars().skip(tail.chars().count().saturating_sub(4000)).collect();
+                    }
                     if !auth_error_reported
                         && !providers.is_empty()
                         && looks_like_auth_error(&data)
@@ -224,6 +232,28 @@ pub fn start_session(
                         },
                     );
                 }
+            }
+        }
+        // Best-effort usage capture from the CLI's end-of-session summary.
+        if let Some((prompt, completion, cost)) = crate::usage::parse_cli_usage(&tail) {
+            if let Some(project_id) = {
+                let db = app_handle.state::<crate::db::Db>();
+                db.get_workspace(ws_id).ok().and_then(|w| w.project_id)
+            } {
+                let cost = cost.unwrap_or_else(|| {
+                    crate::usage::estimate_cost(&cli_name, "", prompt, 0, completion, 0)
+                });
+                let ev = crate::db::UsageEvent {
+                    project_id,
+                    session_id: Some(sid.clone()),
+                    cli: Some(cli_name.clone()),
+                    tokens_prompt: prompt,
+                    tokens_completion: completion,
+                    cost_usd: cost,
+                    estimated: true,
+                    ..Default::default()
+                };
+                crate::usage::record_usage(&app_handle, ev);
             }
         }
         let _ = app_handle.emit("pty-exit", PtyExit { session_id: sid });

@@ -491,7 +491,29 @@ pub async fn execute(db: &Db, ctx: &ToolCtx, name: &str, args: Value) -> Result<
             ok_text(json!({"updated": true}))
         }
         "sc_log_usage" => {
-            // Persisted in Phase 21; acknowledged for now.
+            let Some(project_id) = ctx.project_id.clone() else {
+                return ok_text(json!({"logged": false, "reason": "no cloud project"}));
+            };
+            let tokens_prompt = args["tokens_in"].as_i64().unwrap_or(0);
+            let tokens_completion = args["tokens_out"].as_i64().unwrap_or(0);
+            let model = args["model"].as_str().unwrap_or("").to_string();
+            let provider = args["provider"].as_str().unwrap_or("").to_string();
+            let cost = crate::usage::estimate_cost(&model, &provider, tokens_prompt, 0, tokens_completion, 0);
+            let ev = crate::db::UsageEvent {
+                project_id,
+                org_id: ctx.org_id.clone(),
+                user_id: ctx.user_id.clone(),
+                model: if model.is_empty() { None } else { Some(model) },
+                provider: if provider.is_empty() { None } else { Some(provider) },
+                cli: Some("chat".to_string()),
+                tokens_prompt,
+                tokens_completion,
+                cost_usd: cost,
+                ..Default::default()
+            };
+            // The tool path has no AppHandle: persist locally now; the next
+            // startup/update sync pushes the delta to the shared cloud totals.
+            db.insert_usage_event(&crate::db::UsageEvent { id: ulid::Ulid::new().to_string(), ended_at: Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()), ..ev })?;
             ok_text(json!({"logged": true}))
         }
         "skill_list" => {

@@ -25,6 +25,7 @@ File index for fast navigation. Read ARCHITECTURE.md first.
 | `skills.rs` | Skills registry CRUD (phase 18); local cache + Turso sync; injected into chat/CLI system prompt. |
 | `memory.rs` | Long-term memory CRUD (phase 19); local cache + Turso sync; injected into system prompt. |
 | `wiki.rs` | Project wiki CRUD (phase 20); local cache + Turso sync; injected into system prompt. |
+| `usage.rs` | Usage monitoring (phase 21): `ModelPricing`/`estimate_cost`, aggregation core (`apply_event` → lifetime counters, year-keyed analytics, rolling windows, by-model/provider/cli/member/project/org, 365-day heatmap), Turso shared-total upsert with project→org→account rollup, `record_usage`, `parse_cli_usage` (PTY screen-scrape). Raw `usage_events` are local-only; the 3 aggregate tables cache shared cross-machine totals. |
 | `team.rs` | Org + project membership and invitation CRUD; permission checks (owner/admin manage, last-owner guard, members must be org members). |
 | `connectors.rs` | Connector `REGISTRY` (fields + env mapping), encrypted-blob CRUD, `session_env` injection (project>org + telegram fallback), `connected_services`. |
 
@@ -55,6 +56,7 @@ Config: `tauri.conf.json` (window/titlebar/updater/bundle), `capabilities/defaul
 | `components/TasksView.tsx` | Org-wide job list (toggle/run/delete), redesigned for run modes + triggers. |
 | `components/JobsDialog.tsx` | Per-workspace job CRUD: run mode (cli/chat), trigger (cron/api/github), allowed connectors, schedule presets + recent session history. |
 | `components/SessionsView.tsx` | History page: CLI tab (session_history + native on-disk sessions per CLI, Open=resume in a new tab, three-dot Delete) and Chat tab (one thread per project, provider icon + model badge, star/rename/move/delete). |
+| `components/UsageView.tsx` | Usage monitoring page (phase 21): project/org/account level toggle + period toggle (month/year/all), metric cards, token breakdown, provider-colored breakdowns (model/provider/cli/member/project/org), 365-day activity heatmap (tokens/cost), markdown cost-report export. Reads `api.getUsage(level, id)`. |
 | `components/SettingsPage.tsx` | /settings page: section nav; Account/Security, General (updates), Appearance, Integrations (Telegram), API Keys (HTTP), Models (LLM keys), Teams, Connectors. Large file — sections are co-located components. |
 | `components/AddWorkspaceDialog.tsx` | Folder picker + name + CLI choice. |
 | `components/PresetIcon.tsx` | Theme-aware CLI brand icon (falls back to terminal glyph). |

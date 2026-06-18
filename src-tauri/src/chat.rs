@@ -151,15 +151,48 @@ pub async fn chat_send(
         .await
     };
 
-    if let Err(e) = result {
-        let _ = app.emit(
-            "chat-error",
-            ChatError {
-                request_id: request_id.clone(),
-                message: e,
-            },
-        );
-        return Ok(());
+    let usage = match result {
+        Err(e) => {
+            let _ = app.emit(
+                "chat-error",
+                ChatError {
+                    request_id: request_id.clone(),
+                    message: e,
+                },
+            );
+            return Ok(());
+        }
+        Ok(u) => u,
+    };
+
+    // Record token usage for this chat turn (cli = "chat"). Needs a cloud
+    // project ULID; skip silently for non-cloud workspaces.
+    if usage.total() > 0 {
+        let project_id = {
+            let db = app.state::<Db>();
+            db.get_workspace(workspace_id).ok().and_then(|w| w.project_id)
+        };
+        if let Some(project_id) = project_id {
+            let cost = crate::usage::estimate_cost(
+                &model, &provider, usage.prompt, usage.cached, usage.completion, usage.reasoning,
+            );
+            let cache_total = usage.prompt + usage.cached;
+            let ev = crate::db::UsageEvent {
+                project_id,
+                session_id: Some(request_id.clone()),
+                model: Some(model.clone()),
+                provider: Some(provider.clone()),
+                cli: Some("chat".to_string()),
+                tokens_prompt: usage.prompt,
+                tokens_prompt_cached: usage.cached,
+                tokens_completion: usage.completion,
+                tokens_reasoning: usage.reasoning,
+                cost_usd: cost,
+                cache_hit_rate: if cache_total > 0 { usage.cached as f64 / cache_total as f64 } else { 0.0 },
+                ..Default::default()
+            };
+            crate::usage::record_usage(&app, ev);
+        }
     }
 
     let _ = app.emit("chat-done", ChatSignal { request_id });
@@ -173,9 +206,30 @@ struct ToolCall {
     args: String,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct TurnUsage {
+    prompt: i64,
+    cached: i64,
+    completion: i64,
+    reasoning: i64,
+}
+
+impl TurnUsage {
+    fn add(&mut self, o: &TurnUsage) {
+        self.prompt += o.prompt;
+        self.cached += o.cached;
+        self.completion += o.completion;
+        self.reasoning += o.reasoning;
+    }
+    fn total(&self) -> i64 {
+        self.prompt + self.cached + self.completion + self.reasoning
+    }
+}
+
 struct TurnResult {
     text: String,
     tool_calls: Vec<ToolCall>,
+    usage: TurnUsage,
 }
 
 const MAX_TOOL_ITERS: usize = 8;
@@ -194,9 +248,10 @@ async fn run_tool_loop(
     key: Option<&str>,
     base_url: Option<&str>,
     ctx: &crate::mcp::ToolCtx,
-) -> Result<(), String> {
+) -> Result<TurnUsage, String> {
     let client = reqwest::Client::new();
     let anthropic = provider == "anthropic";
+    let mut total = TurnUsage::default();
 
     let cw = crate::mcp::context_window(model);
     let (specs, _bridge) = {
@@ -226,9 +281,10 @@ async fn run_tool_loop(
             return Err(format!("{} — {}", status, truncate(&body, 500)));
         }
         let turn = collect_turn(provider, resp, app, request_id).await?;
+        total.add(&turn.usage);
 
         if turn.tool_calls.is_empty() {
-            return Ok(());
+            return Ok(total);
         }
 
         // Execute tools and append assistant + result messages.
@@ -277,7 +333,7 @@ async fn run_tool_loop(
             }
         }
     }
-    Ok(())
+    Ok(total)
 }
 
 enum Sse {
@@ -299,7 +355,7 @@ async fn stream(
     messages: &[ChatMsg],
     key: Option<&str>,
     base_url: Option<&str>,
-) -> Result<(), String> {
+) -> Result<TurnUsage, String> {
     let client = reqwest::Client::new();
     let req = build_request(&client, provider, model, system, messages, key, base_url)?;
 
@@ -329,12 +385,12 @@ async fn stream(
                         );
                     }
                 }
-                Some(Sse::Done) => return Ok(()),
+                Some(Sse::Done) => return Ok(TurnUsage::default()),
                 None => {}
             }
         }
     }
-    Ok(())
+    Ok(TurnUsage::default())
 }
 
 fn parse_sse_line(provider: &str, line: &str) -> Option<Sse> {
@@ -506,7 +562,10 @@ fn build_turn_request(
             msgs.push(json!({ "role": "system", "content": system }));
         }
         msgs.extend(messages.iter().cloned());
-        let mut body = json!({ "model": model, "messages": msgs, "stream": true });
+        let mut body = json!({
+            "model": model, "messages": msgs, "stream": true,
+            "stream_options": { "include_usage": true }
+        });
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
@@ -533,6 +592,7 @@ async fn collect_turn(
     let mut resp = resp;
     let mut buffer = String::new();
     let mut text = String::new();
+    let mut usage = TurnUsage::default();
     // Keyed by streaming block/tool index.
     let mut tools: std::collections::BTreeMap<i64, (String, String, String)> =
         std::collections::BTreeMap::new();
@@ -558,12 +618,24 @@ async fn collect_turn(
                 continue;
             }
             if payload == "[DONE]" {
-                return Ok(TurnResult { text, tool_calls: finalize(tools) });
+                return Ok(TurnResult { text, tool_calls: finalize(tools), usage });
             }
             let Ok(v) = serde_json::from_str::<Value>(payload) else {
                 continue;
             };
             if provider == "anthropic" {
+                // Usage arrives on message_start (input/cache) + message_delta (output).
+                if let Some(u) = v.get("message").and_then(|m| m.get("usage")).or_else(|| v.get("usage")) {
+                    if let Some(n) = u["input_tokens"].as_i64() {
+                        usage.prompt = n;
+                    }
+                    if let Some(n) = u["cache_read_input_tokens"].as_i64() {
+                        usage.cached = n;
+                    }
+                    if let Some(n) = u["output_tokens"].as_i64() {
+                        usage.completion = n;
+                    }
+                }
                 match v["type"].as_str() {
                     Some("content_block_start") => {
                         let idx = v["index"].as_i64().unwrap_or(0);
@@ -596,11 +668,25 @@ async fn collect_turn(
                         }
                     }
                     Some("message_stop") => {
-                        return Ok(TurnResult { text, tool_calls: finalize(tools) });
+                        return Ok(TurnResult { text, tool_calls: finalize(tools), usage });
                     }
                     _ => {}
                 }
             } else {
+                // OpenAI-compatible usage (final chunk, needs stream_options).
+                if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
+                    if let Some(n) = u["prompt_tokens"].as_i64() {
+                        let cached = u["prompt_tokens_details"]["cached_tokens"].as_i64().unwrap_or(0);
+                        usage.cached = cached;
+                        usage.prompt = (n - cached).max(0);
+                    }
+                    if let Some(n) = u["completion_tokens"].as_i64() {
+                        usage.completion = n;
+                    }
+                    if let Some(n) = u["completion_tokens_details"]["reasoning_tokens"].as_i64() {
+                        usage.reasoning = n;
+                    }
+                }
                 let delta = &v["choices"][0]["delta"];
                 if let Some(t) = delta["content"].as_str() {
                     text.push_str(t);
@@ -626,12 +712,16 @@ async fn collect_turn(
                     }
                 }
                 if v["choices"][0]["finish_reason"].is_string() {
-                    return Ok(TurnResult { text, tool_calls: finalize(tools) });
+                    // Don't return yet: the usage chunk (stream_options) arrives
+                    // after finish_reason on OpenAI. Keep reading until [DONE].
+                    if provider == "anthropic" {
+                        return Ok(TurnResult { text, tool_calls: finalize(tools), usage });
+                    }
                 }
             }
         }
     }
-    Ok(TurnResult { text, tool_calls: finalize(tools) })
+    Ok(TurnResult { text, tool_calls: finalize(tools), usage })
 }
 
 fn finalize(tools: std::collections::BTreeMap<i64, (String, String, String)>) -> Vec<ToolCall> {

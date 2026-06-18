@@ -258,6 +258,7 @@ async fn sync_org_projects(
         sync_skills(app, client, cfg, &project_id, synced_at).await;
         sync_memory(app, client, cfg, &project_id, synced_at).await;
         sync_wiki(app, client, cfg, &project_id, synced_at).await;
+        crate::usage::pull_usage(app, client, cfg, "project_usage", &project_id).await;
     }
 }
 
@@ -282,13 +283,25 @@ pub async fn sync_on_startup(app: &AppHandle) {
         let _ = db.clear_cloud_cache();
     }
 
+    // Re-push any usage events that never reached the cloud (e.g. offline at
+    // session end) before pulling the shared totals back down.
+    let pending = {
+        let db = app.state::<Db>();
+        db.unsynced_usage_events().unwrap_or_default()
+    };
+    for ev in &pending {
+        crate::usage::push_event_to_cloud(app, ev).await;
+    }
+
     sync_llm(app, &client, &cfg, "account", &user_id, &synced_at).await;
     sync_connectors(app, &client, &cfg, "account", &user_id, &synced_at).await;
+    crate::usage::pull_usage(app, &client, &cfg, "account_usage", &user_id).await;
     for org_id in &org_ids {
         sync_llm(app, &client, &cfg, "org", org_id, &synced_at).await;
         sync_connectors(app, &client, &cfg, "org", org_id, &synced_at).await;
         sync_org_skills(app, &client, &cfg, org_id, &synced_at).await;
         sync_org_memory(app, &client, &cfg, org_id, &synced_at).await;
+        crate::usage::pull_usage(app, &client, &cfg, "org_usage", org_id).await;
         sync_org_projects(app, &client, &cfg, org_id, &synced_at).await;
     }
 }
@@ -306,12 +319,14 @@ pub async fn sync_on_update(app: &AppHandle, entity_type: &str, id: &str) {
         "account" => {
             sync_llm(app, &client, &cfg, "account", id, &synced_at).await;
             sync_connectors(app, &client, &cfg, "account", id, &synced_at).await;
+            crate::usage::pull_usage(app, &client, &cfg, "account_usage", id).await;
         }
         "org" => {
             sync_llm(app, &client, &cfg, "org", id, &synced_at).await;
             sync_connectors(app, &client, &cfg, "org", id, &synced_at).await;
             sync_org_skills(app, &client, &cfg, id, &synced_at).await;
             sync_org_memory(app, &client, &cfg, id, &synced_at).await;
+            crate::usage::pull_usage(app, &client, &cfg, "org_usage", id).await;
             sync_org_projects(app, &client, &cfg, id, &synced_at).await;
         }
         "project" => {
@@ -320,6 +335,7 @@ pub async fn sync_on_update(app: &AppHandle, entity_type: &str, id: &str) {
             sync_skills(app, &client, &cfg, id, &synced_at).await;
             sync_memory(app, &client, &cfg, id, &synced_at).await;
             sync_wiki(app, &client, &cfg, id, &synced_at).await;
+            crate::usage::pull_usage(app, &client, &cfg, "project_usage", id).await;
         }
         _ => {}
     }

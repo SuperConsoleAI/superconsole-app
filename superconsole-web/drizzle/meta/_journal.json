@@ -64,6 +64,13 @@
       "when": 1782000000000,
       "tag": "0008_wiki_index",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1782100000000,
+      "tag": "0009_usage_monitoring",
+      "breakpoints": true
     }
   ]
 }

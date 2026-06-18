@@ -1,7 +1,9 @@
 import { sql } from "drizzle-orm";
 import {
   index,
+  integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
@@ -382,3 +384,43 @@ export const wikiIndex = sqliteTable(
     uniqueIndex("wiki_index_unq").on(t.projectId, t.slug),
   ],
 );
+
+// Phase 21: usage monitoring. One canonical schema reused by all three levels
+// (project/org/account) so a single display path renders every level. These
+// are the shared cross-machine/member totals; the desktop keeps a local mirror
+// for fast display and pushes deltas here on session end. Raw per-session
+// events stay on-device and never reach the cloud.
+const usageColumns = () => ({
+  id: text("id").primaryKey().notNull(),
+  tokensPromptLifetime: integer("tokens_prompt_lifetime").notNull().default(0),
+  tokensPromptCachedLifetime: integer("tokens_prompt_cached_lifetime")
+    .notNull()
+    .default(0),
+  tokensCompletionLifetime: integer("tokens_completion_lifetime")
+    .notNull()
+    .default(0),
+  tokensReasoningLifetime: integer("tokens_reasoning_lifetime")
+    .notNull()
+    .default(0),
+  costLifetimeUsd: real("cost_lifetime_usd").notNull().default(0),
+  sessionsLifetime: integer("sessions_lifetime").notNull().default(0),
+  cacheHitsLifetime: integer("cache_hits_lifetime").notNull().default(0),
+  analyticsLifetime: text("analytics_lifetime").notNull().default("{}"),
+  usage24h: text("usage_24h").notNull().default("[]"),
+  usage7d: text("usage_7d").notNull().default("[]"),
+  usage30d: text("usage_30d").notNull().default("[]"),
+  usage12m: text("usage_12m").notNull().default("[]"),
+  byModel: text("by_model").notNull().default("{}"),
+  byProvider: text("by_provider").notNull().default("{}"),
+  byCli: text("by_cli").notNull().default("{}"),
+  byMember: text("by_member").notNull().default("{}"),
+  byProject: text("by_project").notNull().default("{}"),
+  byOrg: text("by_org").notNull().default("{}"),
+  heatmap365d: text("heatmap_365d").notNull().default("{}"),
+  lastSyncedAt: text("last_synced_at"),
+  updatedAt: updatedAt(),
+});
+
+export const projectUsage = sqliteTable("project_usage", usageColumns());
+export const orgUsage = sqliteTable("org_usage", usageColumns());
+export const accountUsage = sqliteTable("account_usage", usageColumns());

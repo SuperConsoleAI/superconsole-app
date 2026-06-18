@@ -9,7 +9,7 @@ Engineering quick-reference. Read `ARCHITECTURE.md` for the full picture, `CODEB
 - Terminals live in the root `Shell`, not in route outlets, so PTY sessions survive navigation. Chat is its own tab type (`{workspaceId}:chat`).
 
 ## Backend modules
-- Local: `db.rs` (SQLite + migrations), `pty.rs` (PTY sessions + per-CLI resume), `files.rs` (sandboxed FS, `resolve()` gate), `scheduler.rs` (cron tick + `exec_in_workspace` funnel, run-mode branching), `remote.rs` (Telegram + HTTP triggers), `cli_sessions.rs` (read/resume native CLI transcripts off disk).
+- Local: `db.rs` (SQLite + migrations), `pty.rs` (PTY sessions + per-CLI resume + usage screen-scrape on exit), `files.rs` (sandboxed FS, `resolve()` gate), `scheduler.rs` (cron tick + `exec_in_workspace` funnel, run-mode branching), `remote.rs` (Telegram + HTTP triggers), `cli_sessions.rs` (read/resume native CLI transcripts off disk), `usage.rs` (usage monitoring: pricing/cost estimate, aggregation core, Turso shared-total rollup, `record_usage`; raw `usage_events` local-only, 3 aggregate tables cache cross-machine totals).
 - Cloud: `auth.rs` (WorkOS loopback `127.0.0.1:4666` + keychain), `cloud.rs` (Turso HTTP exec), `crypto.rs` (AES-256-GCM), `sync_manager.rs` (Turso → local cache), `llm.rs` (keys + session env + chat adapters + `one_shot_completion`), `chat.rs` (token streaming + native tool loop), `team.rs`, `connectors.rs`, `skills.rs`/`memory.rs`/`wiki.rs` (registry CRUD synced to Turso, injected into prompts).
 - MCP: `mcp.rs` (in-process tool layer + `write_mcp_config`/pre-approval for Claude/Droid; `ToolCtx` with AES session token), `mcp_server.rs` (stdio JSON-RPC, launched via `superconsole mcp --session <token>`).
 
@@ -26,6 +26,7 @@ Engineering quick-reference. Read `ARCHITECTURE.md` for the full picture, `CODEB
 - Local schema change → idempotent block in `db.rs::Db::init`. Cloud schema change → Drizzle migration in `superconsole-web/drizzle/` (+ journal) + matching `ensure_*` guard in Rust.
 - New CLI preset → `pty.rs::cli_command` (+ resume flag) + `scheduler.rs::job_command` + `CLI_PRESETS` in `api.ts` + icon in `preset-icons` (+ native read/resume mapping in `cli_sessions.rs`).
 - New MCP tool → add a `ToolSpec` in `mcp.rs`; it serves both native chat (`mcp::execute`) and the stdio server. The `superconsole` server is auto-written per session for every CLI: Claude (`.mcp.json` + preapprove), Droid (`.factory/mcp.json`), Codex (global `~/.codex/config.toml`), Antigravity (`.gemini/settings.json` + global `~/.gemini/config/mcp_config.json`, paths still under `~/.gemini`).
+- Usage capture → record via `usage::record_usage` (chat reads API usage blocks in `chat.rs`; PTY screen-scrapes on exit). Raw events stay local in `usage_events`; aggregates roll up project→org→account into Turso and are cached in the 3 `*_usage` tables. Read for UI via the `get_usage(level, id)` command → `api.getUsage`.
 
 ## Gotchas
 - `WORKOS_COOKIE_PASSWORD` must be byte-identical to the web portal's, or encrypted secrets won't decrypt across surfaces.

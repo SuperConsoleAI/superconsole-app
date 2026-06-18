@@ -84,6 +84,27 @@ pub struct CachedLlmKey {
     pub extra_env: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UsageEvent {
+    pub id: String,
+    pub project_id: String,
+    pub org_id: Option<String>,
+    pub user_id: Option<String>,
+    pub session_id: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub cli: Option<String>,
+    pub tokens_prompt: i64,
+    pub tokens_prompt_cached: i64,
+    pub tokens_completion: i64,
+    pub tokens_reasoning: i64,
+    pub cost_usd: f64,
+    pub cache_hit_rate: f64,
+    pub estimated: bool,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: i64,
@@ -458,6 +479,115 @@ impl Db {
                 content TEXT NOT NULL DEFAULT '',
                 synced_at TEXT NOT NULL,
                 PRIMARY KEY (project_id, slug)
+            );",
+        )
+        .map_err(|e| e.to_string())?;
+
+        // Phase 21: usage monitoring.
+        // `usage_events` is the raw, local-only ledger (one row per measured
+        // session/turn). It NEVER leaves the device and is never cleared by
+        // cloud-cache wipes. `user_id` records who generated the event so the
+        // by_member breakdown can be populated. `synced` marks whether the
+        // event's delta has been pushed to the Turso shared totals.
+        //
+        // The three `*_usage` tables share one canonical schema so a single
+        // display path renders every level. They are a LOCAL CACHE of the Turso
+        // shared (cross-machine/member) totals; display always reads them.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_events (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                org_id TEXT,
+                user_id TEXT,
+                session_id TEXT,
+                model TEXT,
+                provider TEXT,
+                cli TEXT,
+                tokens_prompt INTEGER NOT NULL DEFAULT 0,
+                tokens_prompt_cached INTEGER NOT NULL DEFAULT 0,
+                tokens_completion INTEGER NOT NULL DEFAULT 0,
+                tokens_reasoning INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0,
+                cache_hit_rate REAL NOT NULL DEFAULT 0,
+                estimated INTEGER NOT NULL DEFAULT 0,
+                synced INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                ended_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS usage_events_project_idx ON usage_events(project_id);
+            CREATE INDEX IF NOT EXISTS usage_events_synced_idx ON usage_events(synced);
+            CREATE TABLE IF NOT EXISTS project_usage (
+                id TEXT PRIMARY KEY,
+                tokens_prompt_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_prompt_cached_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_completion_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_reasoning_lifetime INTEGER NOT NULL DEFAULT 0,
+                cost_lifetime_usd REAL NOT NULL DEFAULT 0,
+                sessions_lifetime INTEGER NOT NULL DEFAULT 0,
+                cache_hits_lifetime INTEGER NOT NULL DEFAULT 0,
+                analytics_lifetime TEXT NOT NULL DEFAULT '{}',
+                usage_24h TEXT NOT NULL DEFAULT '[]',
+                usage_7d TEXT NOT NULL DEFAULT '[]',
+                usage_30d TEXT NOT NULL DEFAULT '[]',
+                usage_12m TEXT NOT NULL DEFAULT '[]',
+                by_model TEXT NOT NULL DEFAULT '{}',
+                by_provider TEXT NOT NULL DEFAULT '{}',
+                by_cli TEXT NOT NULL DEFAULT '{}',
+                by_member TEXT NOT NULL DEFAULT '{}',
+                by_project TEXT NOT NULL DEFAULT '{}',
+                by_org TEXT NOT NULL DEFAULT '{}',
+                heatmap_365d TEXT NOT NULL DEFAULT '{}',
+                last_synced_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS org_usage (
+                id TEXT PRIMARY KEY,
+                tokens_prompt_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_prompt_cached_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_completion_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_reasoning_lifetime INTEGER NOT NULL DEFAULT 0,
+                cost_lifetime_usd REAL NOT NULL DEFAULT 0,
+                sessions_lifetime INTEGER NOT NULL DEFAULT 0,
+                cache_hits_lifetime INTEGER NOT NULL DEFAULT 0,
+                analytics_lifetime TEXT NOT NULL DEFAULT '{}',
+                usage_24h TEXT NOT NULL DEFAULT '[]',
+                usage_7d TEXT NOT NULL DEFAULT '[]',
+                usage_30d TEXT NOT NULL DEFAULT '[]',
+                usage_12m TEXT NOT NULL DEFAULT '[]',
+                by_model TEXT NOT NULL DEFAULT '{}',
+                by_provider TEXT NOT NULL DEFAULT '{}',
+                by_cli TEXT NOT NULL DEFAULT '{}',
+                by_member TEXT NOT NULL DEFAULT '{}',
+                by_project TEXT NOT NULL DEFAULT '{}',
+                by_org TEXT NOT NULL DEFAULT '{}',
+                heatmap_365d TEXT NOT NULL DEFAULT '{}',
+                last_synced_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS account_usage (
+                id TEXT PRIMARY KEY,
+                tokens_prompt_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_prompt_cached_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_completion_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_reasoning_lifetime INTEGER NOT NULL DEFAULT 0,
+                cost_lifetime_usd REAL NOT NULL DEFAULT 0,
+                sessions_lifetime INTEGER NOT NULL DEFAULT 0,
+                cache_hits_lifetime INTEGER NOT NULL DEFAULT 0,
+                analytics_lifetime TEXT NOT NULL DEFAULT '{}',
+                usage_24h TEXT NOT NULL DEFAULT '[]',
+                usage_7d TEXT NOT NULL DEFAULT '[]',
+                usage_30d TEXT NOT NULL DEFAULT '[]',
+                usage_12m TEXT NOT NULL DEFAULT '[]',
+                by_model TEXT NOT NULL DEFAULT '{}',
+                by_provider TEXT NOT NULL DEFAULT '{}',
+                by_cli TEXT NOT NULL DEFAULT '{}',
+                by_member TEXT NOT NULL DEFAULT '{}',
+                by_project TEXT NOT NULL DEFAULT '{}',
+                by_org TEXT NOT NULL DEFAULT '{}',
+                heatmap_365d TEXT NOT NULL DEFAULT '{}',
+                last_synced_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );",
         )
         .map_err(|e| e.to_string())?;
@@ -909,9 +1039,178 @@ impl Db {
              DELETE FROM org_skill_cache;
              DELETE FROM memory_index_cache;
              DELETE FROM org_memory_cache;
-             DELETE FROM wiki_index_cache;",
+             DELETE FROM wiki_index_cache;
+             DELETE FROM project_usage;
+             DELETE FROM org_usage;
+             DELETE FROM account_usage;",
         )
         .map_err(|e| e.to_string())
+    }
+
+    // ---- Phase 21: usage ----
+
+    pub fn insert_usage_event(&self, ev: &UsageEvent) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO usage_events
+                (id, project_id, org_id, user_id, session_id, model, provider, cli,
+                 tokens_prompt, tokens_prompt_cached, tokens_completion, tokens_reasoning,
+                 cost_usd, cache_hit_rate, estimated, synced, started_at, ended_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,0,?16,?17)",
+            rusqlite::params![
+                ev.id, ev.project_id, ev.org_id, ev.user_id, ev.session_id, ev.model,
+                ev.provider, ev.cli, ev.tokens_prompt, ev.tokens_prompt_cached,
+                ev.tokens_completion, ev.tokens_reasoning, ev.cost_usd, ev.cache_hit_rate,
+                ev.estimated as i64, ev.started_at, ev.ended_at,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn unsynced_usage_events(&self) -> Result<Vec<UsageEvent>, String> {
+        let conn = self.0.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, project_id, org_id, user_id, session_id, model, provider, cli,
+                        tokens_prompt, tokens_prompt_cached, tokens_completion, tokens_reasoning,
+                        cost_usd, cache_hit_rate, estimated, started_at, ended_at
+                 FROM usage_events WHERE synced = 0 ORDER BY created_at",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(UsageEvent {
+                    id: r.get(0)?,
+                    project_id: r.get(1)?,
+                    org_id: r.get(2)?,
+                    user_id: r.get(3)?,
+                    session_id: r.get(4)?,
+                    model: r.get(5)?,
+                    provider: r.get(6)?,
+                    cli: r.get(7)?,
+                    tokens_prompt: r.get(8)?,
+                    tokens_prompt_cached: r.get(9)?,
+                    tokens_completion: r.get(10)?,
+                    tokens_reasoning: r.get(11)?,
+                    cost_usd: r.get(12)?,
+                    cache_hit_rate: r.get(13)?,
+                    estimated: r.get::<_, i64>(14)? != 0,
+                    started_at: r.get(15)?,
+                    ended_at: r.get(16)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn mark_usage_synced(&self, ids: &[String]) -> Result<(), String> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for id in ids {
+            tx.execute("UPDATE usage_events SET synced = 1 WHERE id = ?1", [id])
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Read one aggregate row as a JSON object (numeric columns as numbers,
+    /// the `*_json` columns parsed into nested values). `table` must be one of
+    /// project_usage|org_usage|account_usage. Returns None if absent.
+    pub fn get_usage_row(&self, table: &str, id: &str) -> Option<serde_json::Value> {
+        if !matches!(table, "project_usage" | "org_usage" | "account_usage") {
+            return None;
+        }
+        let conn = self.0.lock().unwrap();
+        let sql = format!(
+            "SELECT tokens_prompt_lifetime, tokens_prompt_cached_lifetime,
+                    tokens_completion_lifetime, tokens_reasoning_lifetime, cost_lifetime_usd,
+                    sessions_lifetime, cache_hits_lifetime, analytics_lifetime,
+                    usage_24h, usage_7d, usage_30d, usage_12m, by_model, by_provider,
+                    by_cli, by_member, by_project, by_org, heatmap_365d, updated_at
+             FROM {} WHERE id = ?1",
+            table
+        );
+        conn.query_row(&sql, [id], |r| {
+            let parse = |s: String| serde_json::from_str(&s).unwrap_or(serde_json::json!({}));
+            Ok(serde_json::json!({
+                "id": id,
+                "tokens_prompt_lifetime": r.get::<_, i64>(0)?,
+                "tokens_prompt_cached_lifetime": r.get::<_, i64>(1)?,
+                "tokens_completion_lifetime": r.get::<_, i64>(2)?,
+                "tokens_reasoning_lifetime": r.get::<_, i64>(3)?,
+                "cost_lifetime_usd": r.get::<_, f64>(4)?,
+                "sessions_lifetime": r.get::<_, i64>(5)?,
+                "cache_hits_lifetime": r.get::<_, i64>(6)?,
+                "analytics_lifetime": parse(r.get(7)?),
+                "usage_24h": parse(r.get(8)?),
+                "usage_7d": parse(r.get(9)?),
+                "usage_30d": parse(r.get(10)?),
+                "usage_12m": parse(r.get(11)?),
+                "by_model": parse(r.get(12)?),
+                "by_provider": parse(r.get(13)?),
+                "by_cli": parse(r.get(14)?),
+                "by_member": parse(r.get(15)?),
+                "by_project": parse(r.get(16)?),
+                "by_org": parse(r.get(17)?),
+                "heatmap_365d": parse(r.get(18)?),
+                "updated_at": r.get::<_, String>(19)?,
+            }))
+        })
+        .ok()
+    }
+
+    /// Upsert one aggregate row from a JSON object (the shape produced by
+    /// `get_usage_row` / the usage aggregation core).
+    pub fn put_usage_row(&self, table: &str, row: &serde_json::Value) -> Result<(), String> {
+        if !matches!(table, "project_usage" | "org_usage" | "account_usage") {
+            return Err("invalid usage table".into());
+        }
+        let conn = self.0.lock().unwrap();
+        let id = row["id"].as_str().ok_or("usage row missing id")?;
+        let i = |k: &str| row[k].as_i64().unwrap_or(0);
+        let f = |k: &str| row[k].as_f64().unwrap_or(0.0);
+        let j = |k: &str| row[k].to_string();
+        let sql = format!(
+            "INSERT OR REPLACE INTO {} (id, tokens_prompt_lifetime, tokens_prompt_cached_lifetime,
+                tokens_completion_lifetime, tokens_reasoning_lifetime, cost_lifetime_usd,
+                sessions_lifetime, cache_hits_lifetime, analytics_lifetime, usage_24h, usage_7d,
+                usage_30d, usage_12m, by_model, by_provider, by_cli, by_member, by_project,
+                by_org, heatmap_365d, last_synced_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,
+                     datetime('now'), datetime('now'))",
+            table
+        );
+        conn.execute(
+            &sql,
+            rusqlite::params![
+                id,
+                i("tokens_prompt_lifetime"),
+                i("tokens_prompt_cached_lifetime"),
+                i("tokens_completion_lifetime"),
+                i("tokens_reasoning_lifetime"),
+                f("cost_lifetime_usd"),
+                i("sessions_lifetime"),
+                i("cache_hits_lifetime"),
+                j("analytics_lifetime"),
+                j("usage_24h"),
+                j("usage_7d"),
+                j("usage_30d"),
+                j("usage_12m"),
+                j("by_model"),
+                j("by_provider"),
+                j("by_cli"),
+                j("by_member"),
+                j("by_project"),
+                j("by_org"),
+                j("heatmap_365d"),
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn replace_cached_llm_keys(

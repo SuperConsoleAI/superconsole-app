@@ -46,11 +46,12 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
 - **MCP tool layer** (`mcp.rs`): one in-process registry of `ToolSpec`s serves both native chat (`mcp::execute`) and an external stdio MCP server (`mcp_server.rs`, launched via `superconsole mcp --session <token>`). Tools are always-loaded, context-gated, or the generic `connector_request`; a BM25-lite search lets agents find tools without loading every schema. `write_mcp_config` auto-writes + pre-approves the `superconsole` server for Claude/Droid per session (Codex has no project-scoped MCP config, so it is intentionally not wired).
 - **Skills / memory / wiki** (`skills.rs`/`memory.rs`/`wiki.rs`, phases 18-20): registry CRUD mirrored to Turso (Drizzle migrations) and cached locally; their content is injected into the chat/CLI system prompt alongside context files and connected services. Each has a TopBar dialog.
 - **Native CLI sessions** (`cli_sessions.rs`): list and resume on-disk transcripts from Claude/Droid/Codex; resume relaunches the CLI in a new terminal tab with the per-CLI resume flag.
+- **Usage monitoring** (`usage.rs`, phase 21): every chat/CLI turn records a usage event (chat from API usage blocks, PTY by screen-scrape on exit). Raw `usage_events` are local-only and never wiped; one canonical aggregate shape (lifetime counters, year-keyed analytics, rolling windows, by model/provider/cli/member/project/org, 365-day heatmap) is recomputed locally and also rolled up project→org→account into Turso, where the shared cross-machine totals are cached back into the 3 `*_usage` tables for display (no double-count). The `/usage` page reads `get_usage(level, id)`.
 
 ## Frontend structure
 
 - `src/router.tsx` is the spine: TanStack Router (memory history), code-based route tree, and the `Shell` layout.
-- Routes: `/` (welcome), `/workspace/$workspaceId` (+ search params `file`, `files`), `/inbox`, `/tasks`, `/sessions` (history: CLI + chat threads), `/settings`.
+- Routes: `/` (welcome), `/workspace/$workspaceId` (+ search params `file`, `files`), `/inbox`, `/tasks`, `/sessions` (history: CLI + chat threads), `/usage` (usage monitoring), `/settings`.
 - CRITICAL: terminals are rendered in the root layout (`Shell`), NOT inside route outlets. Routes only control visibility. This keeps PTY sessions alive across navigation.
 - Tabs are typed: terminal tabs render `TerminalView`, chat tabs (`{workspaceId}:chat`) render `ChatView`. The router picks the view by `tab.cli`; chat is its own tab type, not a per-tab toggle.
 - Shared state lives in `WorkspaceProvider` (src/lib/workspace-context.tsx): workspaces, organizations, per-workspace tab sets, live sessions, active org (localStorage). Cloud identity/session state lives in `AuthProvider` (src/lib/auth-context.tsx): WorkOS user, orgs, active cloud org.
@@ -77,7 +78,7 @@ src/                    React frontend
   assets/icons/preset-icons/  CLI brand SVGs + index.ts lookup
 src-tauri/              Rust backend
   src/lib.rs            all #[tauri::command] handlers + app setup
-  src/{db,pty,files,scheduler,remote,cli_sessions}.rs   local-first modules per concern
+  src/{db,pty,files,scheduler,remote,cli_sessions,usage}.rs   local-first modules per concern
   src/{auth,cloud,crypto,sync_manager,llm,chat,team,connectors,skills,memory,wiki}.rs   cloud layer
   src/{mcp,mcp_server}.rs   in-process tool layer + stdio MCP server
   tauri.conf.json       window (Overlay titlebar), bundling, updater config

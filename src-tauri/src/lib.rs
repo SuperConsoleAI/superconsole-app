@@ -16,6 +16,7 @@ mod mcp;
 mod mcp_server;
 mod sync_manager;
 mod team;
+mod usage;
 mod wiki;
 
 use auth::AuthState;
@@ -126,6 +127,20 @@ async fn start_session(
 #[tauri::command]
 fn write_session(sessions: State<SessionManager>, session_id: String, data: String) -> Result<(), String> {
     pty::write_session(&sessions, &session_id, &data)
+}
+
+/// Read one usage aggregate row from the local display cache (mirror of the
+/// Turso shared totals). `level` is project|org|account.
+#[tauri::command]
+fn get_usage(app: AppHandle, level: String, id: String) -> Result<serde_json::Value, String> {
+    let table = match level.as_str() {
+        "project" => "project_usage",
+        "org" => "org_usage",
+        "account" => "account_usage",
+        _ => return Err("invalid usage level".into()),
+    };
+    let db = app.state::<Db>();
+    Ok(db.get_usage_row(table, &id).unwrap_or_else(|| crate::usage::zero_row(&id)))
 }
 
 #[tauri::command]
@@ -504,6 +519,7 @@ pub fn run() {
             remove_workspace,
             start_session,
             write_session,
+            get_usage,
             resize_session,
             stop_session,
             session_active,
