@@ -30,7 +30,14 @@ export function TabStrip({
 }: TabStripProps) {
   return (
     <div className="flex h-9 shrink-0 items-stretch border-b bg-sidebar">
-      <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
+      <div
+        className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        onWheel={(e) => {
+          if (e.deltaY !== 0) {
+            e.currentTarget.scrollLeft += e.deltaY;
+          }
+        }}
+      >
         {tabs.map((tab) => {
           const active = tab.id === activeTabId;
           const live = liveSessions.has(tab.id);

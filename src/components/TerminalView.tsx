@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { listen } from "@tauri-apps/api/event";
-import { RefreshCw } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Plus, RefreshCw, TextCursorInput } from "lucide-react";
 import { api, type SessionInfo, type SessionTab, type Workspace } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { CommandInput } from "@/components/CommandInput";
+import { StatusFooter } from "@/components/StatusFooter";
 
 interface TerminalViewProps {
   workspace: Workspace;
@@ -13,6 +15,7 @@ interface TerminalViewProps {
   visible: boolean;
   onSessionState: (sessionId: string, live: boolean) => void;
   onSessionInfo: (sessionId: string, info: SessionInfo) => void;
+  onOpenFiles: () => void;
 }
 
 interface PtyOutputPayload {
@@ -26,6 +29,7 @@ export function TerminalView({
   visible,
   onSessionState,
   onSessionInfo,
+  onOpenFiles,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -34,6 +38,38 @@ export function TerminalView({
   const [exited, setExited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
+  const [richOpen, setRichOpen] = useState(false);
+  const [cmd, setCmd] = useState("");
+  const [usage, setUsage] = useState({ tokens: 0, cost: 0 });
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    const max = 12 * 20 + 16;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, max)}px`;
+  }, [cmd, richOpen]);
+
+  const attachPath = async () => {
+    try {
+      const picked = await open({ multiple: true });
+      if (!picked) return;
+      const paths = Array.isArray(picked) ? picked : [picked];
+      const text = paths.map((p) => `"${p}"`).join(" ");
+      if (richOpen) {
+        const sep = cmd && !cmd.endsWith(" ") ? " " : "";
+        setCmd(cmd + sep + text + " ");
+        requestAnimationFrame(() => inputRef.current?.focus());
+      } else {
+        // No rich input open: type the path straight into the live CLI prompt.
+        api.writeSession(tab.id, text + " ").catch(() => {});
+        termRef.current?.focus();
+      }
+    } catch {
+      /* cancelled */
+    }
+  };
 
   const startSession = async () => {
     const term = termRef.current;
@@ -64,10 +100,10 @@ export function TerminalView({
     if (!containerRef.current) return;
 
     const term = new Terminal({
-      fontFamily: '"JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace',
+      fontFamily: '"JetBrainsMono Nerd Font", ui-monospace, SFMono-Regular, monospace',
       fontSize: 13,
-      lineHeight: 1.25,
-      cursorBlink: true,
+      lineHeight: 1.0,
+      cursorBlink: false,
       allowProposedApi: true,
       scrollback: 10000,
       theme: {
@@ -97,6 +133,13 @@ export function TerminalView({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      /* WebGL unavailable: fall back to the default renderer. */
+    }
     termRef.current = term;
     fitRef.current = fit;
 
@@ -116,6 +159,14 @@ export function TerminalView({
         api.stopSession(tab.id).catch(() => {});
       }
     });
+    const unlistenUsage = listen<{ session_id: string; tokens: number; cost_usd: number }>(
+      "session-usage",
+      (event) => {
+        if (event.payload.session_id === tab.id) {
+          setUsage({ tokens: event.payload.tokens, cost: event.payload.cost_usd });
+        }
+      },
+    );
     const unlistenKeyError = listen<{ session_id: string; providers: string[] }>(
       "llm-key-error",
       (event) => {
@@ -128,23 +179,51 @@ export function TerminalView({
       },
     );
 
+    let resizeRaf = 0;
     const resizeObserver = new ResizeObserver(() => {
       if (!containerRef.current?.offsetParent) return;
-      fit.fit();
-      api.resizeSession(tab.id, term.rows, term.cols).catch(() => {});
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(() => {
+        try {
+          fit.fit();
+          // The WebGL renderer's glyph atlas can go stale after a resize and
+          // render cells as ????/artifacts; force it to rebuild.
+          term.clearTextureAtlas();
+        } catch {
+          /* transient size during a resize storm */
+        }
+        api.resizeSession(tab.id, term.rows, term.cols).catch(() => {});
+      });
     });
     resizeObserver.observe(containerRef.current);
 
-    if (!startedRef.current) {
-      startedRef.current = true;
-      requestAnimationFrame(() => startSession());
-    }
+    // xterm measures the character cell on open, so wait for the terminal font
+    // to load before fitting/starting — otherwise it sizes the grid with the
+    // fallback font's metrics and the CLI's prompt misaligns once the font swaps.
+    const start = () => {
+      requestAnimationFrame(() => {
+        try {
+          fit.fit();
+        } catch {
+          /* not visible yet */
+        }
+        if (!startedRef.current) {
+          startedRef.current = true;
+          startSession();
+        } else {
+          api.resizeSession(tab.id, term.rows, term.cols).catch(() => {});
+        }
+      });
+    };
+    document.fonts.ready.then(start, start);
 
     return () => {
       dataDisposable.dispose();
       unlistenOutput.then((fn) => fn());
       unlistenExit.then((fn) => fn());
+      unlistenUsage.then((fn) => fn());
       unlistenKeyError.then((fn) => fn());
+      cancelAnimationFrame(resizeRaf);
       resizeObserver.disconnect();
       term.dispose();
       termRef.current = null;
@@ -210,7 +289,58 @@ export function TerminalView({
         )}
       </div>
 
-      <CommandInput workspaceId={workspace.id} onSend={sendCommand} />
+      {richOpen && (
+        <textarea
+          ref={inputRef}
+          value={cmd}
+          onChange={(e) => setCmd(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              const t = cmd.trim();
+              if (t) {
+                sendCommand(t);
+                setCmd("");
+              }
+            }
+          }}
+          rows={1}
+          autoFocus
+          placeholder="Type a message…"
+          style={{ lineHeight: "20px" }}
+          className="relative z-10 max-h-64 min-h-[2.25rem] w-full resize-none border-t border-border bg-background px-3 py-2 font-mono text-sm placeholder:text-muted-foreground focus-visible:outline-none"
+          spellCheck={false}
+        />
+      )}
+
+      <StatusFooter
+        workspace={workspace}
+        onOpenFiles={onOpenFiles}
+        tokens={exited ? usage.tokens : 0}
+        cost={exited ? usage.cost : 0}
+        leftExtra={
+          <>
+            <button
+              className="flex items-center rounded border px-1.5 py-0.5 hover:text-foreground"
+              title="Attach file path"
+              onClick={attachPath}
+            >
+              <Plus className="h-3 w-3" />
+            </button>
+            <button
+              className={
+                "flex items-center gap-1 rounded border px-1.5 py-0.5 hover:text-foreground" +
+                (richOpen ? " text-foreground" : "")
+              }
+              title="Rich text input"
+              onClick={() => setRichOpen((o) => !o)}
+            >
+              <TextCursorInput className="h-3 w-3" />
+              Rich Text
+            </button>
+          </>
+        }
+      />
     </div>
   );
 }

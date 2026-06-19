@@ -159,6 +159,13 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
     scopes: ALL_SCOPES,
     fields: [{ key: "bot_token", label: "Bot token", secret: true }],
   },
+  {
+    id: "web_search",
+    label: "Web Search",
+    category: "integrations",
+    scopes: ALL_SCOPES,
+    fields: [{ key: "api_key", label: "Tavily API key", secret: true }],
+  },
 ];
 
 export function connectorDef(service: string): ConnectorDef | undefined {

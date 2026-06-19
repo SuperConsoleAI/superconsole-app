@@ -280,6 +280,16 @@ export const CHAT_PROVIDERS = [
   },
 ] as const;
 
+export interface OpenrouterModel {
+  id: string;
+  name: string;
+  context_length: number;
+  prompt_price: number;
+  completion_price: number;
+  supports_reasoning: boolean;
+  created: number;
+}
+
 export interface MemberView {
   user_id: string | null;
   email: string;
@@ -465,6 +475,13 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
     scopes: ALL_CONNECTOR_SCOPES,
     fields: [{ key: "bot_token", label: "Bot token", secret: true }],
   },
+  {
+    id: "web_search",
+    label: "Web Search",
+    category: "integrations",
+    scopes: ALL_CONNECTOR_SCOPES,
+    fields: [{ key: "api_key", label: "Tavily API key", secret: true }],
+  },
 ];
 
 export interface Skill {
@@ -526,6 +543,22 @@ export interface WikiPage {
   tags: string[];
   updated: string;
   body: string;
+  source: string;
+}
+
+export interface ContextFile {
+  name: string;
+  slug: string;
+  file_path: string;
+  size_bytes: number;
+  modified_at: string;
+}
+
+export interface SlashCommand {
+  name: string;
+  slash: string;
+  description: string;
+  file_path: string;
   source: string;
 }
 
@@ -671,8 +704,26 @@ export const api = {
     provider: string,
     model: string,
     messages: { role: string; content: string }[],
+    toolMode?: string,
+    reasoning?: string,
   ) =>
-    invoke<void>("chat_send", { requestId, workspaceId, provider, model, messages }),
+    invoke<void>("chat_send", {
+      requestId,
+      workspaceId,
+      provider,
+      model,
+      messages,
+      toolMode,
+      reasoning,
+    }),
+  stopChat: (requestId: string) => invoke<void>("stop_chat", { requestId }),
+  deleteChatMessage: (id: number) => invoke<void>("delete_chat_message", { id }),
+  readAttachment: (path: string) => invoke<string>("read_attachment", { path }),
+  gitInfo: (workspaceId: number) =>
+    invoke<{ branch: string | null; insertions: number; deletions: number }>("git_info", {
+      workspaceId,
+    }),
+  listOpenrouterModels: () => invoke<OpenrouterModel[]>("list_openrouter_models"),
   hasProviderKey: (workspaceId: number, provider: string) =>
     invoke<boolean>("has_provider_key", { workspaceId, provider }),
   listChatSessions: (projectId: string) =>
@@ -821,6 +872,44 @@ export const api = {
     invoke<void>("delete_wiki", { workspaceId, slug }),
   seedWikiFromFiles: (workspaceId: number) =>
     invoke<WikiPage[]>("seed_wiki_from_files", { workspaceId }),
+
+  // Context files (.superconsole/context/).
+  listContextFiles: (workspaceId: number) =>
+    invoke<ContextFile[]>("list_context_files", { workspaceId }),
+  readContextFile: (workspaceId: number, slug: string) =>
+    invoke<string>("read_context_file", { workspaceId, slug }),
+  writeContextFile: (workspaceId: number, slug: string, content: string) =>
+    invoke<void>("write_context_file", { workspaceId, slug, content }),
+  deleteContextFile: (workspaceId: number, slug: string) =>
+    invoke<void>("delete_context_file", { workspaceId, slug }),
+  seedContextFiles: (workspaceId: number) =>
+    invoke<string[]>("seed_context_files", { workspaceId }),
+
+  // Slash commands (.superconsole/commands/ + .claude/commands/ + global).
+  listCommands: (workspaceId: number) =>
+    invoke<SlashCommand[]>("list_commands", { workspaceId }),
+  readCommand: (workspaceId: number, slash: string) =>
+    invoke<string>("read_command", { workspaceId, slash }),
+  writeCommand: (
+    workspaceId: number,
+    name: string,
+    slash: string,
+    description: string,
+    content: string,
+  ) => invoke<void>("write_command", { workspaceId, name, slash, description, content }),
+  deleteCommand: (workspaceId: number, name: string) =>
+    invoke<void>("delete_command", { workspaceId, name }),
+  listGlobalCommands: () => invoke<SlashCommand[]>("list_global_commands"),
+  readGlobalCommand: (name: string) =>
+    invoke<string>("read_global_command", { name }),
+  writeGlobalCommand: (
+    name: string,
+    slash: string,
+    description: string,
+    content: string,
+  ) => invoke<void>("write_global_command", { name, slash, description, content }),
+  deleteGlobalCommand: (name: string) =>
+    invoke<void>("delete_global_command", { name }),
 
   // Phase 16: MCP tool infrastructure.
   ensureMcpConfig: (workspaceId: number) =>

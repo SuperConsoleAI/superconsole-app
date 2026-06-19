@@ -115,6 +115,10 @@ const REGISTRY: &[Def] = &[
         service: "linear",
         fields: &[Field { key: "api_key", env: "LINEAR_API_KEY", secret: true }],
     },
+    Def {
+        service: "web_search",
+        fields: &[Field { key: "api_key", env: "TAVILY_API_KEY", secret: true }],
+    },
 ];
 
 fn connector_def(service: &str) -> Option<&'static Def> {

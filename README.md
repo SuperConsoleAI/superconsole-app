@@ -6,8 +6,8 @@ Built with Tauri 2 (Rust) + React 19. Mac-first, `<30MB` native build.
 
 ## Features
 
-- **Terminals**: real PTY sessions (xterm.js) per workspace, multiple CLIs concurrently (Claude, Droid, Antigravity, shell).
-- **Native chat**: stream responses from Anthropic / OpenAI-compatible / Gemini, with a system prompt built from your project context files and connected tools.
+- **Terminals**: real PTY sessions (xterm.js, WebGL renderer + bundled JetBrains Mono Nerd Font) per workspace, multiple CLIs concurrently (Claude, Droid, Antigravity, Codex, shell). Per-tab status footer (git diff stat, files toggle, branch, post-exit token·cost) and an optional rich-text input.
+- **Native chat**: stream responses from Anthropic / OpenAI-compatible / Gemini / OpenRouter (live model list + pricing), with reasoning/thinking effort, a system prompt built from on-demand context files and connected tools, cross-CLI slash commands, message edit-to-fork / regenerate / stop, quick-prompt chips (e.g. session log), web search, and a session token·cost footer.
 - **Scheduled jobs**: cron jobs run headlessly via a 30s tick loop; results land in the Inbox. Trigger remotely over HTTP or Telegram.
 - **Cloud layer (optional)**: WorkOS sign-in, synced orgs/projects, team invitations, three-level LLM keys (project → org → account), and connectors. Secrets are AES-256-GCM encrypted and injected into agent sessions.
 - **Web portal** (`superconsole-web/`): browser surface onto the same Turso DB, deployed to Cloudflare Workers.

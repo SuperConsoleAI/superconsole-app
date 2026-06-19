@@ -1533,6 +1533,13 @@ impl Db {
         .map_err(|e| e.to_string())
     }
 
+    pub fn delete_chat_message(&self, id: i64) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute("DELETE FROM chat_messages WHERE id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn list_chat_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn

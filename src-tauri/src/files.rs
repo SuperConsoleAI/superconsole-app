@@ -58,6 +58,17 @@ pub fn write_file(workspace: &str, rel: &str, content: &str) -> Result<(), Strin
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
+/// Read an arbitrary file picked via the OS dialog (absolute path, outside the
+/// workspace sandbox) for chat attachments. Text only, size-capped.
+pub fn read_attachment(path: &str) -> Result<String, String> {
+    let p = Path::new(path);
+    let meta = std::fs::metadata(p).map_err(|e| e.to_string())?;
+    if meta.len() > 1_000_000 {
+        return Err("File too large to attach (max 1 MB)".into());
+    }
+    std::fs::read_to_string(p).map_err(|_| "Cannot read this file as text".to_string())
+}
+
 pub fn create_entry(workspace: &str, rel: &str, is_dir: bool) -> Result<(), String> {
     let path = resolve(workspace, rel)?;
     if path.exists() {

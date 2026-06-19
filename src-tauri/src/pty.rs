@@ -28,6 +28,13 @@ struct PtyExit {
 }
 
 #[derive(Clone, Serialize)]
+struct SessionUsage {
+    session_id: String,
+    tokens: i64,
+    cost_usd: f64,
+}
+
+#[derive(Clone, Serialize)]
 struct LlmKeyError {
     session_id: String,
     providers: Vec<String>,
@@ -313,13 +320,22 @@ pub fn start_session(
         }
         // Best-effort usage capture from the CLI's end-of-session summary.
         if let Some((prompt, completion, cost)) = crate::usage::parse_cli_usage(&tail) {
+            let cost = cost.unwrap_or_else(|| {
+                crate::usage::estimate_cost(&cli_name, "", prompt, 0, completion, 0)
+            });
+            // Surface the session total in the UI footer (cloud or not).
+            let _ = app_handle.emit(
+                "session-usage",
+                SessionUsage {
+                    session_id: sid.clone(),
+                    tokens: prompt + completion,
+                    cost_usd: cost,
+                },
+            );
             if let Some(project_id) = {
                 let db = app_handle.state::<crate::db::Db>();
                 db.get_workspace(ws_id).ok().and_then(|w| w.project_id)
             } {
-                let cost = cost.unwrap_or_else(|| {
-                    crate::usage::estimate_cost(&cli_name, "", prompt, 0, completion, 0)
-                });
                 let ev = crate::db::UsageEvent {
                     project_id,
                     session_id: Some(sid.clone()),

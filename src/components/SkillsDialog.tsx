@@ -13,6 +13,7 @@ import {
   SKILL_CATEGORIES,
   type LibrarySkill,
   type Skill,
+  type SlashCommand,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -79,6 +80,7 @@ export function SkillsDialog({ workspaceId, open, onOpenChange }: SkillsDialogPr
         <Tabs defaultValue="mine">
           <TabsList>
             <TabsTrigger value="mine">My Skills</TabsTrigger>
+            <TabsTrigger value="commands">Commands</TabsTrigger>
             <TabsTrigger value="library">Browse Library</TabsTrigger>
             <TabsTrigger value="create">New / Import</TabsTrigger>
           </TabsList>
@@ -93,6 +95,10 @@ export function SkillsDialog({ workspaceId, open, onOpenChange }: SkillsDialogPr
               setError={setError}
               refresh={refresh}
             />
+          </TabsContent>
+
+          <TabsContent value="commands">
+            <CommandsTab workspaceId={workspaceId} setError={setError} />
           </TabsContent>
 
           <TabsContent value="library">
@@ -339,6 +345,214 @@ function MySkills({
         )}
       </div>
     </ScrollArea>
+  );
+}
+
+type CmdEditing = {
+  name: string;
+  slash: string;
+  description: string;
+  content: string;
+  isNew: boolean;
+} | null;
+
+function CommandsTab({
+  workspaceId,
+  setError,
+}: {
+  workspaceId: number;
+  setError: (v: string | null) => void;
+}) {
+  const [commands, setCommands] = useState<SlashCommand[]>([]);
+  const [editing, setEditing] = useState<CmdEditing>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(() => {
+    api.listCommands(workspaceId).then(setCommands).catch((e) => setError(String(e)));
+  }, [workspaceId, setError]);
+
+  useEffect(refresh, [refresh]);
+
+  const project = commands.filter((c) => c.source === "superconsole");
+  const global = commands.filter((c) => c.source === "global");
+  const claude = commands.filter((c) => c.source === "claude");
+
+  const openEditor = async (c: SlashCommand) => {
+    try {
+      const content = await api.readCommand(workspaceId, c.slash);
+      setEditing({
+        name: c.name,
+        slash: c.slash,
+        description: c.description,
+        content,
+        isNew: false,
+      });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const save = async () => {
+    if (!editing) return;
+    if (!editing.name.trim()) {
+      setError("Command name is required.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.writeCommand(
+        workspaceId,
+        editing.name.trim(),
+        editing.slash.trim(),
+        editing.description.trim(),
+        editing.content,
+      );
+      setEditing(null);
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="flex flex-col gap-2">
+        <Button variant="ghost" size="sm" className="h-7 w-fit px-2" onClick={() => setEditing(null)}>
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back
+        </Button>
+        <div className="grid grid-cols-2 gap-2">
+          <Input
+            value={editing.name}
+            onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+            placeholder="command-name"
+            className="h-8 text-sm"
+            disabled={!editing.isNew}
+          />
+          <Input
+            value={editing.slash}
+            onChange={(e) => setEditing({ ...editing, slash: e.target.value })}
+            placeholder="/slash"
+            className="h-8 text-sm"
+          />
+          <Input
+            value={editing.description}
+            onChange={(e) => setEditing({ ...editing, description: e.target.value })}
+            placeholder="One-line description"
+            className="col-span-2 h-8 text-sm"
+          />
+          <Textarea
+            value={editing.content}
+            onChange={(e) => setEditing({ ...editing, content: e.target.value })}
+            placeholder="The instructions sent to the agent when this command runs."
+            className="col-span-2 min-h-52 font-mono text-xs"
+          />
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" className="h-8" onClick={save} disabled={busy}>
+            Save command
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          Slash commands that work across every CLI and chat. Project commands live in the repo.
+        </p>
+        <Button
+          size="sm"
+          className="h-8"
+          onClick={() =>
+            setEditing({ name: "", slash: "", description: "", content: "", isNew: true })
+          }
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New command
+        </Button>
+      </div>
+
+      <ScrollArea className="max-h-96">
+        <div className="flex flex-col gap-1.5 pr-2">
+          {project.length === 0 && global.length === 0 && claude.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              No commands yet. Create one to reuse instructions across CLIs.
+            </p>
+          )}
+
+          {project.map((c) => (
+            <div key={c.file_path} className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <span className="truncate font-mono text-sm font-medium">{c.slash}</span>
+                {c.description && (
+                  <p className="truncate text-xs text-muted-foreground">{c.description}</p>
+                )}
+              </div>
+              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" title="Edit" onClick={() => openEditor(c)}>
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                title="Delete"
+                onClick={() =>
+                  api.deleteCommand(workspaceId, c.name).then(refresh).catch((e) => setError(String(e)))
+                }
+              >
+                <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+              </Button>
+            </div>
+          ))}
+
+          {global.length > 0 && (
+            <>
+              <p className="mt-3 text-xs font-semibold text-muted-foreground">
+                Global (all projects)
+              </p>
+              {global.map((c) => (
+                <div key={c.file_path} className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <span className="truncate font-mono text-sm font-medium">{c.slash}</span>
+                    {c.description && (
+                      <p className="truncate text-xs text-muted-foreground">{c.description}</p>
+                    )}
+                  </div>
+                  <Badge variant="outline" className="text-[10px]">
+                    global
+                  </Badge>
+                </div>
+              ))}
+            </>
+          )}
+
+          {claude.length > 0 && (
+            <>
+              <p className="mt-3 text-xs font-semibold text-muted-foreground">
+                From .claude/commands/ (read-only)
+              </p>
+              {claude.map((c) => (
+                <div
+                  key={c.file_path}
+                  className="flex items-center gap-3 rounded-lg border border-dashed bg-muted/30 px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="truncate font-mono text-sm font-medium">{c.slash}</span>
+                    <p className="truncate text-xs text-muted-foreground">{c.file_path}</p>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      </ScrollArea>
+    </div>
   );
 }
 

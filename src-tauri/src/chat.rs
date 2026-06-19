@@ -10,8 +10,36 @@
 use crate::db::Db;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
+
+/// Request ids the user has asked to stop. The streaming loops poll this and
+/// finalize early. Cleared per request at the start/end of `chat_send`.
+#[derive(Default)]
+pub struct ChatCancel(pub Mutex<HashSet<String>>);
+
+fn is_cancelled(app: &AppHandle, request_id: &str) -> bool {
+    app.state::<ChatCancel>()
+        .0
+        .lock()
+        .map(|s| s.contains(request_id))
+        .unwrap_or(false)
+}
+
+fn clear_cancel(app: &AppHandle, request_id: &str) {
+    if let Ok(mut s) = app.state::<ChatCancel>().0.lock() {
+        s.remove(request_id);
+    }
+}
+
+#[tauri::command]
+pub fn stop_chat(app: AppHandle, request_id: String) {
+    if let Ok(mut s) = app.state::<ChatCancel>().0.lock() {
+        s.insert(request_id);
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatMsg {
@@ -26,8 +54,11 @@ struct ChatToken {
 }
 
 #[derive(Clone, Serialize)]
-struct ChatSignal {
+struct ChatDone {
     request_id: String,
+    tokens_prompt: i64,
+    tokens_completion: i64,
+    cost_usd: f64,
 }
 
 #[derive(Clone, Serialize)]
@@ -90,6 +121,15 @@ pub(crate) fn build_system_prompt(app: &AppHandle, workspace_id: i64) -> String 
         ));
     }
 
+    let context_files = crate::context::scan_for(app, workspace_id);
+    if !context_files.is_empty() {
+        sections.push(format!(
+            "# Context files available\n\nReference files the user maintains for this project. Only \
+             the slugs are listed; fetch a file on demand with context_read when relevant: {}.",
+            context_files.join(", ")
+        ));
+    }
+
     let memory = crate::memory::memory_context(app, workspace_id);
     if !memory.is_empty() {
         sections.push(memory);
@@ -121,7 +161,10 @@ pub async fn chat_send(
     provider: String,
     model: String,
     messages: Vec<ChatMsg>,
+    tool_mode: Option<String>,
+    reasoning: Option<String>,
 ) -> Result<(), String> {
+    clear_cancel(&app, &request_id);
     let creds = crate::llm::resolve_provider_credentials(&app, workspace_id, &provider);
     let key = creds.as_ref().and_then(|c| c.api_key.clone());
     let base_url = creds.as_ref().and_then(|c| c.base_url.clone());
@@ -133,26 +176,45 @@ pub async fn chat_send(
 
     let system = build_system_prompt(&app, workspace_id);
 
+    // Expand a trailing `/slash` command message into its body for the model.
+    // The persisted/displayed user bubble keeps the short slash form.
+    let mut messages = messages;
+    if let Some(last) = messages.last_mut() {
+        if last.role == "user" && last.content.trim_start().starts_with('/') {
+            let ws_path = {
+                let db = app.state::<Db>();
+                db.get_workspace(workspace_id).ok().map(|w| w.path)
+            };
+            if let Some(ws_path) = ws_path {
+                if let Some(body) = crate::commands::resolve(&app, &ws_path, &last.content) {
+                    last.content = body;
+                }
+            }
+        }
+    }
+
     // Tool-calling is supported for Anthropic + OpenAI-compatible cloud
     // providers. Gemini and local keep plain text streaming.
     let ctx = crate::mcp::native_ctx(&app, workspace_id);
     let tools_supported = matches!(provider.as_str(), "anthropic" | "openai" | "openrouter");
+    let reasoning = reasoning.filter(|r| !r.is_empty() && r != "off");
     let result = if let (true, Some(ctx)) = (tools_supported, ctx) {
         run_tool_loop(
             &app, &request_id, &provider, &model, &system, &messages, key.as_deref(),
-            base_url.as_deref(), &ctx,
+            base_url.as_deref(), &ctx, tool_mode.as_deref(), reasoning.as_deref(),
         )
         .await
     } else {
         stream(
             &app, &request_id, &provider, &model, &system, &messages, key.as_deref(),
-            base_url.as_deref(),
+            base_url.as_deref(), reasoning.as_deref(),
         )
         .await
     };
 
     let usage = match result {
         Err(e) => {
+            clear_cancel(&app, &request_id);
             let _ = app.emit(
                 "chat-error",
                 ChatError {
@@ -165,17 +227,26 @@ pub async fn chat_send(
         Ok(u) => u,
     };
 
+    // Cost estimate: prefer OpenRouter's live per-token pricing for OR models,
+    // otherwise fall back to the hardcoded pricing table.
+    let cost = match crate::llm::or_price_per_token(&model) {
+        Some((p_in, p_out)) => {
+            let t = |n: i64, r: f64| (n.max(0) as f64) * r;
+            t(usage.prompt + usage.cached, p_in) + t(usage.completion + usage.reasoning, p_out)
+        }
+        None => crate::usage::estimate_cost(
+            &model, &provider, usage.prompt, usage.cached, usage.completion, usage.reasoning,
+        ),
+    };
+
     // Record token usage for this chat turn (cli = "chat"). Needs a cloud
-    // project ULID; skip silently for non-cloud workspaces.
+    // project ULID; skip recording silently for non-cloud workspaces.
     if usage.total() > 0 {
         let project_id = {
             let db = app.state::<Db>();
             db.get_workspace(workspace_id).ok().and_then(|w| w.project_id)
         };
         if let Some(project_id) = project_id {
-            let cost = crate::usage::estimate_cost(
-                &model, &provider, usage.prompt, usage.cached, usage.completion, usage.reasoning,
-            );
             let cache_total = usage.prompt + usage.cached;
             let ev = crate::db::UsageEvent {
                 project_id,
@@ -195,7 +266,16 @@ pub async fn chat_send(
         }
     }
 
-    let _ = app.emit("chat-done", ChatSignal { request_id });
+    clear_cancel(&app, &request_id);
+    let _ = app.emit(
+        "chat-done",
+        ChatDone {
+            request_id,
+            tokens_prompt: usage.prompt + usage.cached,
+            tokens_completion: usage.completion + usage.reasoning,
+            cost_usd: cost,
+        },
+    );
     Ok(())
 }
 
@@ -248,15 +328,23 @@ async fn run_tool_loop(
     key: Option<&str>,
     base_url: Option<&str>,
     ctx: &crate::mcp::ToolCtx,
+    tool_mode: Option<&str>,
+    reasoning: Option<&str>,
 ) -> Result<TurnUsage, String> {
     let client = reqwest::Client::new();
     let anthropic = provider == "anthropic";
     let mut total = TurnUsage::default();
 
     let cw = crate::mcp::context_window(model);
-    let (specs, _bridge) = {
+    let specs = {
         let db = app.state::<Db>();
-        crate::mcp::exposed_specs(&db, ctx, cw)
+        // "direct" exposes every tool schema up front; "auto" (default) lets the
+        // bridge load tools on demand to keep the context compact.
+        if tool_mode == Some("direct") {
+            crate::mcp::full_catalog(&db, ctx)
+        } else {
+            crate::mcp::exposed_specs(&db, ctx, cw).0
+        }
     };
     let tools: Vec<Value> = if anthropic {
         specs.iter().map(|s| s.to_anthropic()).collect()
@@ -271,8 +359,11 @@ async fn run_tool_loop(
         .collect();
 
     for _ in 0..MAX_TOOL_ITERS {
+        if is_cancelled(app, request_id) {
+            return Ok(total);
+        }
         let req = build_turn_request(
-            &client, provider, model, system, &messages, &tools, key, base_url,
+            &client, provider, model, system, &messages, &tools, key, base_url, reasoning,
         )?;
         let resp = req.send().await.map_err(|e| format!("request failed: {}", e))?;
         if !resp.status().is_success() {
@@ -355,9 +446,10 @@ async fn stream(
     messages: &[ChatMsg],
     key: Option<&str>,
     base_url: Option<&str>,
+    reasoning: Option<&str>,
 ) -> Result<TurnUsage, String> {
     let client = reqwest::Client::new();
-    let req = build_request(&client, provider, model, system, messages, key, base_url)?;
+    let req = build_request(&client, provider, model, system, messages, key, base_url, reasoning)?;
 
     let resp = req.send().await.map_err(|e| format!("request failed: {}", e))?;
     if !resp.status().is_success() {
@@ -369,6 +461,9 @@ async fn stream(
     let mut resp = resp;
     let mut buffer = String::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if is_cancelled(app, request_id) {
+            return Ok(TurnUsage::default());
+        }
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(pos) = buffer.find('\n') {
             let line: String = buffer.drain(..=pos).collect();
@@ -434,6 +529,17 @@ fn parse_sse_line(provider: &str, line: &str) -> Option<Sse> {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn apply_reasoning(body: &mut Value, provider: &str, reasoning: Option<&str>) {
+    let Some(level) = reasoning else { return };
+    match provider {
+        // OpenAI reasoning models take a flat `reasoning_effort`.
+        "openai" => body["reasoning_effort"] = json!(level),
+        // OpenRouter normalizes a `reasoning` object across models.
+        "openrouter" => body["reasoning"] = json!({ "effort": level }),
+        _ => {}
+    }
+}
+
 fn build_request(
     client: &reqwest::Client,
     provider: &str,
@@ -442,6 +548,7 @@ fn build_request(
     messages: &[ChatMsg],
     key: Option<&str>,
     base_url: Option<&str>,
+    reasoning: Option<&str>,
 ) -> Result<reqwest::RequestBuilder, String> {
     match provider {
         "anthropic" => {
@@ -502,7 +609,8 @@ fn build_request(
             for m in messages {
                 msgs.push(json!({ "role": m.role, "content": m.content }));
             }
-            let body = json!({ "model": model, "messages": msgs, "stream": true });
+            let mut body = json!({ "model": model, "messages": msgs, "stream": true });
+            apply_reasoning(&mut body, provider, reasoning);
             let mut rb = client.post(url).json(&body);
             if let Some(k) = key {
                 if !k.is_empty() {
@@ -529,6 +637,7 @@ fn build_turn_request(
     tools: &[Value],
     key: Option<&str>,
     base_url: Option<&str>,
+    reasoning: Option<&str>,
 ) -> Result<reqwest::RequestBuilder, String> {
     if provider == "anthropic" {
         let base = base_url.unwrap_or("https://api.anthropic.com");
@@ -569,6 +678,7 @@ fn build_turn_request(
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
+        apply_reasoning(&mut body, provider, reasoning);
         let mut rb = client.post(url).json(&body);
         if let Some(k) = key {
             if !k.is_empty() {
@@ -607,6 +717,9 @@ async fn collect_turn(
     };
 
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if is_cancelled(app, request_id) {
+            return Ok(TurnResult { text, tool_calls: finalize(tools), usage });
+        }
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(pos) = buffer.find('\n') {
             let line: String = buffer.drain(..=pos).collect();

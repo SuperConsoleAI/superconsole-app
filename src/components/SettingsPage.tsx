@@ -8,9 +8,13 @@ import {
   Copy,
   CreditCard,
   type LucideIcon,
+  ArrowLeft,
   Palette,
+  Pencil,
   Plug,
+  Plus,
   Search,
+  Trash2,
   Settings as SettingsIcon,
   Shield,
   Sparkles,
@@ -31,6 +35,7 @@ import {
   type ConnectorView,
   type LlmKeyView,
   type MemberView,
+  type SlashCommand,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -67,6 +72,7 @@ const NAV: Record<TopTab, string[]> = {
     "Terminal",
     "Models",
     "Skills",
+    "Commands",
     "Integrations",
     "Connectors",
     "Security",
@@ -82,6 +88,7 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   Terminal: Terminal,
   Models: Sparkles,
   Skills: Sparkles,
+  Commands: Terminal,
   Integrations: Blocks,
   Connectors: Plug,
   Security: Shield,
@@ -278,6 +285,8 @@ function Content({
         );
       case "Skills":
         return <AccountSkillsSection />;
+      case "Commands":
+        return <GlobalCommandsSection />;
       case "Integrations":
         return auth ? (
           <ConnectorManager
@@ -1506,6 +1515,181 @@ function LlmKeyEditor({
       </div>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
+  );
+}
+
+type GlobalCmdEditing = {
+  name: string;
+  slash: string;
+  description: string;
+  content: string;
+  isNew: boolean;
+} | null;
+
+function GlobalCommandsSection() {
+  const [commands, setCommands] = useState<SlashCommand[]>([]);
+  const [editing, setEditing] = useState<GlobalCmdEditing>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      setCommands(await api.listGlobalCommands());
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const openEditor = async (c: SlashCommand) => {
+    try {
+      const content = await api.readGlobalCommand(c.name);
+      setEditing({
+        name: c.name,
+        slash: c.slash,
+        description: c.description,
+        content,
+        isNew: false,
+      });
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const save = async () => {
+    if (!editing) return;
+    if (!editing.name.trim()) {
+      setError("Command name is required.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.writeGlobalCommand(
+        editing.name.trim(),
+        editing.slash.trim(),
+        editing.description.trim(),
+        editing.content,
+      );
+      setEditing(null);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="flex flex-col gap-2">
+        <Button variant="ghost" size="sm" className="h-7 w-fit px-2" onClick={() => setEditing(null)}>
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back
+        </Button>
+        <div className="grid grid-cols-2 gap-2">
+          <Input
+            value={editing.name}
+            onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+            placeholder="command-name"
+            className="h-8 text-sm"
+            disabled={!editing.isNew}
+          />
+          <Input
+            value={editing.slash}
+            onChange={(e) => setEditing({ ...editing, slash: e.target.value })}
+            placeholder="/slash"
+            className="h-8 text-sm"
+          />
+          <Input
+            value={editing.description}
+            onChange={(e) => setEditing({ ...editing, description: e.target.value })}
+            placeholder="One-line description"
+            className="col-span-2 h-8 text-sm"
+          />
+          <textarea
+            value={editing.content}
+            onChange={(e) => setEditing({ ...editing, content: e.target.value })}
+            placeholder="The instructions sent to the agent when this command runs."
+            rows={10}
+            className="col-span-2 rounded-md border bg-background px-2 py-1.5 font-mono text-xs"
+          />
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" className="h-8" onClick={save} disabled={busy}>
+            Save command
+          </Button>
+        </div>
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Global slash commands are stored on this machine and available in every project's chat
+          and CLIs.
+        </p>
+        <Button
+          size="sm"
+          className="h-8 shrink-0"
+          onClick={() =>
+            setEditing({ name: "", slash: "", description: "", content: "", isNew: true })
+          }
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New command
+        </Button>
+      </div>
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
+
+      <div className="flex flex-col gap-1.5">
+        {commands.length === 0 && (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            No global commands yet.
+          </p>
+        )}
+        {commands.map((c) => (
+          <div
+            key={c.name}
+            className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2"
+          >
+            <div className="min-w-0 flex-1">
+              <span className="truncate font-mono text-[13px] font-medium">{c.slash}</span>
+              {c.description && (
+                <p className="truncate text-[11px] text-muted-foreground">{c.description}</p>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              title="Edit"
+              onClick={() => openEditor(c)}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              title="Delete"
+              onClick={() =>
+                api.deleteGlobalCommand(c.name).then(load).catch((e) => setError(String(e)))
+              }
+            >
+              <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+            </Button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

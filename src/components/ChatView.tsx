@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Plus, SendHorizonal, Settings2, X } from "lucide-react";
+import { Copy, MessageSquare, Pencil, Plus, RefreshCw, Settings2, X } from "lucide-react";
 import {
   api,
   CHAT_PROVIDERS,
@@ -12,6 +12,8 @@ import {
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { ChatComposer, type Attachment } from "@/components/ChatComposer";
+import { StatusFooter } from "@/components/StatusFooter";
 import { useAuth } from "@/lib/auth-context";
 import { useWorkspaces } from "@/lib/workspace-context";
 import { cn } from "@/lib/utils";
@@ -24,13 +26,47 @@ interface ChatViewProps {
   tabId: string;
   // Returns true if the slash command was routed to a terminal session.
   onRouteToPty: (text: string) => boolean;
+  // Opens the workspace files panel (same as the top bar folder icon).
+  onOpenFiles: () => void;
 }
 
-const CUSTOM = "__custom__";
-
-function providerModels(provider: string): readonly string[] {
-  return CHAT_PROVIDERS.find((p) => p.id === provider)?.models ?? [];
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
 }
+
+// Quick-insert prompt chips above the composer. They prefill the input (the user
+// edits/sends); the model writes any file itself via its tools.
+const STARTER_PROMPTS: { label: string; build: () => string }[] = [
+  { label: "Explain this project", build: () => "Explain this project's structure and how the pieces fit together." },
+  { label: "Plan a feature", build: () => "Help me plan a new feature. Ask clarifying questions first, then propose an approach." },
+  { label: "Find a bug", build: () => "Help me track down a bug. Walk me through likely causes and how to verify each." },
+];
+
+const SESSION_PROMPTS: { label: string; build: () => string }[] = [
+  {
+    label: "Session log",
+    build: () =>
+      `Create a comprehensive session log capturing:
+- The original problem and how it evolved
+- Key insights and solutions we developed
+- My working style and preferences you observed
+- Our collaboration approaches that worked well
+- Any clarifications or corrections I made
+- Project context and examples we used
+- Templates or processes we established
+- Next steps we identified
+Make it detailed enough that a new conversation can pick up exactly where we left off. Save it in the session-log/ folder as session-log/SESSION_LOG_${today()}.md`,
+  },
+  {
+    label: "Summarize",
+    build: () =>
+      "Summarize this conversation so far into a concise handoff: the goal, key decisions, current state, and open next steps.",
+  },
+  {
+    label: "Next steps",
+    build: () => "List the concrete next steps and open items from this conversation as a checklist.",
+  },
+];
 
 function snippet(s: string, max = 40): string {
   const one = s.replace(/\s+/g, " ").trim();
@@ -62,7 +98,13 @@ function fmtWhen(s: string | null): string {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-export function ChatView({ workspace, visible, tabId, onRouteToPty }: ChatViewProps) {
+export function ChatView({
+  workspace,
+  visible,
+  tabId,
+  onRouteToPty,
+  onOpenFiles,
+}: ChatViewProps) {
   const { activeCloudOrgId } = useAuth();
   const { openChatSession, newChatDraft, setChatTabLabel, bindChatDraftToSession, closeTab } =
     useWorkspaces();
@@ -83,6 +125,33 @@ export function ChatView({ workspace, visible, tabId, onRouteToPty }: ChatViewPr
   const [error, setError] = useState<string | null>(null);
   const [keyMissing, setKeyMissing] = useState(false);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [sessionStats, setSessionStats] = useState({ tokens: 0, cost: 0 });
+  const [contextTokens, setContextTokens] = useState(0);
+  const [commandSlashes, setCommandSlashes] = useState<Set<string>>(new Set());
+  const [toolMode, setToolMode] = useState<"auto" | "direct">(() =>
+    localStorage.getItem(`superconsole-toolmode-${workspace.id}`) === "direct"
+      ? "direct"
+      : "auto",
+  );
+  const [reasoning, setReasoning] = useState<string>(
+    () => localStorage.getItem(`superconsole-reasoning-${workspace.id}`) || "low",
+  );
+  const [agentMode, setAgentMode] = useState<"auto" | "semi" | "manual">(() => {
+    const v = localStorage.getItem(`superconsole-agentmode-${workspace.id}`);
+    return v === "semi" || v === "manual" ? v : "auto";
+  });
+
+  useEffect(() => {
+    localStorage.setItem(`superconsole-toolmode-${workspace.id}`, toolMode);
+  }, [toolMode, workspace.id]);
+  useEffect(() => {
+    localStorage.setItem(`superconsole-reasoning-${workspace.id}`, reasoning);
+  }, [reasoning, workspace.id]);
+  useEffect(() => {
+    localStorage.setItem(`superconsole-agentmode-${workspace.id}`, agentMode);
+  }, [agentMode, workspace.id]);
+
 
   const sessionId = isPicker ? null : isDraft ? draftSessionId : fixedSessionId;
   const sessionRef = useRef<string | null>(null);
@@ -102,6 +171,7 @@ export function ChatView({ workspace, visible, tabId, onRouteToPty }: ChatViewPr
   const reqRef = useRef<string | null>(null);
   const bufRef = useRef<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify({ provider, model }));
@@ -157,12 +227,23 @@ export function ChatView({ workspace, visible, tabId, onRouteToPty }: ChatViewPr
       bufRef.current += e.payload.content;
       setStreaming(bufRef.current);
     });
-    const unDone = listen<{ request_id: string }>("chat-done", async (e) => {
+    const unDone = listen<{
+      request_id: string;
+      tokens_prompt: number;
+      tokens_completion: number;
+      cost_usd: number;
+    }>("chat-done", async (e) => {
       if (e.payload.request_id !== reqRef.current) return;
       const content = bufRef.current;
       reqRef.current = null;
       setStreaming(null);
       setSending(false);
+      setSessionStats((s) => ({
+        tokens: s.tokens + e.payload.tokens_prompt + e.payload.tokens_completion,
+        cost: s.cost + e.payload.cost_usd,
+      }));
+      // The prompt size of the latest turn is the current context window usage.
+      setContextTokens(e.payload.tokens_prompt + e.payload.tokens_completion);
       const sid = sessionRef.current;
       if (content && sid) {
         try {
@@ -194,8 +275,16 @@ export function ChatView({ workspace, visible, tabId, onRouteToPty }: ChatViewPr
   }, [provider, model, isDraft, tabId, workspace.id, bindChatDraftToSession]);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    if (stickRef.current) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    }
   }, [messages, streaming]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
 
   useEffect(() => {
     api
@@ -204,56 +293,29 @@ export function ChatView({ workspace, visible, tabId, onRouteToPty }: ChatViewPr
       .catch(() => setKeyMissing(false));
   }, [provider, workspace.id]);
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text) return;
-    if (text.startsWith("/") && onRouteToPty(text)) {
-      setInput("");
-      return;
-    }
-    if (!projectId || sending) return;
-    setError(null);
-    setInput("");
+  // Project + global commands expand into a chat message (resolved server-side);
+  // other slash inputs fall through to the terminal.
+  useEffect(() => {
+    api
+      .listCommands(workspace.id)
+      .then((cmds) =>
+        setCommandSlashes(
+          new Set(cmds.filter((c) => c.source !== "claude").map((c) => c.slash)),
+        ),
+      )
+      .catch(() => setCommandSlashes(new Set()));
+  }, [workspace.id]);
 
-    let sid = sessionRef.current;
-    if (!sid) {
-      try {
-        const created = await api.createChatSession(projectId);
-        sid = created.id;
-        setDraftSessionId(sid);
-        sessionRef.current = sid;
-        firstUserRef.current = text;
-        if (isDraft) setChatTabLabel(workspace.id, tabId, tabLabel(text));
-      } catch (e) {
-        setError(String(e));
-        return;
-      }
-    }
-
-    let userMsg: ChatMessage;
-    try {
-      userMsg = await api.addChatMessage(sid, "user", text, provider, model);
-    } catch (e) {
-      setError(String(e));
-      return;
-    }
-    const next = [...messages, userMsg];
-    setMessages(next);
-
+  const streamAssistant = async (modelMessages: { role: string; content: string }[]) => {
     const reqId = crypto.randomUUID();
     reqRef.current = reqId;
     bufRef.current = "";
+    stickRef.current = true;
     setStreaming("");
     setSending(true);
-
+    setError(null);
     try {
-      await api.chatSend(
-        reqId,
-        workspace.id,
-        provider,
-        model,
-        next.map((m) => ({ role: m.role, content: m.content })),
-      );
+      await api.chatSend(reqId, workspace.id, provider, model, modelMessages, toolMode, reasoning);
     } catch (e) {
       const msg = String(e);
       reqRef.current = null;
@@ -264,8 +326,132 @@ export function ChatView({ workspace, visible, tabId, onRouteToPty }: ChatViewPr
     }
   };
 
-  const models = providerModels(provider);
-  const modelSelectValue = models.includes(model) ? model : CUSTOM;
+  const send = async () => {
+    const text = input.trim();
+    if (!text && attachments.length === 0) return;
+    // A `/slash` that matches a project/global command is expanded server-side
+    // and sent as a chat message; anything else is routed to the terminal.
+    const slashHead = text.split(/\s/)[0];
+    if (text.startsWith("/") && !commandSlashes.has(slashHead) && onRouteToPty(text)) {
+      setInput("");
+      return;
+    }
+    if (!projectId || sending) return;
+    setError(null);
+    setInput("");
+    const atts = attachments;
+    setAttachments([]);
+
+    let sid = sessionRef.current;
+    if (!sid) {
+      try {
+        const created = await api.createChatSession(projectId);
+        sid = created.id;
+        setDraftSessionId(sid);
+        sessionRef.current = sid;
+        firstUserRef.current = text;
+        if (isDraft) setChatTabLabel(workspace.id, tabId, tabLabel(text || atts[0]?.name || "Chat"));
+      } catch (e) {
+        setError(String(e));
+        return;
+      }
+    }
+
+    // Persisted/displayed bubble stays short (attachment names only); the model
+    // receives the full file contents appended to the message.
+    const displayText = atts.length
+      ? `${text}${text ? "\n\n" : ""}📎 ${atts.map((a) => a.name).join(", ")}`
+      : text;
+
+    let userMsg: ChatMessage;
+    try {
+      userMsg = await api.addChatMessage(sid, "user", displayText, provider, model);
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    const next = [...messages, userMsg];
+    setMessages(next);
+
+    const attBlocks = atts
+      .map((a) => `\n\n--- ${a.name} ---\n\`\`\`\n${a.content}\n\`\`\``)
+      .join("");
+    const modelMessages = next.map((m, i) =>
+      i === next.length - 1
+        ? { role: m.role, content: text + attBlocks }
+        : { role: m.role, content: m.content },
+    );
+    streamAssistant(modelMessages);
+  };
+
+  const stop = async () => {
+    const reqId = reqRef.current;
+    if (!reqId) return;
+    try {
+      await api.stopChat(reqId);
+    } catch {
+      /* ignore */
+    }
+    const content = bufRef.current;
+    reqRef.current = null;
+    setStreaming(null);
+    setSending(false);
+    const sid = sessionRef.current;
+    if (content && sid) {
+      try {
+        const msg = await api.addChatMessage(sid, "assistant", content, provider, model);
+        setMessages((m) => [...m, msg]);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const regenerate = async () => {
+    if (sending) return;
+    const revIdx = [...messages].reverse().findIndex((m) => m.role === "assistant");
+    if (revIdx === -1) return;
+    const idx = messages.length - 1 - revIdx;
+    const target = messages[idx];
+    const remaining = messages.filter((_, i) => i !== idx);
+    setMessages(remaining);
+    try {
+      await api.deleteChatMessage(target.id);
+    } catch {
+      /* ignore */
+    }
+    streamAssistant(remaining.map((m) => ({ role: m.role, content: m.content })));
+  };
+
+  // Edit a previous user message: drop it and everything after, then resend the
+  // edited text as a fresh turn (forks the conversation from that point).
+  const editAndResend = async (idx: number, newText: string) => {
+    const text = newText.trim();
+    if (!text || sending) return;
+    const sid = sessionRef.current;
+    if (!sid) return;
+    const toDelete = messages.slice(idx);
+    const kept = messages.slice(0, idx);
+    setMessages(kept);
+    setError(null);
+    for (const m of toDelete) {
+      try {
+        await api.deleteChatMessage(m.id);
+      } catch {
+        /* ignore */
+      }
+    }
+    let userMsg: ChatMessage;
+    try {
+      userMsg = await api.addChatMessage(sid, "user", text, provider, model);
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    const next = [...kept, userMsg];
+    setMessages(next);
+    streamAssistant(next.map((m) => ({ role: m.role, content: m.content })));
+  };
 
   // The picker: a box of recent chats + a button to start a new session.
   if (isPicker) {
@@ -352,21 +538,38 @@ export function ChatView({ workspace, visible, tabId, onRouteToPty }: ChatViewPr
         </div>
       )}
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+      >
         {messages.length === 0 && !streaming ? (
-          <div className="flex h-full items-center justify-center text-center text-sm text-muted-foreground">
-            <div>
-              <p>Chat with your project context.</p>
-              <p className="mt-1 text-xs">
-                CLAUDE.md, brand-voice.md and HEARTBEAT.md are auto-injected. Type{" "}
-                <span className="font-mono">/</span> to run a terminal command.
-              </p>
+          <div className="flex h-full items-center justify-center px-6 text-center">
+            <div className="flex flex-col items-center gap-4">
+              <MessageSquare className="h-9 w-9 text-primary/70" strokeWidth={1} />
+              <p className="text-base font-medium">How can I help with {workspace.name}?</p>
             </div>
           </div>
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-4">
-            {messages.map((m) => (
-              <ChatBubble key={m.id} role={m.role} content={m.content} />
+            {messages.map((m, i) => (
+              <ChatBubble
+                key={m.id}
+                role={m.role}
+                content={m.content}
+                time={m.created_at}
+                onCopy={() => navigator.clipboard.writeText(m.content)}
+                onRegenerate={
+                  m.role === "assistant" && i === messages.length - 1 && !sending
+                    ? regenerate
+                    : undefined
+                }
+                onEdit={
+                  m.role === "user" && !sending
+                    ? (t: string) => editAndResend(i, t)
+                    : undefined
+                }
+              />
             ))}
             {streaming !== null && <ChatBubble role="assistant" content={streaming || "…"} />}
           </div>
@@ -377,72 +580,51 @@ export function ChatView({ workspace, visible, tabId, onRouteToPty }: ChatViewPr
         <div className="border-t bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</div>
       )}
 
-      <div className="border-t bg-card px-3 py-2">
-        <div className="flex items-center gap-2">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                send();
-              }
-            }}
-            placeholder="Message, or / for a terminal command…"
-            className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            spellCheck={false}
-          />
-          <div className="flex h-9 items-center gap-1.5 rounded-md border border-input bg-background pl-2">
-            <ProviderIcon provider={provider} className="h-3.5 w-3.5 shrink-0 opacity-80" />
-            <select
-              value={provider}
-              onChange={(e) => {
-                const p = e.target.value;
-                setProvider(p);
-                setModel(providerModels(p)[0] ?? "");
-              }}
-              className="h-full bg-transparent pr-1.5 text-xs focus-visible:outline-none"
+      {!streaming && (
+        <div className="flex w-full flex-wrap gap-1.5 px-4 py-2">
+          {(messages.length === 0 ? STARTER_PROMPTS : SESSION_PROMPTS).map((p) => (
+            <button
+              key={p.label}
+              className="rounded border border-dashed bg-background px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+              onClick={() => setInput(p.build())}
+              title="Insert prompt (editable before sending)"
             >
-              {CHAT_PROVIDERS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                  {"recommended" in p && p.recommended ? " ★" : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-          {modelSelectValue === CUSTOM ? (
-            <input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="model id"
-              className="h-9 w-36 rounded-md border border-input bg-background px-2 font-mono text-xs"
-            />
-          ) : (
-            <div className="flex h-9 items-center gap-1.5 rounded-md border border-input bg-background pl-2">
-              <ProviderIcon model={model} className="h-3.5 w-3.5 shrink-0 opacity-50" />
-              <select
-                value={modelSelectValue}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setModel(v === CUSTOM ? "" : v);
-                }}
-                className="h-full bg-transparent pr-1.5 text-xs focus-visible:outline-none"
-              >
-                {models.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-                <option value={CUSTOM}>Custom…</option>
-              </select>
-            </div>
-          )}
-          <Button size="icon" variant="secondary" disabled={sending} onClick={send}>
-            <SendHorizonal className="h-4 w-4" />
-          </Button>
+              {p.label}
+            </button>
+          ))}
         </div>
-      </div>
+      )}
+
+      <ChatComposer
+        workspaceId={workspace.id}
+        projectId={projectId}
+        input={input}
+        setInput={setInput}
+        onSend={send}
+        sending={sending}
+        onStop={stop}
+        provider={provider}
+        setProvider={setProvider}
+        model={model}
+        setModel={setModel}
+        attachments={attachments}
+        setAttachments={setAttachments}
+        toolMode={toolMode}
+        setToolMode={setToolMode}
+        reasoning={reasoning}
+        setReasoning={setReasoning}
+        agentMode={agentMode}
+        setAgentMode={setAgentMode}
+      />
+
+      <StatusFooter
+        workspace={workspace}
+        onOpenFiles={onOpenFiles}
+        refreshKey={messages.length}
+        context={contextTokens}
+        tokens={sessionStats.tokens}
+        cost={sessionStats.cost}
+      />
     </div>
   );
 }
@@ -450,13 +632,70 @@ export function ChatView({ workspace, visible, tabId, onRouteToPty }: ChatViewPr
 function ChatBubble({
   role,
   content,
+  time,
+  onCopy,
+  onRegenerate,
+  onEdit,
 }: {
   role: "user" | "assistant";
   content: string;
+  time?: string;
+  onCopy?: () => void;
+  onRegenerate?: () => void;
+  onEdit?: (text: string) => void;
 }) {
   const isUser = role === "user";
+  const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(content);
+
+  if (editing) {
+    return (
+      <div className="flex w-full flex-col items-end gap-2">
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              if (draft.trim()) onEdit?.(draft);
+              setEditing(false);
+            } else if (e.key === "Escape") {
+              setDraft(content);
+              setEditing(false);
+            }
+          }}
+          autoFocus
+          rows={Math.min(draft.split("\n").length + 1, 12)}
+          className="w-[85%] resize-none rounded-xl border bg-background px-4 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        />
+        <div className="flex gap-2 text-xs">
+          <button
+            className="rounded-md px-2 py-1 text-muted-foreground hover:text-foreground"
+            onClick={() => {
+              setDraft(content);
+              setEditing(false);
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            className="rounded-md bg-primary px-3 py-1 text-primary-foreground disabled:opacity-50"
+            disabled={!draft.trim()}
+            onClick={() => {
+              onEdit?.(draft);
+              setEditing(false);
+            }}
+          >
+            Send
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+    <div className={cn("group flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
       <div
         className={cn(
           "max-w-[85%] rounded-xl px-4 py-2.5 text-sm",
@@ -469,6 +708,43 @@ function ChatBubble({
           <div className="prose prose-sm dark:prose-invert max-w-none break-words [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
           </div>
+        )}
+      </div>
+      <div className="flex h-4 items-center gap-2 px-1 opacity-0 transition-opacity group-hover:opacity-100">
+        {time && <span className="text-[10px] text-muted-foreground">{fmtWhen(time)}</span>}
+        {onEdit && (
+          <button
+            className="text-muted-foreground transition-colors hover:text-foreground"
+            title="Edit"
+            onClick={() => {
+              setDraft(content);
+              setEditing(true);
+            }}
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
+        )}
+        {onCopy && (
+          <button
+            className="text-muted-foreground transition-colors hover:text-foreground"
+            title="Copy"
+            onClick={() => {
+              onCopy();
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }}
+          >
+            {copied ? <span className="text-[10px]">Copied</span> : <Copy className="h-3 w-3" />}
+          </button>
+        )}
+        {onRegenerate && (
+          <button
+            className="text-muted-foreground transition-colors hover:text-foreground"
+            title="Regenerate"
+            onClick={onRegenerate}
+          >
+            <RefreshCw className="h-3 w-3" />
+          </button>
         )}
       </div>
     </div>

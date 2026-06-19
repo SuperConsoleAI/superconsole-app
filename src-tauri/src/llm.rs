@@ -528,3 +528,93 @@ pub async fn one_shot_completion(
     };
     Ok(text.trim().to_string())
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenrouterModel {
+    pub id: String,
+    pub name: String,
+    pub context_length: u64,
+    pub prompt_price: f64,
+    pub completion_price: f64,
+    pub supports_reasoning: bool,
+    pub created: i64,
+}
+
+// Cache the live model list (refreshed hourly) so the chat composer dropdown
+// doesn't hit the network on every open.
+static OR_MODELS_CACHE: OnceLock<std::sync::Mutex<Option<(std::time::Instant, Vec<OpenrouterModel>)>>> =
+    OnceLock::new();
+
+#[tauri::command]
+pub async fn list_openrouter_models() -> Result<Vec<OpenrouterModel>, String> {
+    let cache = OR_MODELS_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((at, models)) = guard.as_ref() {
+            if at.elapsed().as_secs() < 3600 {
+                return Ok(models.clone());
+            }
+        }
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://openrouter.ai/api/v1/models")
+        .header("X-Title", "SuperConsole")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let v: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let mut models: Vec<OpenrouterModel> = v["data"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    let id = m["id"].as_str()?.to_string();
+                    // Text-output models only (skip image/audio/video generators).
+                    let text_output = m["architecture"]["output_modalities"]
+                        .as_array()
+                        .map(|a| a.iter().any(|x| x.as_str() == Some("text")))
+                        .unwrap_or(true);
+                    if !text_output {
+                        return None;
+                    }
+                    let supports_reasoning = m["supported_parameters"]
+                        .as_array()
+                        .map(|p| p.iter().any(|x| x.as_str() == Some("reasoning")))
+                        .unwrap_or(false);
+                    Some(OpenrouterModel {
+                        name: m["name"].as_str().unwrap_or(&id).to_string(),
+                        id,
+                        context_length: m["context_length"].as_u64().unwrap_or(0),
+                        prompt_price: m["pricing"]["prompt"]
+                            .as_str()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0.0),
+                        completion_price: m["pricing"]["completion"]
+                            .as_str()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0.0),
+                        supports_reasoning,
+                        created: m["created"].as_i64().unwrap_or(0),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    models.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((std::time::Instant::now(), models.clone()));
+    }
+    Ok(models)
+}
+
+/// Live per-token (prompt, completion) USD pricing for an OpenRouter model id,
+/// read from the cached model list. None if not loaded or unknown.
+pub fn or_price_per_token(model: &str) -> Option<(f64, f64)> {
+    let cache = OR_MODELS_CACHE.get()?;
+    let guard = cache.lock().ok()?;
+    let (_, models) = guard.as_ref()?;
+    let m = models.iter().find(|x| x.id == model)?;
+    Some((m.prompt_price, m.completion_price))
+}

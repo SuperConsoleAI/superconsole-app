@@ -177,6 +177,21 @@ fn context_specs() -> Vec<ToolSpec> {
             "Propose a new wiki page. Goes to the inbox for user approval.",
             obj(json!({"title": {"type": "string"}, "content": {"type": "string"}}), &["title", "content"]),
         ),
+        ToolSpec::new(
+            "context_list",
+            "List the project's on-demand context files (brand, voice, style-guide, etc.) by slug. Fetch a file with context_read when relevant.",
+            obj(json!({}), &[]),
+        ),
+        ToolSpec::new(
+            "context_read",
+            "Read one project context file by slug.",
+            obj(json!({"slug": {"type": "string"}}), &["slug"]),
+        ),
+        ToolSpec::new(
+            "context_search",
+            "Search across the project context files and return matching lines.",
+            obj(json!({"query": {"type": "string"}}), &["query"]),
+        ),
     ]
 }
 
@@ -201,6 +216,21 @@ fn connector_spec(services: &[String]) -> Option<ToolSpec> {
             &["service", "path"],
         ),
     ))
+}
+
+/// Dedicated web-search tool, present only when the web_search connector is set.
+fn web_search_spec() -> ToolSpec {
+    ToolSpec::new(
+        "web_search",
+        "Search the web and return the top results (title, url, snippet) plus a short answer. Uses the project's connected web search provider.",
+        obj(
+            json!({
+                "query": {"type": "string"},
+                "max_results": {"type": "integer", "description": "Default 5, max 10"}
+            }),
+            &["query"],
+        ),
+    )
 }
 
 fn bridge_specs() -> Vec<ToolSpec> {
@@ -233,8 +263,13 @@ pub fn full_catalog(db: &Db, ctx: &ToolCtx) -> Vec<ToolSpec> {
     );
     let mut out = always_specs();
     out.extend(context_specs());
-    if let Some(c) = connector_spec(&services) {
+    // web_search has a dedicated tool, so keep it out of the generic passthrough.
+    let rest: Vec<String> = services.iter().filter(|s| *s != "web_search").cloned().collect();
+    if let Some(c) = connector_spec(&rest) {
         out.push(c);
+    }
+    if services.iter().any(|s| s == "web_search") {
+        out.push(web_search_spec());
     }
     out
 }
@@ -567,6 +602,60 @@ pub async fn execute(db: &Db, ctx: &ToolCtx, name: &str, args: Value) -> Result<
                 content,
             )?;
             ok_text(json!({"inbox_id": id, "status": "pending_approval"}))
+        }
+        "context_list" => {
+            let files: Vec<Value> = crate::context::scan(ws)
+                .into_iter()
+                .map(|f| json!({"slug": f.slug, "name": f.name, "size_bytes": f.size_bytes}))
+                .collect();
+            ok_text(files)
+        }
+        "context_read" => {
+            let slug = args["slug"].as_str().ok_or("slug is required")?;
+            let body = crate::context::read_body(ws, slug)
+                .ok_or_else(|| format!("context file '{}' not found", slug))?;
+            ok_text(json!({"slug": slug, "content": body}))
+        }
+        "context_search" => {
+            let query = args["query"].as_str().unwrap_or("");
+            let matches: Vec<Value> = crate::context::search(ws, query)
+                .into_iter()
+                .map(|(slug, line)| json!({"slug": slug, "line": line}))
+                .collect();
+            ok_text(matches)
+        }
+        "web_search" => {
+            let query = args["query"].as_str().ok_or("query is required")?;
+            let max = args["max_results"].as_u64().unwrap_or(5).min(10);
+            let fields = crate::connectors::resolve_connector_fields(
+                db,
+                "web_search",
+                ctx.user_id.as_deref(),
+                ctx.org_id.as_deref(),
+                ctx.project_id.as_deref(),
+            )
+            .ok_or("web search is not connected for this project")?;
+            let client = reqwest::Client::new();
+            let resp = client
+                .post("https://api.tavily.com/search")
+                .json(&json!({
+                    "api_key": f(&fields, "api_key"),
+                    "query": query,
+                    "max_results": max
+                }))
+                .send()
+                .await
+                .map_err(|e| format!("request failed: {}", e))?;
+            let v: Value = resp.json().await.map_err(|e| e.to_string())?;
+            let results: Vec<Value> = v["results"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|r| json!({"title": r["title"], "url": r["url"], "snippet": r["content"]}))
+                        .collect()
+                })
+                .unwrap_or_default();
+            ok_text(json!({"query": query, "answer": v["answer"], "results": results}))
         }
         "connector_request" => connector_request(db, ctx, &args).await,
         "sc_search" => {

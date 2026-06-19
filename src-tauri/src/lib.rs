@@ -2,7 +2,9 @@ mod auth;
 mod chat;
 mod cli_sessions;
 mod cloud;
+mod commands;
 mod connectors;
+mod context;
 mod crypto;
 mod db;
 mod files;
@@ -404,6 +406,9 @@ fn list_slash_commands(app: AppHandle, workspace_id: i64) -> Result<Vec<String>,
     for (name, _) in skills::active_skills(&app, workspace_id) {
         commands.push(format!("/{}", name));
     }
+    for c in commands::all(&app, &ws.path) {
+        commands.push(c.slash);
+    }
     commands.sort();
     commands.dedup();
     Ok(commands)
@@ -468,6 +473,66 @@ fn delete_chat_session(db: State<Db>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn delete_chat_message(db: State<Db>, id: i64) -> Result<(), String> {
+    db.delete_chat_message(id)
+}
+
+#[tauri::command]
+fn read_attachment(path: String) -> Result<String, String> {
+    files::read_attachment(&path)
+}
+
+#[derive(serde::Serialize)]
+struct GitInfo {
+    branch: Option<String>,
+    insertions: i64,
+    deletions: i64,
+}
+
+#[tauri::command]
+fn git_info(db: State<Db>, workspace_id: i64) -> Result<GitInfo, String> {
+    let ws = db.get_workspace(workspace_id).map_err(|e| e.to_string())?;
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&ws.path)
+            .args(args)
+            .env("PATH", pty::enriched_path())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| !b.is_empty());
+
+    // Total working-tree changes vs HEAD (staged + unstaged).
+    let mut insertions = 0;
+    let mut deletions = 0;
+    if let Some(stat) = git(&["diff", "HEAD", "--shortstat"]) {
+        for part in stat.split(',') {
+            let p = part.trim();
+            let n: i64 = p
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            if p.contains("insertion") {
+                insertions = n;
+            } else if p.contains("deletion") {
+                deletions = n;
+            }
+        }
+    }
+
+    Ok(GitInfo {
+        branch,
+        insertions,
+        deletions,
+    })
+}
+
+#[tauri::command]
 fn move_chat_session(db: State<Db>, id: String, to_project: String) -> Result<(), String> {
     db.move_chat_session(&id, &to_project)
 }
@@ -511,6 +576,7 @@ pub fn run() {
             let db = Db::init(data_dir).map_err(|e| std::io::Error::other(e))?;
             app.manage(db);
             app.manage(SessionManager::default());
+            app.manage(chat::ChatCancel::default());
             app.manage(AuthState::load_from_keyring());
             scheduler::spawn(app.handle().clone());
             sync_manager::spawn(app.handle().clone());
@@ -561,9 +627,11 @@ pub fn run() {
             llm::list_llm_keys,
             llm::set_llm_key,
             llm::delete_llm_key,
+            llm::list_openrouter_models,
             sync_cloud_cache,
             sync_org_cache,
             chat::chat_send,
+            chat::stop_chat,
             chat::has_provider_key,
             list_chat_sessions,
             create_chat_session,
@@ -574,6 +642,9 @@ pub fn run() {
             rename_chat_session,
             star_chat_session,
             delete_chat_session,
+            delete_chat_message,
+            read_attachment,
+            git_info,
             move_chat_session,
             clear_local_cloud_data,
             team::list_org_members,
@@ -624,6 +695,19 @@ pub fn run() {
             wiki::write_wiki,
             wiki::delete_wiki,
             wiki::seed_wiki_from_files,
+            context::list_context_files,
+            context::read_context_file,
+            context::write_context_file,
+            context::delete_context_file,
+            context::seed_context_files,
+            commands::list_commands,
+            commands::read_command,
+            commands::write_command,
+            commands::delete_command,
+            commands::list_global_commands,
+            commands::read_global_command,
+            commands::write_global_command,
+            commands::delete_global_command,
             mcp::ensure_mcp_config
         ])
         .run(tauri::generate_context!())

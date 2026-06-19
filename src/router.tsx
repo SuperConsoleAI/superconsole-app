@@ -234,6 +234,12 @@ function Shell() {
                         activateTab(ws.id, target.id);
                         return true;
                       }}
+                      onOpenFiles={() =>
+                        goToWorkspace(ws.id, {
+                          files: !filesOpen || undefined,
+                          file: openedFile ?? undefined,
+                        })
+                      }
                     />
                   );
                 }
@@ -245,6 +251,12 @@ function Shell() {
                     visible={isActiveTab}
                     onSessionState={setSessionState}
                     onSessionInfo={setSessionInfo}
+                    onOpenFiles={() =>
+                      goToWorkspace(ws.id, {
+                        files: !filesOpen || undefined,
+                        file: openedFile ?? undefined,
+                      })
+                    }
                   />
                 );
               }),

@@ -5,6 +5,7 @@ import {
   CalendarClock,
   ChevronLeft,
   ChevronRight,
+  FileText,
   Folder,
   FolderOpen,
   Library,
@@ -20,6 +21,7 @@ import { JobsDialog } from "@/components/JobsDialog";
 import { SkillsDialog } from "@/components/SkillsDialog";
 import { MemoryDialog } from "@/components/MemoryDialog";
 import { WikiDialog } from "@/components/WikiDialog";
+import { ContextDialog } from "@/components/ContextDialog";
 import { type Workspace } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -44,6 +46,7 @@ export function TopBar({
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [wikiOpen, setWikiOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
 
   return (
     <header
@@ -144,6 +147,20 @@ export function TopBar({
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7"
+                  onClick={() => setContextOpen(true)}
+                >
+                  <FileText className="h-4 w-4" strokeWidth={1} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Context</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
                   onClick={() => setJobsOpen(true)}
                 >
                   <CalendarClock className="h-4 w-4" strokeWidth={1} />
@@ -199,6 +216,11 @@ export function TopBar({
             workspaceId={workspace.id}
             open={wikiOpen}
             onOpenChange={setWikiOpen}
+          />
+          <ContextDialog
+            workspaceId={workspace.id}
+            open={contextOpen}
+            onOpenChange={setContextOpen}
           />
         </>
       )}
