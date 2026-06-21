@@ -16,7 +16,7 @@ Patterns, constraints, and gotchas specific to this codebase.
 - All IPC via `#[tauri::command]` fns registered in `lib.rs::run()`; frontend calls them through the typed wrappers in `src/lib/api.ts` (never call `invoke` directly elsewhere).
 - Command args: Rust snake_case params are called with camelCase keys from JS (`session_id` → `sessionId`).
 - Shared state: `app.manage(Db)`, `app.manage(SessionManager)`; access with `State<T>` in commands or `app.state::<T>()` in spawned tasks.
-- Events: backend → frontend only (`pty-output`, `pty-exit`, `inbox-new`). Frontend listens with `listen()` and filters by `session_id`/`workspace_id` in the payload.
+- Events: backend → frontend only (`pty-output`, `pty-exit`, `session-usage`, `inbox-new`, `chat-token`/`chat-done`/`chat-error`). Frontend listens with `listen()` and filters by `session_id`/`request_id`/`workspace_id` in the payload.
 - Long-running work: `tauri::async_runtime::spawn` (tokio) for loops, `spawn_blocking` for process exec; the HTTP server runs on a plain `std::thread` (tiny_http is blocking).
 - New plugin = three places: Cargo.toml + `.plugin(...)` in lib.rs + permission in `capabilities/default.json` (+ npm guest package).
 
@@ -33,6 +33,7 @@ Patterns, constraints, and gotchas specific to this codebase.
 - `@theme inline { --font-sans: var(--font-sans) }` is circular and silently breaks fonts. Fonts are declared in a separate plain `@theme` block. Don't merge them.
 - cron crate needs a seconds field; `scheduler::next_run` prepends `"0 "` to standard 5-field cron. Job times are computed in Local tz, stored as UTC strings, compared against `datetime('now')`.
 - xterm terminals must `fit()` after becoming visible (`display:none` → visible gives 0 dims); handled in TerminalView's `visible` effect via `requestAnimationFrame`.
+- TerminalView uses the WebGL renderer + a bundled JetBrains Mono Nerd Font (`src/assets/fonts/`, `@font-face` in `index.css`). Wait for `document.fonts.ready` before the first `fit()`/`start_session` (otherwise xterm measures fallback-font cell metrics and reports the wrong cols/rows to the PTY, misaligning the CLI prompt), and call `term.clearTextureAtlas()` after each resize-`fit()` to avoid stale `????`/glyph artifacts. Resize is debounced via `requestAnimationFrame`. Keep the xterm options minimal — avoid `customGlyphs`/`rescaleOverlappingGlyphs` (they caused glyph artifacts).
 - TerminalView remounts when `tab.id` changes; backend `start_session` is idempotent (re-attach if session exists).
 - macOS traffic lights: `titleBarStyle: "Overlay"` + `hiddenTitle: true` in tauri.conf.json; TopBar has `pl-[78px]` and `data-tauri-drag-region`. Don't put interactive elements in the first 78px.
 - `files.rs::resolve` rejects `..`/absolute paths — every file op must go through it.
@@ -55,13 +56,13 @@ Patterns, constraints, and gotchas specific to this codebase.
 - Turso is NOT queried per keystroke/session. `sync_manager.rs` pulls config into local `*_cache` tables on startup, explicit refresh, org switch, and a 30-min tick; PTY/chat env injection reads only the cache. After any cloud write, call `sync_manager::sync_on_update` to refresh the relevant cache immediately.
 - Secret precedence (LLM keys + connectors): project → org → account/local → `.env` → skip. Project overrides org. Telegram resolves project → org → local `telegram_token` setting → skip.
 - Encryption parity: AES-256-GCM, key = HKDF-SHA256(`WORKOS_COOKIE_PASSWORD`), salt `superconsole-llm-keys-v1`, info `aes-256-gcm`, format `base64(nonce[12] || ct||tag)`. Connector creds are an encrypted JSON blob in `credentials_encrypted`. Keep `crypto.rs` and the web `crypto.ts` identical.
-- Registries (LLM providers + connectors) are mirrored in three places: `src-tauri/src/connectors.rs`, `src/lib/api.ts`, and `superconsole-web/src/connector-registry.ts`. Keep service ids, field keys, scopes, and env mappings identical.
-- Native chat: `chat.rs` streams provider tokens via `chat-token`/`chat-done`/`chat-error` events; messages are stored locally in `chat_messages` keyed by project; the system prompt is built from CLAUDE.md/brand-voice.md/HEARTBEAT.md plus the project's connected services, skills, memory, and wiki. Chat runs a native tool-calling loop backed by `mcp::execute`.
+- Registries (LLM providers + connectors) are mirrored in three places: `src-tauri/src/connectors.rs`, `src/lib/api.ts`, and `superconsole-web/src/connector-registry.ts`. Keep service ids, field keys, scopes, and env mappings identical. (e.g. the `web_search` connector → `TAVILY_API_KEY` was added to all three.)
+- Native chat: `chat.rs` streams provider tokens via `chat-token`/`chat-done`/`chat-error` events through Anthropic/OpenAI-compatible/Gemini/OpenRouter adapters; it is cancellable (`stop_chat` + `ChatCancel` state) and supports a `tool_mode` and `reasoning` effort (`apply_reasoning`). Messages are stored locally in `chat_messages` keyed by project; the system prompt is built from CLAUDE.md/brand-voice.md/HEARTBEAT.md + on-demand context files plus the project's connected services, skills, memory, and wiki. Chat runs a native tool-calling loop backed by `mcp::execute`. `chat-done` carries `tokens_prompt`/`tokens_completion`/`cost_usd` (cost prefers OpenRouter live pricing via `llm::or_price_per_token`, else `usage::estimate_cost`). OpenRouter model list/pricing comes from `llm::list_openrouter_models` (cached hourly).
 - `ensure_workspace_project` is serialized via a process Mutex and reuses an existing cloud project by (org_id, local_path_hint) before inserting — keeps Turso from accumulating duplicate project rows.
 
 ## MCP tools (phase 16)
 
-- `mcp.rs` is an in-process tool layer shared by native chat (`mcp::execute`) and the stdio MCP server (`mcp_server.rs`). Tools are `ToolSpec`s: always-loaded (skills/memory/wiki/files), context-gated, plus a generic `connector_request`. A BM25-lite search lets agents discover tools without loading every schema.
+- `mcp.rs` is an in-process tool layer shared by native chat (`mcp::execute`) and the stdio MCP server (`mcp_server.rs`). Tools are `ToolSpec`s: always-loaded (skills/memory/wiki/files), context-gated (incl. `context_list`/`context_read`/`context_search` over `context.rs`), a generic `connector_request`, plus a dedicated `web_search` tool that appears only when the `web_search`/Tavily connector is connected (it is deliberately excluded from the generic `connector_request` passthrough). A BM25-lite search lets agents discover tools without loading every schema.
 - The stdio server is launched as `superconsole mcp --session <token>` (subcommand in `lib.rs`). The token is an AES-256-GCM blob (`ToolCtx`) carrying workspace/project identity with a 30-day TTL; it is regenerated per session launch.
 - Per-CLI MCP config is written on session launch (fresh token), merging with existing servers + git-excluding the generated files:
   - **Claude**: project `.mcp.json` + pre-approval in `.claude/settings.local.json` (`enabledMcpjsonServers`).
@@ -72,7 +73,13 @@ Patterns, constraints, and gotchas specific to this codebase.
 
 ## Jobs: run modes + triggers (phase 16b)
 
-- Jobs carry `run_mode` (`cli` print-mode vs `chat` one-shot via `llm::one_shot_completion`), `run_config`, `trigger_type` (`cron`/`api`/`github`), `trigger_config`, and `allowed_connectors`. `scheduler::exec_in_workspace` branches on `run_mode`; `job_command` builds the CLI line per preset (incl. `codex exec`).
+- Jobs carry `run_mode` (`cli` print-mode vs `chat` one-shot via `llm::one_shot_completion` vs `agent`), `run_config`, `trigger_type` (`cron`/`manual`/`api`/`github`; non-cron = no `next_run`, so it only runs via the play button), `trigger_config`, and `allowed_connectors`. `scheduler::exec_in_workspace` branches on `run_mode`; `job_command` builds the CLI line per preset (incl. `codex exec`).
+
+## Agents (definition vs job)
+
+- An agent is a *definition* in `.superconsole/agents/<name>/agent.md` (`agents.rs`): instructions + skills + connectors + context, NO harness/model/schedule. Those are picked on the job that runs it (`run_mode: "agent"` → `run_config` supplies cli/chat + model) or via `run_agent_now`/`scheduler::exec_agent` (uses the workspace default CLI).
+- `scheduler::with_available_resources` parses `@skill:`/`@context:`/`@connector:`/`@agent:` tokens from the instructions and prepends ONE availability hint line; resources are fetched on demand via MCP tools at runtime, never inlined.
+- SuperConsole catalog = Turso `agent_catalog` (curated, no org scope) + files in a public GitHub repo; install fetches via raw GitHub. Repos can self-describe with a `.superconsole-plugin/plugin.json` (falls back to `.claude-plugin/` then README). `install_repo_agent` clones a repo into a new project (+ generated `agent.md` + all skills + `.superconsole-plugin`); `scaffold_project_from_repo` clones + scaffolds `.superconsole/`. Full design: `AGENT_SYSTEM_NEW.md`.
 
 ## Native CLI sessions (read + resume)
 

@@ -7,11 +7,11 @@ SuperConsole is a Tauri 2 desktop application combining a Rust backend with a Re
 - **Data Persistence**: A bundled SQLite database (`db.rs`) handles workspaces, organizations, scheduled jobs, inbox items, settings, and session history.
 - **Sessions & Execution**: Terminal sessions use `portable-pty` (`pty.rs`), streaming output via Tauri events (`pty-output`). 
 - **Triggers**: A central `scheduler.rs` 30-second tick loop executes cron jobs headlessly. Additionally, a local HTTP server and Telegram bot (`remote.rs`) handle remote triggers. All executions route through a single funnel (`scheduler::exec_in_workspace`).
-- **Cloud layer**: WorkOS auth (`auth.rs`, loopback `127.0.0.1:4666`) signs the user in and upserts identity/orgs to a Turso DB (`cloud.rs`). `sync_manager.rs` pulls config into local `*_cache` tables; LLM keys (`llm.rs`) and connectors (`connectors.rs`) are AES-256-GCM encrypted (`crypto.rs`) and injected into sessions from cache, resolving project → org → account/local → `.env` → skip. Native chat (`chat.rs`) streams provider tokens via events. Team membership lives in `team.rs`.
+- **Cloud layer**: WorkOS auth (`auth.rs`, loopback `127.0.0.1:4666`) signs the user in and upserts identity/orgs to a Turso DB (`cloud.rs`). `sync_manager.rs` pulls config into local `*_cache` tables; LLM keys (`llm.rs`) and connectors (`connectors.rs`) are AES-256-GCM encrypted (`crypto.rs`) and injected into sessions from cache, resolving project → org → account/local → `.env` → skip. Native chat (`chat.rs`) streams provider tokens via events (Anthropic/OpenAI-compatible/Gemini/OpenRouter, cancellable, with reasoning effort and per-turn usage/cost), built from on-demand context files (`context.rs`) and tools (`mcp.rs`, incl. a `web_search` tool over the Tavily connector). Team membership lives in `team.rs`.
 
 ## 2. Tech Stack Highlights
 - **Backend (Rust)**: Tauri 2, `portable-pty` for terminals, `rusqlite` for local DB, `tokio` for async loops, `tiny_http` for local server, `reqwest` for Telegram API.
-- **Frontend (TS/React)**: React 19, Vite 7, `@tanstack/react-router` (memory history), Tailwind CSS v4, shadcn/ui primitives, and `xterm.js` for full terminal rendering.
+- **Frontend (TS/React)**: React 19, Vite 7, `@tanstack/react-router` (memory history), Tailwind CSS v4, shadcn/ui primitives, and `xterm.js` (WebGL renderer + bundled JetBrains Mono Nerd Font) for full terminal rendering.
 - **Build**: Final artifacts are `<30MB` Mac native binaries (`.app` and `.dmg`). 
 
 ## 3. Core Codebase Structure

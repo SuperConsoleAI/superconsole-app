@@ -8,11 +8,17 @@ import {
 import {
   api,
   CLI_PRESETS,
+  type Agent,
   type Organization,
   type SessionInfo,
   type SessionTab,
   type Workspace,
 } from "@/lib/api";
+
+export interface PendingNewAgent {
+  agent: Agent;
+  skills: string[];
+}
 
 interface WorkspaceContextValue {
   workspaces: Workspace[];
@@ -27,8 +33,15 @@ interface WorkspaceContextValue {
   sessionInfos: Map<string, SessionInfo>;
   addOpen: boolean;
   setAddOpen: (open: boolean) => void;
-  openWorkspace: (id: number, defaultCli: string) => void;
+  pendingAgent: string | null;
+  setPendingAgent: (id: string | null) => void;
+  pendingNewAgent: PendingNewAgent | null;
+  setPendingNewAgent: (a: PendingNewAgent | null) => void;
+  pendingRepoImport: { repo: string; gitRef: string } | null;
+  setPendingRepoImport: (r: { repo: string; gitRef: string } | null) => void;
+  openWorkspace: (id: number, defaultCli: string, runMode?: string) => void;
   openTab: (workspaceId: number, cli: string) => void;
+  openScriptTab: (workspaceId: number, label: string, script: string) => void;
   openResumeTab: (workspaceId: number, cli: string, resumeId: string) => void;
   // Multi-session chat: each session (and the picker) is its own tab.
   // Picker tab id `{ws}:chat`; session tab `{ws}:chat:{sessionId}`; a fresh
@@ -47,6 +60,7 @@ interface WorkspaceContextValue {
   activateTab: (workspaceId: number, tabId: string) => void;
   addWorkspace: (name: string, path: string, cli: string) => Promise<Workspace>;
   removeWorkspace: (id: number) => Promise<void>;
+  updateWorkspaceFields: (id: number, fields: Partial<Workspace>) => Promise<void>;
   setSessionState: (sessionId: string, live: boolean) => void;
   setSessionInfo: (sessionId: string, info: SessionInfo) => void;
 }
@@ -68,6 +82,12 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [liveSessions, setLiveSessions] = useState<Set<string>>(new Set());
   const [sessionInfos, setSessionInfos] = useState<Map<string, SessionInfo>>(new Map());
   const [addOpen, setAddOpen] = useState(false);
+  const [pendingAgent, setPendingAgent] = useState<string | null>(null);
+  const [pendingNewAgent, setPendingNewAgent] = useState<PendingNewAgent | null>(null);
+  const [pendingRepoImport, setPendingRepoImport] = useState<{
+    repo: string;
+    gitRef: string;
+  } | null>(null);
 
   useEffect(() => {
     api.listWorkspaces().then(setWorkspaces).catch(console.error);
@@ -239,16 +259,38 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   );
 
   const openWorkspace = useCallback(
-    (id: number, defaultCli: string) => {
+    (id: number, defaultCli: string, runMode?: string) => {
       setOpenedIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
       setTabsByWs((prev) => {
         if ((prev[id] ?? []).length === 0) {
-          queueMicrotask(() => openTab(id, defaultCli));
+          if (runMode === "chat") {
+            queueMicrotask(() => openChatPicker(id));
+          } else {
+            queueMicrotask(() => openTab(id, defaultCli));
+          }
         }
         return prev;
       });
     },
-    [openTab],
+    [openTab, openChatPicker],
+  );
+
+  const openScriptTab = useCallback(
+    (workspaceId: number, label: string, script: string) => {
+      setOpenedIds((ids) => (ids.includes(workspaceId) ? ids : [...ids, workspaceId]));
+      const tab: SessionTab = {
+        id: `${workspaceId}:script:${Date.now()}`,
+        cli: "shell",
+        label,
+        initialInput: script,
+      };
+      setTabsByWs((prev) => {
+        const tabs = prev[workspaceId] ?? [];
+        return { ...prev, [workspaceId]: [...tabs, tab] };
+      });
+      setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
+    },
+    [],
   );
 
   const closeTab = useCallback((workspaceId: number, tabId: string) => {
@@ -297,6 +339,30 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const updateWorkspaceFields = useCallback(
+    async (id: number, fields: Partial<Workspace>) => {
+      setWorkspaces((prev) =>
+        prev.map((w) => (w.id === id ? { ...w, ...fields } : w)),
+      );
+      const w = workspaces.find((x) => x.id === id);
+      if (!w) return;
+      const merged = { ...w, ...fields };
+      await api.updateWorkspace(id, {
+        defaultRunMode: merged.default_run_mode,
+        defaultCli: merged.default_cli,
+        defaultProvider: merged.default_provider,
+        defaultModel: merged.default_model,
+        scriptSetup: merged.script_setup,
+        scriptRun: merged.script_run,
+        scriptTeardown: merged.script_teardown,
+        scriptAutoRun: merged.script_auto_run,
+        repoUrl: merged.repo_url,
+        description: merged.description,
+      });
+    },
+    [workspaces],
+  );
+
   const setSessionState = useCallback((sessionId: string, live: boolean) => {
     setLiveSessions((prev) => {
       const next = new Set(prev);
@@ -325,8 +391,15 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         sessionInfos,
         addOpen,
         setAddOpen,
+        pendingAgent,
+        setPendingAgent,
+        pendingNewAgent,
+        setPendingNewAgent,
+        pendingRepoImport,
+        setPendingRepoImport,
         openWorkspace,
         openTab,
+        openScriptTab,
         openResumeTab,
         openChatPicker,
         openChatSession,
@@ -337,6 +410,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         activateTab,
         addWorkspace,
         removeWorkspace,
+        updateWorkspaceFields,
         setSessionState,
         setSessionInfo,
       }}

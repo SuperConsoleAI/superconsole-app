@@ -15,6 +15,7 @@ import {
 import {
   api,
   CLI_PRESETS,
+  modelDisplayName,
   type ChatSession,
   type CliSession,
   type Organization,
@@ -465,7 +466,7 @@ export function SessionsView({
                       {t.model && (
                         <span className="hidden max-w-[28%] shrink-0 items-center gap-1 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground md:inline-flex">
                           <ProviderIcon model={t.model} className="h-3 w-3 shrink-0 opacity-50" />
-                          {t.model}
+                          {modelDisplayName(t.model, t.provider)}
                         </span>
                       )}
                       <span className="hidden max-w-[26%] shrink-0 truncate text-xs text-muted-foreground sm:inline">

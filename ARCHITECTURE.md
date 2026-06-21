@@ -21,8 +21,10 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
                             ├─► crypto.rs     AES-256-GCM (HKDF from WORKOS_COOKIE_PASSWORD); key cached in keychain
                             ├─► sync_manager.rs  pulls Turso config → local *_cache (startup/manual/org-switch/30min)
                             ├─► llm.rs        LLM key CRUD (project>org>account) + session_env + chat adapters + one_shot
-                            ├─► chat.rs       native chat: streams provider tokens + native tool loop (mcp::execute)
-                            ├─► mcp.rs        in-process tool layer + write_mcp_config (Claude/Droid auto-wire + pre-approve)
+                            ├─► chat.rs       native chat: streams provider tokens (incl. OpenRouter) + native tool loop; cancellable; reasoning effort; chat-done carries usage + cost
+                            ├─► context.rs    on-demand project context files (scan/read/search) → context_* MCP tools
+                            ├─► commands.rs   cross-CLI + global slash command discovery/expansion
+                            ├─► mcp.rs        in-process tool layer (+ web_search tool) + write_mcp_config (Claude/Droid auto-wire + pre-approve)
                             ├─► mcp_server.rs stdio JSON-RPC MCP server (superconsole mcp --session <token>)
                             ├─► skills.rs / memory.rs / wiki.rs  registry CRUD synced to Turso, injected into prompts
                             ├─► team.rs       org/project membership + invitations CRUD
@@ -30,7 +32,7 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
 ```
 
 - UI never touches disk/processes/cloud directly; everything goes through `invoke()` commands.
-- PTY output streams via Tauri events (`pty-output` with `session_id`), filtered per terminal in the frontend. Chat streams via `chat-token`/`chat-done`/`chat-error`.
+- PTY output streams via Tauri events (`pty-output` with `session_id`), filtered per terminal in the frontend; `session-usage` is emitted on exit (screen-scraped tokens + est. cost) for the footer. Chat streams via `chat-token`/`chat-done`/`chat-error`, where `chat-done` carries `tokens_prompt`/`tokens_completion`/`cost_usd` (cost prefers OpenRouter live pricing).
 - Three trigger paths (scheduler, HTTP `/trigger`, Telegram `/run`) all funnel into `scheduler::exec_in_workspace`, so results consistently land in the Inbox and notify Telegram.
 
 ## Cloud layer (identity + sync)
@@ -43,7 +45,8 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
 
 ## Agent capabilities (MCP, skills, memory, wiki)
 
-- **MCP tool layer** (`mcp.rs`): one in-process registry of `ToolSpec`s serves both native chat (`mcp::execute`) and an external stdio MCP server (`mcp_server.rs`, launched via `superconsole mcp --session <token>`). Tools are always-loaded, context-gated, or the generic `connector_request`; a BM25-lite search lets agents find tools without loading every schema. `write_mcp_config` auto-writes + pre-approves the `superconsole` server for Claude/Droid per session (Codex has no project-scoped MCP config, so it is intentionally not wired).
+- **MCP tool layer** (`mcp.rs`): one in-process registry of `ToolSpec`s serves both native chat (`mcp::execute`) and an external stdio MCP server (`mcp_server.rs`, launched via `superconsole mcp --session <token>`). Tools are always-loaded, context-gated (incl. `context_*` over `context.rs`), the generic `connector_request`, or the dedicated `web_search` tool (present only when the `web_search`/Tavily connector is connected; kept out of the generic passthrough); a BM25-lite search lets agents find tools without loading every schema. `write_mcp_config` auto-writes + pre-approves the `superconsole` server for Claude/Droid per session (Codex has no project-scoped MCP config, so it is intentionally not wired).
+- **Agents** (`agents.rs`): an agent is a reusable *definition* in `.superconsole/agents/<name>/agent.md` (instructions + skills + connectors + context); the harness, model, and schedule are chosen on the **job** that runs it (`run_mode: "agent"`), not in the file. `scheduler::exec_agent` runs one now; `with_available_resources` turns `@skill:`/`@context:`/`@connector:`/`@agent:` tokens in the instructions into a one-line availability hint (fetched on demand via MCP, never inlined). A SuperConsole-owned catalog (Turso `agent_catalog` + files in a public repo) is browsable in the sidebar; any GitHub repo can be imported as a catalog agent or cloned into a new project, and repos self-describe via a `.superconsole-plugin/` manifest (falling back to `.claude-plugin/` or README). See `AGENT_SYSTEM_NEW.md`.
 - **Skills / memory / wiki** (`skills.rs`/`memory.rs`/`wiki.rs`, phases 18-20): registry CRUD mirrored to Turso (Drizzle migrations) and cached locally; their content is injected into the chat/CLI system prompt alongside context files and connected services. Each has a TopBar dialog.
 - **Native CLI sessions** (`cli_sessions.rs`): list and resume on-disk transcripts from Claude/Droid/Codex; resume relaunches the CLI in a new terminal tab with the per-CLI resume flag.
 - **Usage monitoring** (`usage.rs`, phase 21): every chat/CLI turn records a usage event (chat from API usage blocks, PTY by screen-scrape on exit). Raw `usage_events` are local-only and never wiped; one canonical aggregate shape (lifetime counters, year-keyed analytics, rolling windows, by model/provider/cli/member/project/org, 365-day heatmap) is recomputed locally and also rolled up project→org→account into Turso, where the shared cross-machine totals are cached back into the 3 `*_usage` tables for display (no double-count). The `/usage` page reads `get_usage(level, id)`.
@@ -54,6 +57,7 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
 - Routes: `/` (welcome), `/workspace/$workspaceId` (+ search params `file`, `files`), `/inbox`, `/tasks`, `/sessions` (history: CLI + chat threads), `/usage` (usage monitoring), `/settings`.
 - CRITICAL: terminals are rendered in the root layout (`Shell`), NOT inside route outlets. Routes only control visibility. This keeps PTY sessions alive across navigation.
 - Tabs are typed: terminal tabs render `TerminalView`, chat tabs (`{workspaceId}:chat`) render `ChatView`. The router picks the view by `tab.cli`; chat is its own tab type, not a per-tab toggle.
+- `TerminalView` and `ChatView` share `StatusFooter` (git stat / files toggle / branch / token·cost, with a `leftExtra` slot). Chat uses `ChatComposer` (OpenRouter-backed model selector, reasoning, agent mode, web search, attachments) and quick-prompt chips; the terminal exposes an optional rich-text input + file-path attach.
 - Shared state lives in `WorkspaceProvider` (src/lib/workspace-context.tsx): workspaces, organizations, per-workspace tab sets, live sessions, active org (localStorage). Cloud identity/session state lives in `AuthProvider` (src/lib/auth-context.tsx): WorkOS user, orgs, active cloud org.
 - Layout: full-width `TopBar` (holds macOS traffic lights via titleBarStyle Overlay + drag region) → below it `Sidebar`/`SidebarRail` + content column (`TabStrip` → terminal/editor + optional `FilePanel`).
 
@@ -62,8 +66,8 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
 - Tauri 2 over Electron: <30MB target, real native shell.
 - Sessions keyed by string session id, namespaced per workspace (`"3:claude"`, `"3:shell-1718..."`): allows multiple CLIs running concurrently per workspace, isolated tab sets per workspace.
 - Scheduler is a 30s SQLite-driven tick loop, not an in-memory cron scheduler: job edits apply instantly and runs missed during laptop sleep fire on next tick after wake.
-- xterm.js (real terminal) instead of markdown chat for sessions: agent CLIs are full TUIs; markdown rendering is used where it fits (Inbox, file editor preview).
-- Headless job runs use CLI print modes (`claude -p`, `droid exec`, `codex exec`) or a chat one-shot, selected by the job's `run_mode`; triggers are cron/api/github.
+- xterm.js (real terminal) instead of markdown chat for sessions: agent CLIs are full TUIs; markdown rendering is used where it fits (Inbox, file editor preview). The terminal uses the WebGL renderer + a bundled JetBrains Mono Nerd Font; it waits for `document.fonts.ready` before the first fit (so cols/rows match real cell metrics) and clears the texture atlas on resize to avoid stale-glyph artifacts.
+- Headless job runs use CLI print modes (`claude -p`, `droid exec`, `codex exec`), a chat one-shot, or an `agent` (instructions from a file + harness/model from the job), selected by the job's `run_mode`; triggers are cron/manual/api/github.
 - One MCP tool layer for two transports (native chat loop + stdio server) keeps tool behavior identical whether an agent runs inside SuperConsole's chat or an external CLI.
 
 ## Folder map
@@ -78,7 +82,7 @@ src/                    React frontend
   assets/icons/preset-icons/  CLI brand SVGs + index.ts lookup
 src-tauri/              Rust backend
   src/lib.rs            all #[tauri::command] handlers + app setup
-  src/{db,pty,files,scheduler,remote,cli_sessions,usage}.rs   local-first modules per concern
+  src/{db,pty,files,scheduler,remote,cli_sessions,usage,context,commands}.rs   local-first modules per concern
   src/{auth,cloud,crypto,sync_manager,llm,chat,team,connectors,skills,memory,wiki}.rs   cloud layer
   src/{mcp,mcp_server}.rs   in-process tool layer + stdio MCP server
   tauri.conf.json       window (Overlay titlebar), bundling, updater config

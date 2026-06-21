@@ -165,6 +165,22 @@ pub async fn chat_send(
     reasoning: Option<String>,
 ) -> Result<(), String> {
     clear_cancel(&app, &request_id);
+    // Models are picked from the OpenRouter catalog (ids like `anthropic/claude…`).
+    // For first-party providers we call their own API, which expects the bare
+    // model name, so strip the `vendor/` prefix. Anthropic ids use dots on
+    // OpenRouter (`claude-sonnet-4.5`) but the native API uses hyphens
+    // (`claude-sonnet-4-5`); OpenAI/Gemini keep their dots. OpenRouter keeps the
+    // full id.
+    let model = match provider.as_str() {
+        "anthropic" => {
+            let bare = model.split_once('/').map(|(_, m)| m).unwrap_or(&model);
+            bare.replace('.', "-")
+        }
+        "openai" | "gemini" => {
+            model.split_once('/').map(|(_, m)| m.to_string()).unwrap_or(model)
+        }
+        _ => model,
+    };
     let creds = crate::llm::resolve_provider_credentials(&app, workspace_id, &provider);
     let key = creds.as_ref().and_then(|c| c.api_key.clone());
     let base_url = creds.as_ref().and_then(|c| c.base_url.clone());
@@ -174,7 +190,7 @@ pub async fn chat_send(
         return Err("NO_KEY".to_string());
     }
 
-    let system = build_system_prompt(&app, workspace_id);
+    let mut system = build_system_prompt(&app, workspace_id);
 
     // Expand a trailing `/slash` command message into its body for the model.
     // The persisted/displayed user bubble keeps the short slash form.
@@ -189,6 +205,21 @@ pub async fn chat_send(
                 if let Some(body) = crate::commands::resolve(&app, &ws_path, &last.content) {
                     last.content = body;
                 }
+            }
+        }
+    }
+
+    // Surface @skill:/@context:/@connector:/@agent: resources referenced in the
+    // latest user message as an availability hint — fetched on demand via MCP,
+    // never inlined.
+    if let Some(last) = messages.last() {
+        if last.role == "user" {
+            if let Some(hint) = crate::mcp::available_resources_hint(&last.content) {
+                system = if system.is_empty() {
+                    hint
+                } else {
+                    format!("{}\n\n{}", system, hint)
+                };
             }
         }
     }

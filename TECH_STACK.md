@@ -37,10 +37,11 @@ Every dependency and why it's here. App target: <30MB installed, Mac first (Wind
 | Tailwind CSS v4 (`@tailwindcss/vite`) | CSS-first config; all tokens in `src/index.css`, no tailwind.config. |
 | shadcn/ui (via CLI, `components.json`) | UI primitives on `radix-ui` + `class-variance-authority` + `tailwind-merge` + `clsx`. Regenerate with `npx shadcn add <c> -y -o`. |
 | `tw-animate-css` | Animation utilities shadcn v4 components expect (`animate-in` etc.). |
-| `@xterm/xterm` + `@xterm/addon-fit` | Terminal rendering for PTY sessions. |
+| `@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-webgl` | Terminal rendering for PTY sessions (WebGL renderer, falls back to default if unavailable). |
 | `react-markdown` + `remark-gfm` | Markdown rendering in Inbox + file editor preview. |
 | `lucide-react` | Icon set (CLI brand icons are local SVGs in `src/assets/icons/preset-icons/`). |
 | `@fontsource-variable/{archivo,lora,jetbrains-mono}` | Bundled variable fonts (offline app, no Google Fonts CDN). |
+| JetBrains Mono Nerd Font (static, `src/assets/fonts/`) | Terminal font, bundled `@font-face` (static, not variable — variable fonts mis-measure xterm cell width). Provides Nerd Font icon glyphs for CLI logos/box-art. |
 | `@tauri-apps/api` + plugin guests (`plugin-dialog`, `plugin-opener`, `plugin-updater`) | IPC + plugin JS bindings. |
 
 ## Dev tooling

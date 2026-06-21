@@ -434,6 +434,101 @@ pub fn session_env(app: &AppHandle, workspace_id: i64) -> Vec<(String, String)> 
     env
 }
 
+/// Per-project Telegram bot tokens mapped to their workspace id. Lets the
+/// Telegram poller route each bot's messages to its own project. Cache-only.
+pub fn project_telegram_bots(db: &Db) -> Vec<(String, i64)> {
+    let mut out: Vec<(String, i64)> = Vec::new();
+    for ws in db.list_workspaces().unwrap_or_default() {
+        let Some(project_id) = ws.project_id.clone() else {
+            continue;
+        };
+        for c in db.get_cached_connectors("project", &project_id) {
+            if c.service != "telegram" {
+                continue;
+            }
+            let blob = parse_blob(c.credentials_encrypted.as_deref());
+            if let Some(tok) = field_string(&blob, "bot_token") {
+                if !tok.is_empty() && !out.iter().any(|(t, _)| t == &tok) {
+                    out.push((tok, ws.id));
+                }
+            }
+        }
+    }
+    out
+}
+
+// --- Connector-bundled MCP servers (auto-wired into .mcp.json) ---
+
+#[derive(Debug, Clone)]
+pub struct ConnectorMcp {
+    pub key: String,
+    pub command: String,
+    pub args: Vec<String>,
+    /// (env var the server expects, ${SOURCE} referencing the connector's env).
+    pub env: Vec<(String, String)>,
+}
+
+/// All MCP server keys we manage, so stale entries can be reconciled away when
+/// a connector is disconnected.
+pub const CONNECTOR_MCP_KEYS: &[&str] = &["github", "slack", "notion", "supabase", "stripe"];
+
+/// The MCP server a connector ships, if any. Tokens come from the connector's
+/// injected env vars, referenced via ${VAR} so no secret sits in the JSON.
+fn connector_mcp_def(service: &str) -> Option<ConnectorMcp> {
+    let m = |k: &str, c: &str, a: &[&str], e: &[(&str, &str)]| ConnectorMcp {
+        key: k.into(),
+        command: c.into(),
+        args: a.iter().map(|s| s.to_string()).collect(),
+        env: e.iter().map(|(x, y)| (x.to_string(), y.to_string())).collect(),
+    };
+    match service {
+        "github" => Some(m(
+            "github",
+            "npx",
+            &["-y", "@modelcontextprotocol/server-github"],
+            &[("GITHUB_PERSONAL_ACCESS_TOKEN", "${GITHUB_TOKEN}")],
+        )),
+        "slack" => Some(m(
+            "slack",
+            "npx",
+            &["-y", "@modelcontextprotocol/server-slack"],
+            &[("SLACK_BOT_TOKEN", "${SLACK_BOT_TOKEN}")],
+        )),
+        "notion" => Some(m(
+            "notion",
+            "npx",
+            &["-y", "@notionhq/notion-mcp-server"],
+            &[("NOTION_API_KEY", "${NOTION_API_KEY}")],
+        )),
+        "supabase" => Some(m(
+            "supabase",
+            "npx",
+            &["-y", "@supabase/mcp-server-supabase@latest"],
+            &[("SUPABASE_ACCESS_TOKEN", "${SUPABASE_SERVICE_ROLE_KEY}")],
+        )),
+        "stripe" => Some(m(
+            "stripe",
+            "npx",
+            &["-y", "@stripe/mcp", "--tools=all"],
+            &[("STRIPE_API_KEY", "${STRIPE_API_KEY}")],
+        )),
+        _ => None,
+    }
+}
+
+/// Active connector MCP servers for a workspace (project ∪ org ∪ account).
+/// Cache-only.
+pub fn workspace_connector_mcps(app: &AppHandle, workspace_id: i64) -> Vec<ConnectorMcp> {
+    let db = app.state::<Db>();
+    let user = cached_user_id(&db);
+    let project = db.get_workspace_project_id(workspace_id);
+    let org = project.as_deref().and_then(|p| db.get_project_org(p));
+    connected_service_ids(&db, user.as_deref(), org.as_deref(), project.as_deref())
+        .into_iter()
+        .filter_map(|s| connector_mcp_def(&s))
+        .collect()
+}
+
 /// Human-readable labels of connected services (project + org), for the chat
 /// system prompt. Cache-only.
 pub fn connected_services(app: &AppHandle, workspace_id: i64) -> Vec<String> {

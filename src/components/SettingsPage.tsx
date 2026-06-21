@@ -7,10 +7,15 @@ import {
   ChevronsUpDown,
   Copy,
   CreditCard,
+  Eye,
+  EyeOff,
+  FileCode,
+  KeyRound,
   type LucideIcon,
   ArrowLeft,
   Palette,
   Pencil,
+  Play,
   Plug,
   Plus,
   Search,
@@ -23,6 +28,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   api,
   CLI_PRESETS,
@@ -70,6 +76,7 @@ const NAV: Record<TopTab, string[]> = {
     "General",
     "Appearance",
     "Terminal",
+    "Environment",
     "Models",
     "Skills",
     "Commands",
@@ -79,11 +86,23 @@ const NAV: Record<TopTab, string[]> = {
     "Notifications",
   ],
   org: ["General", "Team", "Models", "Skills", "Integrations", "Connectors", "Billing"],
-  project: ["General", "Team", "Models", "Skills", "Integrations", "Connectors", "Automations"],
+  project: [
+    "General",
+    "Environment",
+    "Scripts",
+    "Team",
+    "Models",
+    "Skills",
+    "Integrations",
+    "Connectors",
+    "Automations",
+  ],
 };
 
 const NAV_ICONS: Record<string, LucideIcon> = {
   General: SettingsIcon,
+  Environment: KeyRound,
+  Scripts: FileCode,
   Appearance: Palette,
   Terminal: Terminal,
   Models: Sparkles,
@@ -98,16 +117,22 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   Automations: Workflow,
 };
 
-export function SettingsPage() {
+export function SettingsPage({
+  initialTab,
+  initialSection,
+}: {
+  initialTab?: TopTab;
+  initialSection?: string;
+} = {}) {
   const { workspaces } = useWorkspaces();
   const { activeCloudOrg } = useAuth();
 
-  const [tab, setTab] = useState<TopTab>("account");
+  const [tab, setTab] = useState<TopTab>(initialTab ?? "account");
   const [query, setQuery] = useState("");
   const [section, setSection] = useState<Record<TopTab, string>>({
-    account: "General",
-    org: "General",
-    project: "General",
+    account: initialTab === "account" && initialSection ? initialSection : "General",
+    org: initialTab === "org" && initialSection ? initialSection : "General",
+    project: initialTab === "project" && initialSection ? initialSection : "General",
   });
 
   // Project scope selection, shared across Project sub-sections.
@@ -273,6 +298,8 @@ function Content({
         return <AppearanceSection />;
       case "Terminal":
         return <TerminalSection />;
+      case "Environment":
+        return <AccountEnvironmentSection />;
       case "Models":
         return auth ? (
           <LlmKeyEditor
@@ -366,7 +393,23 @@ function Content({
 
     switch (section) {
       case "General":
-        return <ProjectGeneralSection projectId={projectId} />;
+        return workspaceId !== null ? (
+          <ProjectGeneralSection projectId={projectId} workspaceId={workspaceId} />
+        ) : (
+          <Hint>Select a project to continue.</Hint>
+        );
+      case "Environment":
+        return workspaceId !== null ? (
+          <EnvironmentSection workspaceId={workspaceId} />
+        ) : (
+          <Hint>Select a project to continue.</Hint>
+        );
+      case "Scripts":
+        return workspaceId !== null ? (
+          <ScriptsSection workspaceId={workspaceId} />
+        ) : (
+          <Hint>Select a project to continue.</Hint>
+        );
       case "Team":
         return <ProjectTeamSection projectId={projectId} />;
       case "Models":
@@ -595,23 +638,652 @@ function OrgGeneralSection() {
   );
 }
 
-function ProjectGeneralSection({ projectId }: { projectId: string }) {
-  const { workspaces } = useWorkspaces();
-  const ws = workspaces.find((w) => w.project_id === projectId);
+function ProjectGeneralSection({
+  projectId,
+  workspaceId,
+}: {
+  projectId: string;
+  workspaceId: number;
+}) {
+  const { workspaces, updateWorkspaceFields, removeWorkspace } = useWorkspaces();
+  const ws =
+    workspaces.find((w) => w.id === workspaceId) ??
+    workspaces.find((w) => w.project_id === projectId);
+  const [repo, setRepo] = useState("");
+  const [desc, setDesc] = useState("");
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    setRepo(ws?.repo_url ?? "");
+    setDesc(ws?.description ?? "");
+  }, [ws?.id, ws?.repo_url, ws?.description]);
+
+  if (!ws) return <Hint>Select a project to continue.</Hint>;
+
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       <div className="rounded-lg border bg-card px-4 py-3">
-        <p className="text-sm font-medium">{ws?.name ?? "Project"}</p>
-        {ws && (
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {ws.path}
-          </p>
-        )}
+        <p className="text-sm font-medium">{ws.name}</p>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">{ws.path}</p>
       </div>
+
+      <div>
+        <h3 className="text-sm font-medium">Default session</h3>
+        <p className="mb-3 mt-1 text-xs leading-relaxed text-muted-foreground">
+          Opens this mode automatically when you switch to this workspace.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={ws.default_run_mode}
+            onChange={(e) =>
+              updateWorkspaceFields(ws.id, {
+                default_run_mode: e.target.value as "cli" | "chat",
+              }).catch(console.error)
+            }
+            className="h-8 rounded-md border bg-background px-2 text-[13px]"
+          >
+            <option value="cli">CLI</option>
+            <option value="chat">Chat</option>
+          </select>
+          {ws.default_run_mode === "cli" ? (
+            <select
+              value={ws.default_cli}
+              onChange={(e) =>
+                updateWorkspaceFields(ws.id, { default_cli: e.target.value }).catch(
+                  console.error,
+                )
+              }
+              className="h-8 rounded-md border bg-background px-2 text-[13px]"
+            >
+              {CLI_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+              <option value="shell">Shell</option>
+            </select>
+          ) : (
+            <>
+              <select
+                value={ws.default_provider}
+                onChange={(e) =>
+                  updateWorkspaceFields(ws.id, {
+                    default_provider: e.target.value,
+                  }).catch(console.error)
+                }
+                className="h-8 rounded-md border bg-background px-2 text-[13px]"
+              >
+                {LLM_PROVIDERS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              <Input
+                value={ws.default_model}
+                onChange={(e) =>
+                  updateWorkspaceFields(ws.id, { default_model: e.target.value }).catch(
+                    console.error,
+                  )
+                }
+                placeholder="Model (optional)"
+                className="h-8 w-48 font-mono text-xs"
+              />
+            </>
+          )}
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-medium">Repository</h3>
+        <p className="mb-2 mt-1 text-xs leading-relaxed text-muted-foreground">
+          Link to a GitHub/GitLab repo (optional, for display).
+        </p>
+        <div className="flex gap-2">
+          <Input
+            value={repo}
+            onChange={(e) => setRepo(e.target.value)}
+            placeholder="https://github.com/owner/repo"
+            className="h-8 flex-1 font-mono text-xs"
+          />
+          <SaveButton onSave={() => updateWorkspaceFields(ws.id, { repo_url: repo })} />
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-medium">Description</h3>
+        <p className="mb-2 mt-1 text-xs leading-relaxed text-muted-foreground">
+          Short note about this project.
+        </p>
+        <div className="flex gap-2">
+          <Input
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            placeholder="What is this project?"
+            className="h-8 flex-1 text-xs"
+          />
+          <SaveButton onSave={() => updateWorkspaceFields(ws.id, { description: desc })} />
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-medium text-destructive">Danger zone</h3>
+        <div className="mt-2 flex items-center justify-between rounded-lg border border-destructive/40 px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-[13px] font-medium">Delete project</p>
+            <p className="text-xs text-muted-foreground">
+              Removes this workspace from SuperConsole. Files on disk are not
+              deleted.
+            </p>
+          </div>
+          {confirming ? (
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => removeWorkspace(ws.id).catch(console.error)}
+              >
+                Confirm
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="destructive"
+              className="shrink-0"
+              onClick={() => setConfirming(true)}
+            >
+              Delete project
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EnvFilesList({
+  files,
+  onChange,
+  scopeNote,
+}: {
+  files: string[];
+  onChange: (next: string[]) => Promise<void>;
+  scopeNote: string;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [pasted, setPasted] = useState("");
+
+  const persist = async (next: string[]) => {
+    setError(null);
+    try {
+      await onChange(next);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const add = async () => {
+    try {
+      const picked = await open({ multiple: true });
+      if (!picked) return;
+      const paths = Array.isArray(picked) ? picked : [picked];
+      const next = [...files];
+      for (const p of paths) if (!next.includes(p)) next.push(p);
+      await persist(next);
+    } catch {
+      /* cancelled */
+    }
+  };
+
+  const addPath = async () => {
+    const p = pasted.trim();
+    if (!p || files.includes(p)) {
+      setPasted("");
+      return;
+    }
+    await persist([...files, p]);
+    setPasted("");
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-sm font-medium">Env files</h3>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        Projects scope model keys, connectors, and team access to a single
-        client workspace. Project settings override organisation defaults.
+        {scopeNote} In the native file picker, press Cmd+Shift+. to show hidden
+        files.
       </p>
+      {files.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {files.map((f) => (
+            <div
+              key={f}
+              className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-[12px]" title={f}>
+                {f}
+              </span>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7 shrink-0"
+                onClick={() => persist(files.filter((x) => x !== f))}
+              >
+                <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" onClick={add}>
+          <Plus className="h-3.5 w-3.5" />
+          Add env file
+        </Button>
+        <span className="text-[11px] text-muted-foreground">or paste a path</span>
+      </div>
+      <div className="flex gap-2">
+        <Input
+          value={pasted}
+          onChange={(e) => setPasted(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && addPath()}
+          placeholder="/absolute/path/to/.env"
+          className="h-8 flex-1 font-mono text-xs"
+        />
+        <Button size="sm" variant="outline" disabled={!pasted.trim()} onClick={addPath}>
+          Add path
+        </Button>
+      </div>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
+  );
+}
+
+function parseFiles(json: string | undefined): string[] {
+  try {
+    return JSON.parse(json || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function keyIsSecret(key: string): boolean {
+  const u = key.toUpperCase();
+  return ["PASSWORD", "SECRET", "KEY", "TOKEN", "API"].some((p) => u.includes(p));
+}
+
+interface EnvVar {
+  key: string;
+  value: string;
+  is_secret: boolean;
+}
+
+function EnvVarEditor({
+  title,
+  hint,
+  entries,
+  onUpsert,
+  onDelete,
+}: {
+  title: string;
+  hint: string;
+  entries: EnvVar[];
+  onUpsert: (key: string, value: string) => Promise<void>;
+  onDelete: (key: string) => Promise<void>;
+}) {
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [newKey, setNewKey] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async (fn: () => Promise<void>) => {
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const toggleReveal = (key: string) =>
+    setRevealed((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <h3 className="text-sm font-medium">{title}</h3>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{hint}</p>
+      </div>
+
+      {entries.length === 0 && !adding && (
+        <p className="text-xs text-muted-foreground">No variables yet.</p>
+      )}
+
+      {entries.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {entries.map((e) => {
+            const masked = e.is_secret && !revealed.has(e.key);
+            return (
+              <div
+                key={e.key}
+                className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
+              >
+                <span className="w-44 shrink-0 truncate font-mono text-[12px] font-medium">
+                  {e.key}
+                </span>
+                {editing === e.key ? (
+                  <Input
+                    value={editValue}
+                    autoFocus
+                    onChange={(ev) => setEditValue(ev.target.value)}
+                    onKeyDown={(ev) => {
+                      if (ev.key === "Enter") {
+                        run(() => onUpsert(e.key, editValue));
+                        setEditing(null);
+                      }
+                      if (ev.key === "Escape") setEditing(null);
+                    }}
+                    onBlur={() => {
+                      run(() => onUpsert(e.key, editValue));
+                      setEditing(null);
+                    }}
+                    className="h-7 flex-1 font-mono text-xs"
+                  />
+                ) : (
+                  <button
+                    className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-muted-foreground"
+                    onClick={() => {
+                      setEditing(e.key);
+                      setEditValue(e.value);
+                    }}
+                  >
+                    {masked ? "••••••••••" : e.value || <span className="italic">(empty)</span>}
+                  </button>
+                )}
+                <div className="flex shrink-0 items-center gap-0.5">
+                  {e.is_secret && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={() => toggleReveal(e.key)}
+                    >
+                      {masked ? (
+                        <Eye className="h-3.5 w-3.5" />
+                      ) : (
+                        <EyeOff className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  )}
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7"
+                    onClick={() => run(() => onDelete(e.key))}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {adding ? (
+        <div className="flex items-center gap-2">
+          <Input
+            value={newKey}
+            onChange={(e) => setNewKey(e.target.value)}
+            placeholder="KEY"
+            className="h-8 w-44 shrink-0 font-mono text-xs"
+          />
+          <Input
+            value={newValue}
+            onChange={(e) => setNewValue(e.target.value)}
+            placeholder="value"
+            className="h-8 flex-1 font-mono text-xs"
+          />
+          <Button
+            size="sm"
+            disabled={!newKey.trim()}
+            onClick={() => {
+              run(() => onUpsert(newKey.trim(), newValue));
+              setNewKey("");
+              setNewValue("");
+              setAdding(false);
+            }}
+          >
+            Add
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setAdding(false)}>
+            Cancel
+          </Button>
+        </div>
+      ) : (
+        <Button size="sm" variant="outline" className="w-fit" onClick={() => setAdding(true)}>
+          <Plus className="h-3.5 w-3.5" />
+          Add variable
+        </Button>
+      )}
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
+  );
+}
+
+function EnvFilesBlock({ workspaceId }: { workspaceId: number }) {
+  const { workspaces, updateWorkspaceFields } = useWorkspaces();
+  const ws = workspaces.find((w) => w.id === workspaceId);
+  return (
+    <EnvFilesList
+      files={parseFiles(ws?.env_files)}
+      scopeNote="Load environment variables into every CLI session for this project."
+      onChange={async (next) => {
+        await api.setWorkspaceEnvFiles(workspaceId, next);
+        await updateWorkspaceFields(workspaceId, { env_files: JSON.stringify(next) });
+      }}
+    />
+  );
+}
+
+function AccountEnvironmentSection() {
+  const [files, setFiles] = useState<string[]>([]);
+  const [vars, setVars] = useState<EnvVar[]>([]);
+
+  const parseVars = (json: string | undefined): EnvVar[] => {
+    try {
+      const arr = JSON.parse(json || "[]") as { key: string; value: string }[];
+      return arr.map((v) => ({ ...v, is_secret: keyIsSecret(v.key) }));
+    } catch {
+      return [];
+    }
+  };
+
+  useEffect(() => {
+    api
+      .getSettings()
+      .then((s) => {
+        setFiles(parseFiles(s.account_env_files));
+        setVars(parseVars(s.account_env_vars));
+      })
+      .catch(console.error);
+  }, []);
+
+  const persistVars = async (next: EnvVar[]) => {
+    await api.setSetting(
+      "account_env_vars",
+      JSON.stringify(next.map(({ key, value }) => ({ key, value }))),
+    );
+    setVars(next);
+  };
+
+  return (
+    <div className="flex flex-col gap-6">
+      <EnvVarEditor
+        title="Account variables"
+        hint="Loaded into every CLI session across all projects on this machine. Stored locally."
+        entries={vars}
+        onUpsert={async (key, value) => {
+          const next = vars.some((v) => v.key === key)
+            ? vars.map((v) => (v.key === key ? { ...v, value } : v))
+            : [...vars, { key, value, is_secret: keyIsSecret(key) }];
+          await persistVars(next);
+        }}
+        onDelete={async (key) => persistVars(vars.filter((v) => v.key !== key))}
+      />
+      <EnvFilesList
+        files={files}
+        scopeNote="Load environment variables into every CLI session, across all projects on this machine."
+        onChange={async (next) => {
+          await api.setSetting("account_env_files", JSON.stringify(next));
+          setFiles(next);
+        }}
+      />
+    </div>
+  );
+}
+
+function EnvironmentSection({ workspaceId }: { workspaceId: number }) {
+  const [entries, setEntries] = useState<import("@/lib/api").EnvEntry[]>([]);
+
+  const load = async () => {
+    try {
+      setEntries(await api.readEnvFile(workspaceId));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    setEntries([]);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId]);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <EnvVarEditor
+        title="Workspace .env"
+        hint="Variables loaded into every CLI session for this project. Stored in the workspace .env file."
+        entries={entries.map((e) => ({ key: e.key, value: e.value, is_secret: e.is_secret }))}
+        onUpsert={async (key, value) => {
+          await api.setEnvEntry(workspaceId, key, value);
+          await load();
+        }}
+        onDelete={async (key) => {
+          await api.deleteEnvEntry(workspaceId, key);
+          await load();
+        }}
+      />
+      <EnvFilesBlock workspaceId={workspaceId} />
+    </div>
+  );
+}
+
+function ScriptField({
+  title,
+  hint,
+  value,
+  onSave,
+  onRun,
+}: {
+  title: string;
+  hint: string;
+  value: string;
+  onSave: (v: string) => void;
+  onRun: (v: string) => void;
+}) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium">{title}</h3>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 text-xs"
+          disabled={!text.trim()}
+          onClick={() => onRun(text)}
+        >
+          <Play className="h-3.5 w-3.5" />
+          Run
+        </Button>
+      </div>
+      <p className="mb-2 mt-0.5 text-xs text-muted-foreground">{hint}</p>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => onSave(text)}
+        rows={3}
+        placeholder="shell commands…"
+        className="w-full rounded-md border bg-background px-2 py-1.5 font-mono text-xs"
+        spellCheck={false}
+      />
+    </div>
+  );
+}
+
+function ScriptsSection({ workspaceId }: { workspaceId: number }) {
+  const { workspaces, updateWorkspaceFields, openScriptTab } = useWorkspaces();
+  const ws = workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return <Hint>Select a project to continue.</Hint>;
+
+  return (
+    <div className="flex flex-col gap-6">
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Commands that run at workspace lifecycle events, in a shell tab with this
+        project's .env loaded.
+      </p>
+
+      <ScriptField
+        title="Setup script"
+        hint="Runs when the workspace is first opened."
+        value={ws.script_setup}
+        onSave={(v) => updateWorkspaceFields(ws.id, { script_setup: v }).catch(console.error)}
+        onRun={(v) => openScriptTab(ws.id, "Setup", v)}
+      />
+
+      <div>
+        <ScriptField
+          title="Run script"
+          hint="Runs when you click the Run button."
+          value={ws.script_run}
+          onSave={(v) => updateWorkspaceFields(ws.id, { script_run: v }).catch(console.error)}
+          onRun={(v) => openScriptTab(ws.id, "Run", v)}
+        />
+        <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={ws.script_auto_run}
+            onChange={(e) =>
+              updateWorkspaceFields(ws.id, { script_auto_run: e.target.checked }).catch(
+                console.error,
+              )
+            }
+          />
+          Auto-run after setup
+        </label>
+      </div>
+
+      <ScriptField
+        title="Teardown script"
+        hint="Runs before the workspace is archived or removed."
+        value={ws.script_teardown}
+        onSave={(v) => updateWorkspaceFields(ws.id, { script_teardown: v }).catch(console.error)}
+        onRun={(v) => openScriptTab(ws.id, "Teardown", v)}
+      />
     </div>
   );
 }

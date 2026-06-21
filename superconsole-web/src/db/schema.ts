@@ -80,6 +80,17 @@ export const projects = sqliteTable(
     name: text("name").notNull(),
     localPathHint: text("local_path_hint"),
     logoUrl: text("logo_url"),
+    // Desktop-managed project settings (no web UI; guarded read-only here).
+    defaultRunMode: text("default_run_mode").notNull().default("cli"),
+    defaultCli: text("default_cli").notNull().default("claude"),
+    defaultProvider: text("default_provider").notNull().default("anthropic"),
+    defaultModel: text("default_model").notNull().default(""),
+    scriptSetup: text("script_setup").notNull().default(""),
+    scriptRun: text("script_run").notNull().default(""),
+    scriptTeardown: text("script_teardown").notNull().default(""),
+    scriptAutoRun: integer("script_auto_run").notNull().default(0),
+    repoUrl: text("repo_url").notNull().default(""),
+    description: text("description").notNull().default(""),
     createdAt: createdAt(),
   },
   (t) => [index("projects_org_idx").on(t.orgId)],
@@ -324,6 +335,29 @@ export const orgSkillIndex = sqliteTable(
     index("org_skill_index_org_idx").on(t.orgId),
     uniqueIndex("org_skill_index_unq").on(t.orgId, t.skillName),
   ],
+);
+
+// SuperConsole-owned agent catalog. Files live in a public GitHub repo; this
+// table holds the filterable metadata + the file manifest. No org scoping.
+export const agentCatalog = sqliteTable(
+  "agent_catalog",
+  {
+    id: id(),
+    name: text("name").notNull(),
+    description: text("description"),
+    category: text("category"),
+    imageUrl: text("image_url"),
+    skills: text("skills"),
+    connectors: text("connectors"),
+    tags: text("tags"),
+    repo: text("repo").notNull(),
+    gitRef: text("git_ref").notNull().default("main"),
+    basePath: text("base_path").notNull(),
+    files: text("files").notNull(),
+    version: integer("version").notNull().default(1),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("agent_catalog_name_unq").on(t.name)],
 );
 
 export const projectMemoryIndex = sqliteTable(

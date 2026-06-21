@@ -103,3 +103,28 @@ pub fn cell_opt(row: &Value, idx: usize) -> Option<String> {
     }
     cell["value"].as_str().map(|s| s.to_string())
 }
+
+/// Idempotently add the desktop-managed project settings columns to the cloud
+/// `projects` table. The web migration also adds them; this is a fallback so
+/// the desktop never fails against an un-migrated DB. Duplicate-column errors
+/// are expected and ignored.
+pub async fn ensure_project_settings_columns(
+    client: &reqwest::Client,
+    cfg: &TursoConfig,
+) -> Result<(), String> {
+    for stmt in [
+        "ALTER TABLE projects ADD COLUMN default_run_mode TEXT NOT NULL DEFAULT 'cli'",
+        "ALTER TABLE projects ADD COLUMN default_cli TEXT NOT NULL DEFAULT 'claude'",
+        "ALTER TABLE projects ADD COLUMN default_provider TEXT NOT NULL DEFAULT 'anthropic'",
+        "ALTER TABLE projects ADD COLUMN default_model TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN script_setup TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN script_run TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN script_teardown TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN script_auto_run INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE projects ADD COLUMN repo_url TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+    ] {
+        let _ = turso_execute(client, cfg, stmt, vec![]).await;
+    }
+    Ok(())
+}

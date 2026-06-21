@@ -8,6 +8,37 @@ export interface Workspace {
   organization_id: number;
   created_at: string;
   project_id: string | null;
+  default_run_mode: "cli" | "chat";
+  default_cli: string;
+  default_provider: string;
+  default_model: string;
+  script_setup: string;
+  script_run: string;
+  script_teardown: string;
+  script_auto_run: boolean;
+  repo_url: string;
+  description: string;
+  env_files: string;
+}
+
+export interface EnvEntry {
+  key: string;
+  value: string;
+  comment: string | null;
+  is_secret: boolean;
+}
+
+export interface WorkspaceUpdate {
+  defaultRunMode: string;
+  defaultCli: string;
+  defaultProvider: string;
+  defaultModel: string;
+  scriptSetup: string;
+  scriptRun: string;
+  scriptTeardown: string;
+  scriptAutoRun: boolean;
+  repoUrl: string;
+  description: string;
 }
 
 export type LlmScope = "account" | "org" | "project";
@@ -33,6 +64,7 @@ export interface Organization {
   id: number;
   name: string;
   created_at: string;
+  logo_url?: string | null;
 }
 
 export interface AuthUser {
@@ -67,6 +99,7 @@ export interface SessionTab {
   cli: string;
   label: string;
   resumeId?: string;
+  initialInput?: string;
 }
 
 export interface FileEntry {
@@ -84,7 +117,7 @@ export interface Job {
   enabled: boolean;
   last_run: string | null;
   next_run: string | null;
-  run_mode: "cli" | "chat";
+  run_mode: "cli" | "chat" | "agent";
   run_config: string;
   trigger_type: "cron" | "api" | "github";
   trigger_config: string;
@@ -95,6 +128,7 @@ export interface JobRunConfig {
   cli?: string;
   model?: string;
   provider?: string;
+  agent?: string;
 }
 
 export interface JobTriggerConfig {
@@ -144,6 +178,43 @@ export interface CliSessionMessage {
   content: string;
   timestamp?: string | null;
   model?: string | null;
+}
+
+export interface Agent {
+  name: string;
+  description: string;
+  skills: string[];
+  connectors: string[];
+  context: string[];
+  instructions: string;
+  folderPath: string;
+  readme: string | null;
+}
+
+export interface CatalogAgent {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  imageUrl: string;
+  skills: string[];
+  connectors: string[];
+  tags: string[];
+  version: number;
+}
+
+export interface CatalogAgentInput {
+  name: string;
+  description: string;
+  category: string;
+  imageUrl: string;
+  skills: string[];
+  connectors: string[];
+  tags: string[];
+  repo: string;
+  gitRef: string;
+  basePath: string;
+  files: string[];
 }
 
 export const CLI_PRESETS = [
@@ -242,6 +313,24 @@ export interface UsageRow {
   by_org: Record<string, UsageBreakdown>;
   heatmap_365d: Record<string, UsageHeatDay>;
   updated_at?: string;
+}
+
+// Clean a stored model id for display, mirroring how chat.rs calls the provider.
+// OpenRouter-routed models keep the full `vendor/model` id (that's what is sent,
+// e.g. "google/gemini-3.5-flash"). Native providers drop the `vendor/` prefix,
+// and Anthropic converts the dotted catalog id to the hyphenated native name
+// (OpenAI/Gemini keep their dots). e.g. "anthropic/claude-opus-4.8" (anthropic)
+// → "claude-opus-4-8", "openai/gpt-5.5" → "gpt-5.5".
+export function modelDisplayName(
+  model: string | null | undefined,
+  provider?: string | null,
+): string {
+  if (!model) return "";
+  if (provider === "openrouter") return model;
+  const slash = model.indexOf("/");
+  const vendor = slash >= 0 ? model.slice(0, slash) : "";
+  const bare = slash >= 0 ? model.slice(slash + 1) : model;
+  return vendor === "anthropic" ? bare.replace(/\./g, "-") : bare;
 }
 
 // Common models per provider; users can also type a custom model id.
@@ -606,6 +695,18 @@ export const api = {
     invoke<string[]>("list_slash_commands", { workspaceId }),
   updateWorkspaceCli: (id: number, cli: string) =>
     invoke<void>("update_workspace_cli", { id, cli }),
+  updateWorkspace: (id: number, u: WorkspaceUpdate) =>
+    invoke<void>("update_workspace", { id, ...u }),
+  setWorkspaceEnvFiles: (workspaceId: number, envFiles: string[]) =>
+    invoke<void>("set_workspace_env_files", { workspaceId, envFiles }),
+  readEnvFile: (workspaceId: number) =>
+    invoke<EnvEntry[]>("read_env_file", { workspaceId }),
+  writeEnvFile: (workspaceId: number, entries: EnvEntry[]) =>
+    invoke<void>("write_env_file", { workspaceId, entries }),
+  setEnvEntry: (workspaceId: number, key: string, value: string) =>
+    invoke<void>("set_env_entry", { workspaceId, key, value }),
+  deleteEnvEntry: (workspaceId: number, key: string) =>
+    invoke<void>("delete_env_entry", { workspaceId, key }),
   listDir: (workspaceId: number, rel: string) =>
     invoke<FileEntry[]>("list_dir", { workspaceId, rel }),
   readFile: (workspaceId: number, rel: string) =>
@@ -662,6 +763,29 @@ export const api = {
     invoke<void>("set_job_enabled", { id, enabled }),
   deleteJob: (id: number) => invoke<void>("delete_job", { id }),
   runJobNow: (id: number) => invoke<void>("run_job_now", { id }),
+  listAgents: (workspaceId: number) => invoke<Agent[]>("list_agents", { workspaceId }),
+  readAgent: (workspaceId: number, name: string) =>
+    invoke<Agent>("read_agent", { workspaceId, name }),
+  saveAgent: (workspaceId: number, agent: Agent) =>
+    invoke<void>("save_agent", { workspaceId, agent }),
+  deleteAgent: (workspaceId: number, name: string) =>
+    invoke<void>("delete_agent", { workspaceId, name }),
+  runAgentNow: (workspaceId: number, name: string) =>
+    invoke<void>("run_agent_now", { workspaceId, name }),
+  listCatalogAgents: () => invoke<CatalogAgent[]>("list_catalog_agents"),
+  installCatalogAgent: (workspaceId: number, id: string) =>
+    invoke<void>("install_catalog_agent", { workspaceId, id }),
+  upsertCatalogAgent: (input: CatalogAgentInput) =>
+    invoke<void>("upsert_catalog_agent", { input }),
+  importRepoAgents: (repo: string, gitRef: string) =>
+    invoke<number>("import_repo_agents", { repo, gitRef }),
+  detectRepoAgents: (repo: string, gitRef: string) =>
+    invoke<CatalogAgentInput[]>("detect_repo_agents", { repo, gitRef }),
+  deleteCatalogAgent: (id: string) => invoke<void>("delete_catalog_agent", { id }),
+  installRepoAgent: (workspaceId: number, repo: string, gitRef: string) =>
+    invoke<string>("install_repo_agent", { workspaceId, repo, gitRef }),
+  scaffoldProjectFromRepo: (parentDir: string, repo: string, gitRef: string) =>
+    invoke<string>("scaffold_project_from_repo", { parentDir, repo, gitRef }),
   listInbox: () => invoke<InboxItem[]>("list_inbox"),
   inboxUnreadCount: () => invoke<number>("inbox_unread_count"),
   markInboxRead: (id: number) => invoke<void>("mark_inbox_read", { id }),

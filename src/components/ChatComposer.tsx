@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowUp,
   Brain,
+  Check,
   ChevronDown,
   Globe,
   Paperclip,
@@ -102,6 +103,23 @@ const VENDOR_LABELS: Record<string, string> = {
 
 function vendorOf(id: string): string {
   return id.includes("/") ? id.split("/")[0] : "other";
+}
+
+// Map a model's OpenRouter vendor to the app provider that should serve it
+// natively. Vendors we don't support first-party (x-ai, moonshotai, z-ai, meta…)
+// route through OpenRouter. The backend strips the `vendor/` prefix for native
+// providers before calling their API.
+function providerOfModel(id: string): string {
+  switch (vendorOf(id)) {
+    case "anthropic":
+      return "anthropic";
+    case "openai":
+      return "openai";
+    case "google":
+      return "gemini";
+    default:
+      return "openrouter";
+  }
 }
 
 function vendorLabel(v: string): string {
@@ -255,7 +273,9 @@ export function ChatComposer({
     : baseList;
   const goSettings = () => router.navigate({ to: "/settings" });
   const selectModel = (id: string) => {
-    setProvider("openrouter");
+    // The active tab decides the provider: the OpenRouter tab always routes via
+    // OpenRouter (even for a Claude/GPT model); native tabs use their provider.
+    setProvider(activeVendor === "openrouter" ? "openrouter" : providerOfModel(id));
     setModel(id);
     setCustomModel(false);
     setMenuOpen(false);
@@ -453,7 +473,9 @@ export function ChatComposer({
                 setMenuOpen(o);
                 if (o) {
                   setModelQuery("");
-                  setActiveVendor(vendorOf(model) || vendorGroups[0]?.[0] || "");
+                  setActiveVendor(
+                    isOr ? "openrouter" : vendorOf(model) || vendorGroups[0]?.[0] || "",
+                  );
                 }
               }}
             >
@@ -510,7 +532,12 @@ export function ChatComposer({
                         <div className="p-2 text-xs text-muted-foreground">No matches</div>
                       ) : (
                         activeList.map((m) => (
-                          <ModelRow key={m.id} m={m} onPick={() => selectModel(m.id)} />
+                          <ModelRow
+                            key={m.id}
+                            m={m}
+                            selected={m.id === model}
+                            onPick={() => selectModel(m.id)}
+                          />
                         ))
                       )}
                     </div>
@@ -613,13 +640,25 @@ export function ChatComposer({
   );
 }
 
-function ModelRow({ m, onPick }: { m: OpenrouterModel; onPick: () => void }) {
+function ModelRow({
+  m,
+  selected,
+  onPick,
+}: {
+  m: OpenrouterModel;
+  selected: boolean;
+  onPick: () => void;
+}) {
   return (
-    <DropdownMenuItem onClick={onPick} className="flex flex-col items-start gap-0.5">
+    <DropdownMenuItem
+      onClick={onPick}
+      className={`flex flex-col items-start gap-0.5 ${selected ? "bg-accent" : ""}`}
+    >
       <span className="flex w-full items-center gap-1.5">
         <ProviderIcon model={m.id} className="h-3.5 w-3.5 shrink-0 opacity-60" />
         <span className="truncate text-xs">{shortName(m.name)}</span>
         {m.supports_reasoning && <Brain className="h-3 w-3 shrink-0 opacity-50" />}
+        {selected && <Check className="ml-auto h-3.5 w-3.5 shrink-0 opacity-70" />}
       </span>
       <span className="pl-5 text-[10px] text-muted-foreground">
         {fmtCtx(m.context_length)} ctx · in {fmtPrice(m.prompt_price)} / out{" "}

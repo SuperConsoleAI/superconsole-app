@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Plus, RefreshCw, TextCursorInput } from "lucide-react";
@@ -35,6 +34,7 @@ export function TerminalView({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const startedRef = useRef(false);
+  const scriptSentRef = useRef(false);
   const [exited, setExited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -90,6 +90,12 @@ export function TerminalView({
       );
       onSessionInfo(tab.id, info);
       onSessionState(tab.id, true);
+      if (tab.initialInput && !scriptSentRef.current) {
+        scriptSentRef.current = true;
+        setTimeout(() => {
+          api.writeSession(tab.id, tab.initialInput + "\r").catch(() => {});
+        }, 400);
+      }
     } catch (e) {
       setError(String(e));
       onSessionState(tab.id, false);
@@ -133,13 +139,6 @@ export function TerminalView({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      /* WebGL unavailable: fall back to the default renderer. */
-    }
     termRef.current = term;
     fitRef.current = fit;
 
@@ -186,9 +185,6 @@ export function TerminalView({
       resizeRaf = requestAnimationFrame(() => {
         try {
           fit.fit();
-          // The WebGL renderer's glyph atlas can go stale after a resize and
-          // render cells as ????/artifacts; force it to rebuild.
-          term.clearTextureAtlas();
         } catch {
           /* transient size during a resize storm */
         }

@@ -2,7 +2,7 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, Pt
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -84,6 +84,40 @@ pub fn parse_env_file(path: &Path) -> Vec<(String, String)> {
             Some((key.trim().to_string(), value.to_string()))
         })
         .collect()
+}
+
+/// Parse a JSON array of `{ "key", "value" }` env var objects (account-scope
+/// variables stored in settings) into ordered key/value pairs.
+pub fn parse_env_vars_json(json: &str) -> Vec<(String, String)> {
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
+    parsed
+        .into_iter()
+        .filter_map(|v| {
+            let key = v.get("key")?.as_str()?.trim().to_string();
+            if key.is_empty() {
+                return None;
+            }
+            let value = v.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            Some((key, value))
+        })
+        .collect()
+}
+
+/// Parse the user-registered extra env files (a JSON array of paths stored on
+/// the workspace) into ordered key/value pairs. Relative paths resolve against
+/// the workspace root; later files override earlier ones.
+pub fn extra_env_files(workspace_path: &str, env_files_json: &str) -> Vec<(String, String)> {
+    let paths: Vec<String> = serde_json::from_str(env_files_json).unwrap_or_default();
+    let mut out = Vec::new();
+    for p in paths {
+        let path = if Path::new(&p).is_absolute() {
+            PathBuf::from(&p)
+        } else {
+            Path::new(workspace_path).join(&p)
+        };
+        out.extend(parse_env_file(&path));
+    }
+    out
 }
 
 // macOS GUI apps launched from Finder/Launchpad inherit a minimal PATH

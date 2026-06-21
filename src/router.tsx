@@ -12,7 +12,7 @@ import {
 } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
 import { Anchor } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, type Agent } from "@/lib/api";
 import { InboxView } from "@/components/InboxView";
 import { Sidebar, SidebarRail } from "@/components/Sidebar";
 import { TabStrip } from "@/components/TabStrip";
@@ -22,6 +22,7 @@ import { ChatView } from "@/components/ChatView";
 import { FilePanel } from "@/components/FilePanel";
 import { FileEditor } from "@/components/FileEditor";
 import { AddWorkspaceDialog } from "@/components/AddWorkspaceDialog";
+import { AgentsView } from "@/components/AgentsView";
 import { SettingsPage } from "@/components/SettingsPage";
 import { TasksView } from "@/components/TasksView";
 import { SessionsView } from "@/components/SessionsView";
@@ -52,6 +53,12 @@ function Shell() {
     liveSessions,
     addOpen,
     setAddOpen,
+    pendingAgent,
+    setPendingAgent,
+    pendingNewAgent,
+    setPendingNewAgent,
+    pendingRepoImport,
+    setPendingRepoImport,
     openWorkspace,
     openTab,
     openChatPicker,
@@ -84,6 +91,7 @@ function Shell() {
   const tasksActive = !!matchRoute({ to: "/tasks" });
   const sessionsActive = !!matchRoute({ to: "/sessions" });
   const usageActive = !!matchRoute({ to: "/usage" });
+  const agentsActive = !!matchRoute({ to: "/agents" });
   const settingsActive = !!matchRoute({ to: "/settings" });
 
   const activeId = params.workspaceId ? Number(params.workspaceId) : null;
@@ -101,7 +109,7 @@ function Shell() {
 
   const goToWorkspace = (id: number, extra?: Partial<WorkspaceSearch>) => {
     const ws = workspaces.find((w) => w.id === id);
-    openWorkspace(id, ws?.cli ?? "claude");
+    openWorkspace(id, ws?.default_cli || ws?.cli || "claude", ws?.default_run_mode);
     navigate({
       to: "/workspace/$workspaceId",
       params: { workspaceId: String(id) },
@@ -111,6 +119,20 @@ function Shell() {
 
   const handleAdd = async (name: string, path: string, cli: string) => {
     const ws = await addWorkspace(name, path, cli);
+    if (pendingAgent) {
+      await api.installCatalogAgent(ws.id, pendingAgent).catch(() => {});
+      setPendingAgent(null);
+    }
+    if (pendingNewAgent) {
+      await saveAuthoredAgent(ws.id, pendingNewAgent.agent, pendingNewAgent.skills).catch(() => {});
+      setPendingNewAgent(null);
+    }
+    if (pendingRepoImport) {
+      await api
+        .installRepoAgent(ws.id, pendingRepoImport.repo, pendingRepoImport.gitRef)
+        .catch(() => {});
+      setPendingRepoImport(null);
+    }
     navigate({
       to: "/workspace/$workspaceId",
       params: { workspaceId: String(ws.id) },
@@ -158,6 +180,7 @@ function Shell() {
             tasksActive={tasksActive}
             sessionsActive={sessionsActive}
             usageActive={usageActive}
+            agentsActive={agentsActive}
             onOrgChange={(id) => {
               setActiveOrgId(id);
               navigate({ to: "/" });
@@ -170,6 +193,7 @@ function Shell() {
             onTasks={() => navigate({ to: "/tasks" })}
             onSessions={() => navigate({ to: "/sessions" })}
             onUsage={() => navigate({ to: "/usage" })}
+            onAgents={() => navigate({ to: "/agents" })}
             onSettings={() => navigate({ to: "/settings" })}
           />
         ) : (
@@ -182,6 +206,7 @@ function Shell() {
             tasksActive={tasksActive}
             sessionsActive={sessionsActive}
             usageActive={usageActive}
+            agentsActive={agentsActive}
             orgName={organizations.find((o) => o.id === activeOrgId)?.name ?? "Personal"}
             onExpand={() => setSidebarOpen(true)}
             onSelect={(id) => goToWorkspace(id)}
@@ -190,6 +215,7 @@ function Shell() {
             onTasks={() => navigate({ to: "/tasks" })}
             onSessions={() => navigate({ to: "/sessions" })}
             onUsage={() => navigate({ to: "/usage" })}
+            onAgents={() => navigate({ to: "/agents" })}
             onSettings={() => navigate({ to: "/settings" })}
           />
         )}
@@ -481,14 +507,100 @@ const usageRoute = createRoute({
   component: UsageRoute,
 });
 
+async function saveAuthoredAgent(workspaceId: number, agent: Agent, skills: string[]) {
+  const existing = await api.listSkills(workspaceId).catch(() => []);
+  const projectNames = new Set(existing.map((s) => s.name));
+  for (const sName of skills) {
+    if (!projectNames.has(sName)) {
+      await api.materializeSkillToWorkspace(workspaceId, sName).catch(() => {});
+    }
+  }
+  await api.saveAgent(workspaceId, agent);
+}
+
+function AgentsRoute() {
+  const {
+    workspaces,
+    activeOrgId,
+    setAddOpen,
+    setPendingAgent,
+    setPendingNewAgent,
+    setPendingRepoImport,
+  } = useWorkspaces();
+  const navigate = useNavigate();
+  const orgWorkspaces = workspaces.filter((w) => w.organization_id === activeOrgId);
+  const go = (workspaceId: number) =>
+    navigate({
+      to: "/workspace/$workspaceId",
+      params: { workspaceId: String(workspaceId) },
+      search: {},
+    });
+  return (
+    <div className="absolute inset-0 bg-background">
+      <AgentsView
+        workspaces={orgWorkspaces}
+        onUseInProject={async (id, workspaceId) => {
+          await api.installCatalogAgent(workspaceId, id);
+          go(workspaceId);
+        }}
+        onUseInNewProject={(id) => {
+          setPendingAgent(id);
+          setAddOpen(true);
+        }}
+        onCreateInProject={async (agent, skills, workspaceId) => {
+          await saveAuthoredAgent(workspaceId, agent, skills);
+          go(workspaceId);
+        }}
+        onCreateInNewProject={(agent, skills) => {
+          setPendingNewAgent({ agent, skills });
+          setAddOpen(true);
+        }}
+        onImportRepoNewProject={(repo, gitRef) => {
+          setPendingRepoImport({ repo, gitRef });
+          setAddOpen(true);
+        }}
+        onAddSkill={() =>
+          navigate({ to: "/settings", search: { tab: "account", section: "Skills" } })
+        }
+        onAddConnector={(scope) =>
+          navigate({ to: "/settings", search: { tab: scope, section: "Connectors" } })
+        }
+      />
+    </div>
+  );
+}
+
+const agentsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "agents",
+  component: AgentsRoute,
+});
+
+interface SettingsSearch {
+  tab?: "account" | "org" | "project";
+  section?: string;
+}
+
+function SettingsRoute() {
+  const { tab, section } = settingsRoute.useSearch();
+  return (
+    <div className="absolute inset-0 z-20 bg-background">
+      <SettingsPage initialTab={tab} initialSection={section} />
+    </div>
+  );
+}
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "settings",
-  component: () => (
-    <div className="absolute inset-0 z-20 bg-background">
-      <SettingsPage />
-    </div>
-  ),
+  component: SettingsRoute,
+  validateSearch: (search: Record<string, unknown>): SettingsSearch => ({
+    tab:
+      search.tab === "account" || search.tab === "org" || search.tab === "project"
+        ? search.tab
+        : undefined,
+    section: typeof search.section === "string" ? search.section : undefined,
+  }),
 });
 
 const workspaceRoute = createRoute({
@@ -507,6 +619,7 @@ const routeTree = rootRoute.addChildren([
   tasksRoute,
   sessionsRoute,
   usageRoute,
+  agentsRoute,
   settingsRoute,
   workspaceRoute,
 ]);

@@ -131,6 +131,42 @@ pub async fn ensure_workspace_project(
     Ok(project_id)
 }
 
+/// Write the desktop-managed project settings to the cloud `projects` row.
+/// Best-effort: silently no-ops when offline or the cloud isn't configured.
+pub async fn push_project_settings(project_id: &str, ws: &crate::db::Workspace) {
+    let Ok(cfg) = cloud::turso_config() else {
+        return;
+    };
+    let client = reqwest::Client::new();
+    if cloud::ensure_project_settings_columns(&client, &cfg)
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let _ = cloud::turso_execute(
+        &client,
+        &cfg,
+        "UPDATE projects SET default_run_mode = ?, default_cli = ?, default_provider = ?, \
+         default_model = ?, script_setup = ?, script_run = ?, script_teardown = ?, \
+         script_auto_run = ?, repo_url = ?, description = ? WHERE id = ?",
+        vec![
+            Some(ws.default_run_mode.clone()),
+            Some(ws.default_cli.clone()),
+            Some(ws.default_provider.clone()),
+            Some(ws.default_model.clone()),
+            Some(ws.script_setup.clone()),
+            Some(ws.script_run.clone()),
+            Some(ws.script_teardown.clone()),
+            Some(if ws.script_auto_run { "1" } else { "0" }.to_string()),
+            Some(ws.repo_url.clone()),
+            Some(ws.description.clone()),
+            Some(project_id.to_string()),
+        ],
+    )
+    .await;
+}
+
 #[tauri::command]
 pub async fn list_llm_keys(scope: String, scope_id: String) -> Result<Vec<LlmKeyView>, String> {
     let (table, id_col) = scope_table(&scope)?;

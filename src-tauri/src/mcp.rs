@@ -11,6 +11,41 @@
 
 use crate::crypto;
 use crate::db::Db;
+
+/// Parse `@skill:` / `@context:` / `@connector:` / `@agent:` tokens from text
+/// and return a single availability hint line (or None). Tokens are NOT
+/// expanded or fetched — the agent pulls each resource on demand via MCP tools.
+pub fn available_resources_hint(text: &str) -> Option<String> {
+    let mut found: Vec<String> = Vec::new();
+    for (prefix, kind) in [
+        ("@skill:", "skill"),
+        ("@context:", "context"),
+        ("@connector:", "connector"),
+        ("@agent:", "agent"),
+    ] {
+        let mut rest = text;
+        while let Some(idx) = rest.find(prefix) {
+            let after = &rest[idx + prefix.len()..];
+            let end = after
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .unwrap_or(after.len());
+            if end > 0 {
+                let entry = format!("{}:{}", kind, &after[..end]);
+                if !found.contains(&entry) {
+                    found.push(entry);
+                }
+            }
+            rest = &after[end..];
+        }
+    }
+    if found.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Available: {} — fetch with the matching MCP tools (skill_view, context_read, connector tools, sc_list_agents) when needed.",
+        found.join(", ")
+    ))
+}
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -121,6 +156,11 @@ fn always_specs() -> Vec<ToolSpec> {
             "sc_update_heartbeat",
             "Overwrite the project HEARTBEAT.md with the current state so other agents/sessions see fresh context.",
             obj(json!({"data": {"type": "string", "description": "Markdown state"}}), &["data"]),
+        ),
+        ToolSpec::new(
+            "sc_list_agents",
+            "List the file-defined agents in this project (.superconsole/agents): name, description, schedule, and triggers.",
+            obj(json!({}), &[]),
         ),
         ToolSpec::new(
             "sc_log_usage",
@@ -525,6 +565,22 @@ pub async fn execute(db: &Db, ctx: &ToolCtx, name: &str, args: Value) -> Result<
                 .map_err(|e| e.to_string())?;
             ok_text(json!({"updated": true}))
         }
+        "sc_list_agents" => {
+            let agents = crate::agents::list_agents(ws);
+            let list: Vec<Value> = agents
+                .iter()
+                .map(|a| {
+                    json!({
+                        "name": a.name,
+                        "description": a.description,
+                        "skills": a.skills,
+                        "connectors": a.connectors,
+                        "context": a.context,
+                    })
+                })
+                .collect();
+            ok_text(json!({ "agents": list }))
+        }
         "sc_log_usage" => {
             let Some(project_id) = ctx.project_id.clone() else {
                 return ok_text(json!({"logged": false, "reason": "no cloud project"}));
@@ -817,7 +873,10 @@ fn git_exclude(ws_path: &str, entries: &[&str]) {
 /// Write the SuperConsole MCP server config for every supported CLI so sessions
 /// launched from the app reach skills/memory/wiki/connector tools without a
 /// manual approval prompt. Regenerated per session with a fresh token.
-pub fn write_mcp_config(ctx: &ToolCtx) -> Result<String, String> {
+pub fn write_mcp_config(
+    ctx: &ToolCtx,
+    connector_mcps: &[crate::connectors::ConnectorMcp],
+) -> Result<String, String> {
     let ws_path = ctx.ws_path.clone();
     let token = encode_session_token(ctx)?;
     let exe = std::env::current_exe()
@@ -827,11 +886,13 @@ pub fn write_mcp_config(ctx: &ToolCtx) -> Result<String, String> {
     // Claude Code: project-scoped .mcp.json + local pre-approval.
     let claude_path = std::path::Path::new(&ws_path).join(".mcp.json");
     merge_mcp_servers(&claude_path, &exe, &token)?;
+    merge_connector_mcps(&claude_path, connector_mcps);
     let _ = claude_preapprove(&ws_path);
 
     // Factory Droid: project-scoped .factory/mcp.json (auto-loaded, no prompt).
     let droid_path = std::path::Path::new(&ws_path).join(".factory").join("mcp.json");
     let _ = merge_mcp_servers(&droid_path, &exe, &token);
+    merge_connector_mcps(&droid_path, connector_mcps);
 
     git_exclude(
         &ws_path,
@@ -840,10 +901,49 @@ pub fn write_mcp_config(ctx: &ToolCtx) -> Result<String, String> {
     Ok(claude_path.to_string_lossy().to_string())
 }
 
+/// Reconcile connector-bundled MCP servers into an `mcpServers` file: remove the
+/// keys we manage, then add the currently-connected ones. Preserves the
+/// `superconsole` entry and anything else already present.
+fn merge_connector_mcps(path: &std::path::Path, mcps: &[crate::connectors::ConnectorMcp]) {
+    let mut root: Value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}));
+    if !root.is_object() {
+        root = json!({});
+    }
+    let obj = root.as_object_mut().unwrap();
+    let servers = obj.entry("mcpServers").or_insert_with(|| json!({}));
+    if !servers.is_object() {
+        *servers = json!({});
+    }
+    let map = servers.as_object_mut().unwrap();
+    for key in crate::connectors::CONNECTOR_MCP_KEYS {
+        map.remove(*key);
+    }
+    for m in mcps {
+        let mut env = serde_json::Map::new();
+        for (k, v) in &m.env {
+            env.insert(k.clone(), json!(v));
+        }
+        map.insert(
+            m.key.clone(),
+            json!({ "command": m.command, "args": m.args, "env": Value::Object(env) }),
+        );
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if let Ok(s) = serde_json::to_string_pretty(&root) {
+        let _ = std::fs::write(path, s);
+    }
+}
+
 #[tauri::command]
 pub fn ensure_mcp_config(app: tauri::AppHandle, workspace_id: i64) -> Result<String, String> {
     let ctx = native_ctx(&app, workspace_id).ok_or("workspace not found")?;
-    write_mcp_config(&ctx)
+    let mcps = crate::connectors::workspace_connector_mcps(&app, workspace_id);
+    write_mcp_config(&ctx, &mcps)
 }
 
 /// Codex only loads MCP servers from the global `~/.codex/config.toml` (no

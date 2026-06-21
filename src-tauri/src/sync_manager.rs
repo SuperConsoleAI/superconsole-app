@@ -223,6 +223,55 @@ async fn sync_org_memory(
     let _ = db.replace_cached_org_memory(org_id, &entries, synced_at);
 }
 
+// Mirror the desktop-managed project settings from the cloud projects row into
+// the local workspace columns (cache). Env files / .env stay local-only.
+async fn sync_project_settings(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &TursoConfig,
+    project_id: &str,
+) {
+    if cloud::ensure_project_settings_columns(client, cfg)
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let result = match cloud::turso_execute(
+        client,
+        cfg,
+        "SELECT default_run_mode, default_cli, default_provider, default_model, \
+         script_setup, script_run, script_teardown, script_auto_run, repo_url, description \
+         FROM projects WHERE id = ?",
+        vec![Some(project_id.to_string())],
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("superconsole sync project settings: {}", e);
+            return;
+        }
+    };
+    let Some(row) = rows(&result).into_iter().next() else {
+        return;
+    };
+    let db = app.state::<Db>();
+    let _ = db.update_workspace_settings_by_project(
+        project_id,
+        &cell_text(&row, 0),
+        &cell_text(&row, 1),
+        &cell_text(&row, 2),
+        &cell_text(&row, 3),
+        &cell_text(&row, 4),
+        &cell_text(&row, 5),
+        &cell_text(&row, 6),
+        cell_text(&row, 7) == "1",
+        &cell_text(&row, 8),
+        &cell_text(&row, 9),
+    );
+}
+
 // Fetch the projects inside an org the user belongs to, then sync each
 // project's keys + connectors and record the project -> org mapping.
 async fn sync_org_projects(
@@ -253,6 +302,7 @@ async fn sync_org_projects(
             let db = app.state::<Db>();
             let _ = db.set_project_org(&project_id, org_id, synced_at);
         }
+        sync_project_settings(app, client, cfg, &project_id).await;
         sync_llm(app, client, cfg, "project", &project_id, synced_at).await;
         sync_connectors(app, client, cfg, "project", &project_id, synced_at).await;
         sync_skills(app, client, cfg, &project_id, synced_at).await;
@@ -330,6 +380,7 @@ pub async fn sync_on_update(app: &AppHandle, entity_type: &str, id: &str) {
             sync_org_projects(app, &client, &cfg, id, &synced_at).await;
         }
         "project" => {
+            sync_project_settings(app, &client, &cfg, id).await;
             sync_llm(app, &client, &cfg, "project", id, &synced_at).await;
             sync_connectors(app, &client, &cfg, "project", id, &synced_at).await;
             sync_skills(app, &client, &cfg, id, &synced_at).await;

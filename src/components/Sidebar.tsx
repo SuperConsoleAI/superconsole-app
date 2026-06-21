@@ -1,16 +1,15 @@
 import { useState } from "react";
 import {
   BarChart3,
+  Bot,
   Check,
   ChevronsUpDown,
-  FolderOpen,
   History,
   Inbox,
   ListTodo,
+  LogOut,
   Plus,
   Settings,
-  Terminal,
-  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +18,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -36,6 +39,7 @@ import {
 } from "@/components/ui/tooltip";
 import { CLI_PRESETS, type Organization, type Workspace } from "@/lib/api";
 import { AccountMenu } from "@/components/AccountMenu";
+import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 
 interface SidebarRailProps {
@@ -47,6 +51,7 @@ interface SidebarRailProps {
   tasksActive: boolean;
   sessionsActive: boolean;
   usageActive: boolean;
+  agentsActive: boolean;
   orgName: string;
   onExpand: () => void;
   onSelect: (id: number) => void;
@@ -55,6 +60,7 @@ interface SidebarRailProps {
   onTasks: () => void;
   onSessions: () => void;
   onUsage: () => void;
+  onAgents: () => void;
   onSettings: () => void;
 }
 
@@ -67,6 +73,7 @@ export function SidebarRail({
   tasksActive,
   sessionsActive,
   usageActive,
+  agentsActive,
   orgName,
   onExpand,
   onSelect,
@@ -75,6 +82,7 @@ export function SidebarRail({
   onTasks,
   onSessions,
   onUsage,
+  onAgents,
   onSettings,
 }: SidebarRailProps) {
   const railButton = (active: boolean) =>
@@ -133,6 +141,15 @@ export function SidebarRail({
         <TooltipContent side="right">Usage</TooltipContent>
       </Tooltip>
 
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button className={railButton(agentsActive)} onClick={onAgents}>
+            <Bot className="h-4 w-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Agents</TooltipContent>
+      </Tooltip>
+
       <div className="my-1 h-px w-6 bg-sidebar-border" />
 
       <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto">
@@ -183,6 +200,7 @@ interface SidebarProps {
   tasksActive: boolean;
   sessionsActive: boolean;
   usageActive: boolean;
+  agentsActive: boolean;
   onOrgChange: (id: number) => void;
   onNewOrg: (name: string) => Promise<void>;
   onSelect: (id: number) => void;
@@ -192,11 +210,29 @@ interface SidebarProps {
   onTasks: () => void;
   onSessions: () => void;
   onUsage: () => void;
+  onAgents: () => void;
   onSettings: () => void;
 }
 
 const cliLabel = (id: string) =>
   CLI_PRESETS.find((p) => p.id === id)?.label ?? id;
+
+function OrgAvatar({ name, logoUrl }: { name: string; logoUrl?: string | null }) {
+  if (logoUrl) {
+    return (
+      <img
+        src={logoUrl}
+        alt=""
+        className="h-4 w-4 shrink-0 rounded-full object-cover"
+      />
+    );
+  }
+  return (
+    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[9px] font-semibold uppercase text-primary">
+      {name.trim().charAt(0) || "?"}
+    </span>
+  );
+}
 
 export function Sidebar({
   workspaces,
@@ -209,6 +245,7 @@ export function Sidebar({
   tasksActive,
   sessionsActive,
   usageActive,
+  agentsActive,
   onOrgChange,
   onNewOrg,
   onSelect,
@@ -218,11 +255,13 @@ export function Sidebar({
   onTasks,
   onSessions,
   onUsage,
+  onAgents,
   onSettings,
 }: SidebarProps) {
   const [orgDialogOpen, setOrgDialogOpen] = useState(false);
   const [orgName, setOrgName] = useState("");
   const activeOrg = organizations.find((o) => o.id === activeOrgId);
+  const { auth, signOut } = useAuth();
 
   const createOrg = async () => {
     const name = orgName.trim();
@@ -238,8 +277,12 @@ export function Sidebar({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button className="flex w-full items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-accent/60">
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/15">
-                <Terminal className="h-4 w-4 text-primary" />
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent/60">
+                <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-label="SuperConsole" className="h-8 w-8">
+                  <rect width="32" height="32" rx="8" fill="var(--primary)" />
+                  <path d="M10 12l5 4-5 4" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M16 20h7" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" />
+                </svg>
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[13px] font-semibold leading-tight">
@@ -250,36 +293,80 @@ export function Sidebar({
               <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            {organizations.map((org) => (
-              <DropdownMenuItem key={org.id} onClick={() => onOrgChange(org.id)}>
-                {org.name}
-                {org.id === activeOrgId && <Check className="ml-auto h-3.5 w-3.5" />}
-              </DropdownMenuItem>
-            ))}
+          <DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                Switch Organization
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-52" sideOffset={8}>
+                {auth && (
+                  <DropdownMenuLabel className="truncate text-[11px] font-normal text-muted-foreground">
+                    {auth.user.email}
+                  </DropdownMenuLabel>
+                )}
+                {organizations.map((org) => (
+                  <DropdownMenuItem key={org.id} onClick={() => onOrgChange(org.id)}>
+                    <OrgAvatar name={org.name} logoUrl={org.logo_url} />
+                    {org.name}
+                    {org.id === activeOrgId && <Check className="ml-auto h-3.5 w-3.5" />}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setOrgDialogOpen(true)}>
+                  <Plus className="h-3.5 w-3.5" />
+                  Create Organization
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => setOrgDialogOpen(true)}>
-              <Plus className="h-3.5 w-3.5" />
-              New organization
+            <DropdownMenuItem
+              onClick={() => signOut?.()}
+              className="text-destructive focus:text-destructive"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              Sign out
             </DropdownMenuItem>
+            {auth && (
+              <>
+                <DropdownMenuSeparator />
+                <div className="flex items-center gap-2.5 px-2 py-1.5">
+                  {auth.user.logo_url ? (
+                    <img
+                      src={auth.user.logo_url}
+                      alt=""
+                      className="h-7 w-7 shrink-0 rounded-full object-cover"
+                    />
+                  ) : (
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[11px] font-semibold uppercase text-primary">
+                      {(auth.user.name ?? auth.user.email).trim().charAt(0)}
+                    </span>
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] font-medium leading-tight">
+                      {auth.user.name ?? auth.user.email}
+                    </span>
+                    <span className="block truncate text-[10px] text-muted-foreground">
+                      {auth.user.email}
+                    </span>
+                  </span>
+                </div>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
 
-      <div className="px-2 pb-2">
+      <div className="flex flex-col gap-1 px-2 pb-2">
         <div
           role="button"
           tabIndex={0}
           onClick={onInbox}
           onKeyDown={(e) => e.key === "Enter" && onInbox()}
           className={cn(
-            "relative flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors",
+            "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
             inboxActive ? "bg-accent" : "hover:bg-accent/50",
           )}
         >
-          {inboxActive && (
-            <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-primary" />
-          )}
           <Inbox
             className={cn("h-4 w-4", inboxActive ? "text-primary" : "text-muted-foreground")}
           />
@@ -297,13 +384,10 @@ export function Sidebar({
           onClick={onTasks}
           onKeyDown={(e) => e.key === "Enter" && onTasks()}
           className={cn(
-            "relative mt-0.5 flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors",
+            "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
             tasksActive ? "bg-accent" : "hover:bg-accent/50",
           )}
         >
-          {tasksActive && (
-            <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-primary" />
-          )}
           <ListTodo
             className={cn("h-4 w-4", tasksActive ? "text-primary" : "text-muted-foreground")}
           />
@@ -316,13 +400,10 @@ export function Sidebar({
           onClick={onSessions}
           onKeyDown={(e) => e.key === "Enter" && onSessions()}
           className={cn(
-            "relative mt-0.5 flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors",
+            "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
             sessionsActive ? "bg-accent" : "hover:bg-accent/50",
           )}
         >
-          {sessionsActive && (
-            <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-primary" />
-          )}
           <History
             className={cn("h-4 w-4", sessionsActive ? "text-primary" : "text-muted-foreground")}
           />
@@ -335,30 +416,39 @@ export function Sidebar({
           onClick={onUsage}
           onKeyDown={(e) => e.key === "Enter" && onUsage()}
           className={cn(
-            "relative mt-0.5 flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors",
+            "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
             usageActive ? "bg-accent" : "hover:bg-accent/50",
           )}
         >
-          {usageActive && (
-            <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-primary" />
-          )}
           <BarChart3
             className={cn("h-4 w-4", usageActive ? "text-primary" : "text-muted-foreground")}
           />
           <span className="text-[13px] font-medium">Usage</span>
         </div>
+
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={onAgents}
+          onKeyDown={(e) => e.key === "Enter" && onAgents()}
+          className={cn(
+            "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
+            agentsActive ? "bg-accent" : "hover:bg-accent/50",
+          )}
+        >
+          <Bot
+            className={cn("h-4 w-4", agentsActive ? "text-primary" : "text-muted-foreground")}
+          />
+          <span className="text-[13px] font-medium">Agents</span>
+        </div>
       </div>
 
-      <div className="px-4 pb-2">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-          Workspaces
-        </p>
-      </div>
+      <div className="border-t border-sidebar-border" />
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-0.5 px-2 pb-2">
+        <div className="flex flex-col pb-2">
           {workspaces.length === 0 && (
-            <div className="mx-1 mt-4 rounded-lg border border-dashed px-3 py-8 text-center">
+            <div className="mx-3 mt-4 rounded-lg border border-dashed px-3 py-8 text-center">
               <p className="text-xs leading-relaxed text-muted-foreground">
                 No workspaces yet.
                 <br />
@@ -378,46 +468,25 @@ export function Sidebar({
                 onClick={() => onSelect(ws.id)}
                 onKeyDown={(e) => e.key === "Enter" && onSelect(ws.id)}
                 className={cn(
-                  "group relative flex cursor-pointer items-start gap-2.5 rounded-lg px-2.5 py-2 transition-colors",
+                  "relative flex cursor-pointer items-center gap-2 px-3 py-3 transition-colors",
                   active ? "bg-accent" : "hover:bg-accent/50",
                 )}
               >
                 {active && (
-                  <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-primary" />
+                  <span className="absolute inset-y-0 left-0 w-[3px] bg-primary" />
                 )}
-                <FolderOpen
-                  className={cn(
-                    "mt-0.5 h-4 w-4 shrink-0",
-                    active ? "text-primary" : "text-muted-foreground",
-                  )}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[13px] font-medium leading-tight">
-                      {ws.name}
-                    </span>
-                    {liveSessions.has(ws.id) && (
-                      <span className="relative flex h-1.5 w-1.5 shrink-0">
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
-                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-[11px] text-muted-foreground">
-                    {cliLabel(ws.cli)}
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm bg-muted text-[10px] font-semibold uppercase text-muted-foreground ring-[1px] ring-border">
+                  {ws.name[0]}
+                </span>
+                <span className="truncate text-[13px] font-medium leading-tight flex-1">
+                  {ws.name}
+                </span>
+                {liveSessions.has(ws.id) && (
+                  <span className="relative flex h-1.5 w-1.5 shrink-0">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
                   </span>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemove(ws.id);
-                  }}
-                >
-                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
-                </Button>
+                )}
               </div>
             );
           })}

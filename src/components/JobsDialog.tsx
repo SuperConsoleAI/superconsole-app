@@ -18,8 +18,11 @@ import {
   api,
   CHAT_PROVIDERS,
   CLI_PRESETS,
+  type Agent,
+  type ContextFile,
   type Job,
   type SessionLog,
+  type Skill,
   type WorkspaceConnector,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -37,6 +40,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -169,17 +176,22 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
   const [timeOfDay, setTimeOfDay] = useState("09:00");
   const [weekday, setWeekday] = useState(1);
   const [customCron, setCustomCron] = useState("0 9 * * 1");
-  const [runMode, setRunMode] = useState<"cli" | "chat">("cli");
+  const [runMode, setRunMode] = useState<"cli" | "chat" | "agent">("cli");
+  const [agentName, setAgentName] = useState("");
+  const [agentMode, setAgentMode] = useState<"cli" | "chat">("cli");
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [cli, setCli] = useState("claude");
   const [provider, setProvider] = useState("anthropic");
   const [model, setModel] = useState("");
-  const [triggerType, setTriggerType] = useState<"cron" | "api" | "github">("cron");
+  const [triggerType, setTriggerType] = useState<"cron" | "manual" | "api" | "github">("cron");
   const [ghRepo, setGhRepo] = useState("");
   const [ghEvent, setGhEvent] = useState("push");
   const [ghBranch, setGhBranch] = useState("main");
   const [promptExpanded, setPromptExpanded] = useState(false);
   const [connectorsOpen, setConnectorsOpen] = useState(false);
   const [connectors, setConnectors] = useState<WorkspaceConnector[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [contextFiles, setContextFiles] = useState<ContextFile[]>([]);
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [settings, setSettings] = useState<Record<string, string>>({});
 
@@ -192,6 +204,9 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
       refresh();
       api.listSessionHistory(workspaceId).then(setHistory).catch(() => {});
       api.listWorkspaceConnectors(workspaceId).then(setConnectors).catch(() => {});
+      api.listAgents(workspaceId).then(setAgents).catch(() => {});
+      api.listSkills(workspaceId).then(setSkills).catch(() => {});
+      api.listContextFiles(workspaceId).then(setContextFiles).catch(() => {});
       api.getSettings().then(setSettings).catch(() => {});
     }
   }, [open, refresh, workspaceId]);
@@ -206,6 +221,8 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
     setCustomCron("0 9 * * 1");
     setPromptExpanded(false);
     setRunMode("cli");
+    setAgentName("");
+    setAgentMode("cli");
     setCli("claude");
     setProvider("anthropic");
     setModel("");
@@ -231,7 +248,13 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
   }, [connectors, checked]);
 
   const loadForEdit = (job: Job) => {
-    const rc = parseJson<{ cli?: string; provider?: string; model?: string }>(job.run_config, {});
+    const rc = parseJson<{
+      cli?: string;
+      provider?: string;
+      model?: string;
+      agent?: string;
+      mode?: "cli" | "chat";
+    }>(job.run_config, {});
     const tc = parseJson<{ cron?: string; repo?: string; event?: string; branch?: string }>(
       job.trigger_config,
       {},
@@ -247,10 +270,12 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
     setWeekday(parsed.weekday);
     setCustomCron(cron);
     setRunMode(job.run_mode);
+    setAgentName(rc.agent ?? "");
+    setAgentMode(rc.mode ?? "cli");
     setCli(rc.cli ?? "claude");
     setProvider(rc.provider ?? "anthropic");
     setModel(rc.model ?? "");
-    setTriggerType(job.trigger_type);
+    setTriggerType(job.trigger_type as "cron" | "manual" | "api" | "github");
     setGhRepo(tc.repo ?? "");
     setGhEvent(tc.event ?? "push");
     setGhBranch(tc.branch ?? "main");
@@ -264,9 +289,21 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
     }
   };
 
+  const insert = (snippet: string) =>
+    setCommand((c) => (c.trim() ? `${c.replace(/\s+$/, "")} ${snippet} ` : `${snippet} `));
+
   const submit = async () => {
-    if (!name.trim() || !command.trim()) {
-      setError("Name and command are required.");
+    if (!name.trim()) {
+      setError("Name is required.");
+      return;
+    }
+    if (runMode === "agent") {
+      if (!agentName) {
+        setError("Pick an agent to run.");
+        return;
+      }
+    } else if (!command.trim()) {
+      setError("A command/prompt is required.");
       return;
     }
     if (triggerType === "cron" && !schedule.trim()) {
@@ -274,7 +311,16 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
       return;
     }
     const runConfig =
-      runMode === "cli" ? { cli, model: model || undefined } : { provider, model: model || undefined };
+      runMode === "agent"
+        ? {
+            agent: agentName,
+            mode: agentMode,
+            ...(agentMode === "cli" ? { cli } : { provider }),
+            model: model || undefined,
+          }
+        : runMode === "cli"
+          ? { cli, model: model || undefined }
+          : { provider, model: model || undefined };
     const triggerConfig =
       triggerType === "cron"
         ? { cron: schedule.trim() }
@@ -346,9 +392,9 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
           </DialogDescription>
         </DialogHeader>
 
-        <ScrollArea className="max-h-[60vh]">
-          <div className="space-y-3 pr-2">
-            <div className="space-y-3 rounded-lg border bg-muted/40 p-3">
+        <ScrollArea className="max-h-[60vh] [&_[data-slot=scroll-area-viewport]>div]:!block">
+          <div className="min-w-0 space-y-3 pr-2">
+            <div className="space-y-3">
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -367,6 +413,9 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
                     <Segment active={runMode === "chat"} onClick={() => setRunMode("chat")}>
                       Chat
                     </Segment>
+                    <Segment active={runMode === "agent"} onClick={() => setRunMode("agent")}>
+                      Agent
+                    </Segment>
                   </div>
                   {runMode === "cli" ? (
                     <DropdownMenu>
@@ -384,7 +433,7 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
                         <DropdownMenuItem onClick={() => setCli("shell")}>Shell</DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
-                  ) : (
+                  ) : runMode === "chat" ? (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="outline" size="sm" className="h-8 font-normal">
@@ -399,14 +448,91 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
                         ))}
                       </DropdownMenuContent>
                     </DropdownMenu>
+                  ) : (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm" className="h-8 flex-1 justify-start font-normal">
+                          {agentName || (agents.length ? "Select agent" : "No agents defined")}
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        {agents.length === 0 ? (
+                          <DropdownMenuItem disabled>Create one with the bot icon</DropdownMenuItem>
+                        ) : (
+                          agents.map((a) => (
+                            <DropdownMenuItem key={a.name} onClick={() => setAgentName(a.name)}>
+                              {a.name}
+                            </DropdownMenuItem>
+                          ))
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   )}
-                  <Input
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    placeholder={runMode === "cli" ? "claude-sonnet-4-5" : "model id"}
-                    className="h-8 flex-1 font-mono text-xs"
-                  />
+                  {runMode !== "agent" && (
+                    <Input
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      placeholder={runMode === "cli" ? "claude-sonnet-4-5" : "model id"}
+                      className="h-8 flex-1 font-mono text-xs"
+                    />
+                  )}
                 </div>
+                {runMode === "agent" && (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] text-muted-foreground">
+                      The agent supplies the instructions, skills, connectors, and context. Pick the
+                      harness and model to run it with:
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <div className="flex gap-1 rounded-lg border bg-background p-0.5">
+                        <Segment active={agentMode === "cli"} onClick={() => setAgentMode("cli")}>
+                          CLI
+                        </Segment>
+                        <Segment active={agentMode === "chat"} onClick={() => setAgentMode("chat")}>
+                          Chat
+                        </Segment>
+                      </div>
+                      {agentMode === "cli" ? (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="outline" size="sm" className="h-8 font-normal">
+                              {CLI_PRESETS.find((c) => c.id === cli)?.label ?? cli}
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start">
+                            {CLI_PRESETS.map((c) => (
+                              <DropdownMenuItem key={c.id} onClick={() => setCli(c.id)}>
+                                {c.label}
+                              </DropdownMenuItem>
+                            ))}
+                            <DropdownMenuItem onClick={() => setCli("shell")}>Shell</DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="outline" size="sm" className="h-8 font-normal">
+                              {CHAT_PROVIDERS.find((p) => p.id === provider)?.label ?? provider}
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start">
+                            {CHAT_PROVIDERS.map((p) => (
+                              <DropdownMenuItem key={p.id} onClick={() => setProvider(p.id)}>
+                                {p.label}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                      <Input
+                        value={model}
+                        onChange={(e) => setModel(e.target.value)}
+                        placeholder={agentMode === "cli" ? "claude-sonnet-4-5" : "model id"}
+                        className="h-8 flex-1 font-mono text-xs"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Trigger */}
@@ -415,6 +541,12 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
                 <div className="flex gap-1 rounded-lg border bg-background p-0.5 w-fit">
                   <Segment active={triggerType === "cron"} onClick={() => setTriggerType("cron")}>
                     Schedule
+                  </Segment>
+                  <Segment
+                    active={triggerType === "manual"}
+                    onClick={() => setTriggerType("manual")}
+                  >
+                    Manual
                   </Segment>
                   <Segment active={triggerType === "api"} onClick={() => setTriggerType("api")}>
                     API
@@ -426,6 +558,13 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
                     GitHub
                   </Segment>
                 </div>
+
+                {triggerType === "manual" && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Runs only when you trigger it with the play button — no schedule. Great for
+                    one-time or on-demand jobs.
+                  </p>
+                )}
 
                 {triggerType === "cron" && (
                   <div className="space-y-2">
@@ -605,33 +744,120 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
                 )}
               </div>
 
-              {/* Prompt / command */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <div className="text-xs font-medium text-muted-foreground">Prompt</div>
-                  <button
-                    type="button"
-                    className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
-                    onClick={() => setPromptExpanded((v) => !v)}
-                  >
-                    {promptExpanded ? (
-                      <Minimize2 className="h-3 w-3" strokeWidth={1} />
-                    ) : (
-                      <Maximize2 className="h-3 w-3" strokeWidth={1} />
+              {/* Prompt / command (agent jobs use the agent's own instructions) */}
+              {runMode !== "agent" && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <div className="text-xs font-medium text-muted-foreground">Prompt</div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-5 w-5"
+                            title="Attach a skill, connector, agent, or context"
+                          >
+                            <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-56">
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>Skills</DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                              {skills.length === 0 ? (
+                                <DropdownMenuItem disabled>No skills</DropdownMenuItem>
+                              ) : (
+                                skills.map((s) => (
+                                  <DropdownMenuItem
+                                    key={s.name}
+                                    onClick={() => insert(`@skill:${s.name}`)}
+                                  >
+                                    {s.name}
+                                  </DropdownMenuItem>
+                                ))
+                              )}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>Connectors</DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                              {connectors.length === 0 ? (
+                                <DropdownMenuItem disabled>No connectors</DropdownMenuItem>
+                              ) : (
+                                connectors.map((c) => (
+                                  <DropdownMenuItem
+                                    key={`${c.scope}-${c.service}`}
+                                    onClick={() => insert(`@connector:${c.service}`)}
+                                  >
+                                    {c.label}
+                                  </DropdownMenuItem>
+                                ))
+                              )}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>Agents</DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                              {agents.length === 0 ? (
+                                <DropdownMenuItem disabled>No agents</DropdownMenuItem>
+                              ) : (
+                                agents.map((a) => (
+                                  <DropdownMenuItem
+                                    key={a.name}
+                                    onClick={() => insert(`@agent:${a.name}`)}
+                                  >
+                                    {a.name}
+                                  </DropdownMenuItem>
+                                ))
+                              )}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>Context</DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                              {contextFiles.length === 0 ? (
+                                <DropdownMenuItem disabled>No context files</DropdownMenuItem>
+                              ) : (
+                                contextFiles.map((c) => (
+                                  <DropdownMenuItem
+                                    key={c.slug}
+                                    onClick={() => insert(`@context:${c.slug}`)}
+                                  >
+                                    {c.slug}
+                                  </DropdownMenuItem>
+                                ))
+                              )}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                      onClick={() => setPromptExpanded((v) => !v)}
+                    >
+                      {promptExpanded ? (
+                        <Minimize2 className="h-3 w-3" strokeWidth={1} />
+                      ) : (
+                        <Maximize2 className="h-3 w-3" strokeWidth={1} />
+                      )}
+                      {promptExpanded ? "Collapse" : "Expand"}
+                    </button>
+                  </div>
+                  <Textarea
+                    value={command}
+                    onChange={(e) => setCommand(e.target.value)}
+                    placeholder="/ceo or any prompt — can be as long as you need"
+                    className={cn(
+                      "resize-none font-mono text-sm",
+                      promptExpanded ? "min-h-64" : "min-h-20",
                     )}
-                    {promptExpanded ? "Collapse" : "Expand"}
-                  </button>
+                  />
                 </div>
-                <Textarea
-                  value={command}
-                  onChange={(e) => setCommand(e.target.value)}
-                  placeholder="/ceo or any prompt — can be as long as you need"
-                  className={cn(
-                    "resize-none font-mono text-sm",
-                    promptExpanded ? "min-h-64" : "min-h-20",
-                  )}
-                />
-              </div>
+              )}
 
               {error && <p className="text-xs text-destructive">{error}</p>}
 
@@ -702,7 +928,14 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
 }
 
 export function JobRunBadges({ job }: { job: Job }) {
-  const rc = parseJson<{ cli?: string; provider?: string }>(job.run_config, {});
+  const rc = parseJson<{ cli?: string; provider?: string; agent?: string }>(job.run_config, {});
+  if (job.run_mode === "agent") {
+    return (
+      <span className="text-[11px] text-muted-foreground">
+        Agent • {rc.agent ?? "?"} · {job.trigger_type}
+      </span>
+    );
+  }
   const detail = job.run_mode === "chat" ? rc.provider ?? "anthropic" : rc.cli ?? "cli";
   return (
     <span className="text-[11px] text-muted-foreground">

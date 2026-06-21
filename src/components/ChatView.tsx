@@ -6,6 +6,7 @@ import { Copy, MessageSquare, Pencil, Plus, RefreshCw, Settings2, X } from "luci
 import {
   api,
   CHAT_PROVIDERS,
+  modelDisplayName,
   type ChatMessage,
   type ChatSession,
   type Workspace,
@@ -497,7 +498,7 @@ export function ChatView({
                     {s.model && (
                       <span className="hidden max-w-[40%] shrink-0 items-center gap-1 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
                         <ProviderIcon model={s.model} className="h-3 w-3 shrink-0 opacity-50" />
-                        {s.model}
+                        {modelDisplayName(s.model, s.provider)}
                       </span>
                     )}
                     <span className="shrink-0 text-[11px] text-muted-foreground">

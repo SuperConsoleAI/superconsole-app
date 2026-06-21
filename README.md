@@ -8,8 +8,9 @@ Built with Tauri 2 (Rust) + React 19. Mac-first, `<30MB` native build.
 
 - **Terminals**: real PTY sessions (xterm.js, WebGL renderer + bundled JetBrains Mono Nerd Font) per workspace, multiple CLIs concurrently (Claude, Droid, Antigravity, Codex, shell). Per-tab status footer (git diff stat, files toggle, branch, post-exit token·cost) and an optional rich-text input.
 - **Native chat**: stream responses from Anthropic / OpenAI-compatible / Gemini / OpenRouter (live model list + pricing), with reasoning/thinking effort, a system prompt built from on-demand context files and connected tools, cross-CLI slash commands, message edit-to-fork / regenerate / stop, quick-prompt chips (e.g. session log), web search, and a session token·cost footer.
-- **Scheduled jobs**: cron jobs run headlessly via a 30s tick loop; results land in the Inbox. Trigger remotely over HTTP or Telegram.
-- **Cloud layer (optional)**: WorkOS sign-in, synced orgs/projects, team invitations, three-level LLM keys (project → org → account), and connectors. Secrets are AES-256-GCM encrypted and injected into agent sessions.
+- **Scheduled jobs**: cron jobs run headlessly via a 30s tick loop; results land in the Inbox. Trigger remotely over HTTP or Telegram, on a schedule, or manually/one-time.
+- **Agents**: an agent is a reusable *definition* (`.superconsole/agents/<name>/agent.md` = instructions + skills + connectors + context); the harness, model, and schedule are chosen when you run or schedule it as a job. Browse the SuperConsole agent catalog (sidebar), import any GitHub repo as an agent or new project (full clone + generated `agent.md` + all skills), and let repos self-describe via a `.superconsole-plugin/` manifest (falls back to `.claude-plugin/` or README). Prompts can reference `@skill:`/`@context:`/`@connector:`/`@agent:` resources, fetched on demand via MCP tools.
+- **Cloud layer (optional)**: WorkOS sign-in, synced orgs/projects, team invitations, three-level LLM keys (project → org → account), and connectors (incl. a web search connector backed by Tavily, exposed to chat as a `web_search` tool). Secrets are AES-256-GCM encrypted and injected into agent sessions.
 - **Web portal** (`superconsole-web/`): browser surface onto the same Turso DB, deployed to Cloudflare Workers.
 
 ## Project layout

@@ -1,3 +1,4 @@
+mod agents;
 mod auth;
 mod chat;
 mod cli_sessions;
@@ -42,8 +43,13 @@ fn add_workspace(
     cli: String,
     organization_id: i64,
 ) -> Result<Workspace, String> {
-    if !Path::new(&path).is_dir() {
-        return Err(format!("Not a folder: {}", path));
+    let p = Path::new(&path);
+    if p.exists() {
+        if !p.is_dir() {
+            return Err(format!("Not a folder: {}", path));
+        }
+    } else {
+        std::fs::create_dir_all(p).map_err(|e| format!("Could not create folder: {}", e))?;
     }
     db.add_workspace(&name, &path, &cli, organization_id)
 }
@@ -79,16 +85,25 @@ async fn start_session(
     cols: u16,
     resume_session_id: Option<String>,
 ) -> Result<SessionInfo, String> {
-    let (ws_path, was_active) = {
+    let (ws_path, env_files, account_env_files, account_env_vars, was_active) = {
         let db = app.state::<Db>();
         let ws = db.get_workspace(workspace_id)?;
-        (ws.path, pty::session_active(&sessions, &session_id))
+        let account_files = db.get_setting("account_env_files").unwrap_or_default();
+        let account_vars = db.get_setting("account_env_vars").unwrap_or_default();
+        (
+            ws.path,
+            ws.env_files,
+            account_files,
+            account_vars,
+            pty::session_active(&sessions, &session_id),
+        )
     };
     // Refresh the SuperConsole MCP config (fresh token, pre-approved) so the
     // launching CLI can reach skills/memory/wiki/connector tools.
     if cli == "claude" || cli == "droid" {
         if let Some(ctx) = mcp::native_ctx(&app, workspace_id) {
-            let _ = mcp::write_mcp_config(&ctx);
+            let mcps = connectors::workspace_connector_mcps(&app, workspace_id);
+            let _ = mcp::write_mcp_config(&ctx, &mcps);
         }
     } else if cli == "codex" {
         // Codex has no project-scoped MCP config; register superconsole in the
@@ -104,7 +119,13 @@ async fn start_session(
         }
     }
     let resolved = llm::session_env(&app, workspace_id);
-    let mut env = resolved.env;
+    // Env loads after the workspace .env (applied inside pty::start_session) but
+    // before cloud LLM keys/connectors, which win. Account scope is the base;
+    // per-workspace files override it.
+    let mut env = pty::parse_env_vars_json(&account_env_vars);
+    env.extend(pty::extra_env_files(&ws_path, &account_env_files));
+    env.extend(pty::extra_env_files(&ws_path, &env_files));
+    env.extend(resolved.env);
     env.extend(connectors::session_env(&app, workspace_id));
     let info = pty::start_session(
         &app,
@@ -169,6 +190,89 @@ fn session_active(sessions: State<SessionManager>, session_id: String) -> bool {
 #[tauri::command]
 fn update_workspace_cli(db: State<Db>, id: i64, cli: String) -> Result<(), String> {
     db.update_workspace_cli(id, &cli)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn update_workspace(
+    app: AppHandle,
+    id: i64,
+    default_run_mode: String,
+    default_cli: String,
+    default_provider: String,
+    default_model: String,
+    script_setup: String,
+    script_run: String,
+    script_teardown: String,
+    script_auto_run: bool,
+    repo_url: String,
+    description: String,
+) -> Result<(), String> {
+    let (project_id, ws) = {
+        let db = app.state::<Db>();
+        db.update_workspace(
+            id,
+            &default_run_mode,
+            &default_cli,
+            &default_provider,
+            &default_model,
+            &script_setup,
+            &script_run,
+            &script_teardown,
+            script_auto_run,
+            &repo_url,
+            &description,
+        )?;
+        (db.get_workspace_project_id(id), db.get_workspace(id).ok())
+    };
+    // Mirror the shareable subset to the cloud projects row when linked.
+    if let (Some(pid), Some(ws)) = (project_id, ws) {
+        llm::push_project_settings(&pid, &ws).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_workspace_env_files(
+    db: State<Db>,
+    workspace_id: i64,
+    env_files: Vec<String>,
+) -> Result<(), String> {
+    let json = serde_json::to_string(&env_files).map_err(|e| e.to_string())?;
+    db.set_workspace_env_files(workspace_id, &json)
+}
+
+#[tauri::command]
+fn read_env_file(db: State<Db>, workspace_id: i64) -> Result<Vec<files::EnvEntry>, String> {
+    let ws = db.get_workspace(workspace_id)?;
+    files::read_env_file(&ws.path)
+}
+
+#[tauri::command]
+fn write_env_file(
+    db: State<Db>,
+    workspace_id: i64,
+    entries: Vec<files::EnvEntry>,
+) -> Result<(), String> {
+    let ws = db.get_workspace(workspace_id)?;
+    files::write_env_file(&ws.path, &entries)
+}
+
+#[tauri::command]
+fn set_env_entry(
+    db: State<Db>,
+    workspace_id: i64,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let ws = db.get_workspace(workspace_id)?;
+    files::set_env_entry(&ws.path, &key, &value)
+}
+
+#[tauri::command]
+fn delete_env_entry(db: State<Db>, workspace_id: i64, key: String) -> Result<(), String> {
+    let ws = db.get_workspace(workspace_id)?;
+    files::delete_env_entry(&ws.path, &key)
 }
 
 #[tauri::command]
@@ -329,6 +433,101 @@ async fn run_job_now(app: AppHandle, id: i64) -> Result<(), String> {
         db.get_job(id)?
     };
     scheduler::run_job(&app, job).await
+}
+
+// --- agents (file-defined workers in .superconsole/agents/<name>/agent.md) ---
+
+#[tauri::command]
+fn list_agents(db: State<Db>, workspace_id: i64) -> Result<Vec<agents::Agent>, String> {
+    let ws = db.get_workspace(workspace_id)?;
+    Ok(agents::list_agents(&ws.path))
+}
+
+#[tauri::command]
+fn read_agent(db: State<Db>, workspace_id: i64, name: String) -> Result<agents::Agent, String> {
+    let ws = db.get_workspace(workspace_id)?;
+    agents::read_agent(&ws.path, &name)
+}
+
+#[tauri::command]
+fn save_agent(db: State<Db>, workspace_id: i64, agent: agents::Agent) -> Result<(), String> {
+    let ws = db.get_workspace(workspace_id)?;
+    agents::write_agent(&ws.path, &agent)
+}
+
+#[tauri::command]
+fn delete_agent(db: State<Db>, workspace_id: i64, name: String) -> Result<(), String> {
+    let ws = db.get_workspace(workspace_id)?;
+    agents::delete_agent(&ws.path, &name)
+}
+
+#[tauri::command]
+async fn list_catalog_agents() -> Result<Vec<agents::CatalogAgent>, String> {
+    agents::list_catalog_agents().await
+}
+
+#[tauri::command]
+async fn upsert_catalog_agent(input: agents::CatalogAgentInput) -> Result<(), String> {
+    agents::upsert_catalog_agent(input).await
+}
+
+#[tauri::command]
+async fn import_repo_agents(repo: String, git_ref: String) -> Result<u32, String> {
+    agents::import_repo_agents(repo, git_ref).await
+}
+
+#[tauri::command]
+async fn detect_repo_agents(
+    repo: String,
+    git_ref: String,
+) -> Result<Vec<agents::CatalogAgentInput>, String> {
+    agents::detect_repo_agents(repo, git_ref).await
+}
+
+#[tauri::command]
+async fn delete_catalog_agent(id: String) -> Result<(), String> {
+    agents::delete_catalog_agent(id).await
+}
+
+#[tauri::command]
+async fn install_catalog_agent(app: AppHandle, workspace_id: i64, id: String) -> Result<(), String> {
+    let ws_path = app.state::<Db>().get_workspace(workspace_id)?.path;
+    agents::install_catalog_agent(&ws_path, &id).await
+}
+
+#[tauri::command]
+async fn install_repo_agent(
+    app: AppHandle,
+    workspace_id: i64,
+    repo: String,
+    git_ref: String,
+) -> Result<String, String> {
+    let ws_path = app.state::<Db>().get_workspace(workspace_id)?.path;
+    agents::install_repo_agent(&ws_path, repo, git_ref).await
+}
+
+#[tauri::command]
+async fn scaffold_project_from_repo(
+    parent_dir: String,
+    repo: String,
+    git_ref: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        agents::scaffold_project_from_repo(&parent_dir, repo, git_ref)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn run_agent_now(app: AppHandle, workspace_id: i64, name: String) -> Result<(), String> {
+    let agent = {
+        let db = app.state::<Db>();
+        let ws = db.get_workspace(workspace_id)?;
+        agents::read_agent(&ws.path, &name)?
+    };
+    scheduler::exec_agent(&app, workspace_id, &agent).await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -596,6 +795,12 @@ pub fn run() {
             session_active,
             list_slash_commands,
             update_workspace_cli,
+            update_workspace,
+            set_workspace_env_files,
+            read_env_file,
+            write_env_file,
+            set_env_entry,
+            delete_env_entry,
             list_dir,
             read_file,
             write_file,
@@ -610,6 +815,19 @@ pub fn run() {
             set_job_enabled,
             delete_job,
             run_job_now,
+            list_agents,
+            read_agent,
+            save_agent,
+            delete_agent,
+            run_agent_now,
+            list_catalog_agents,
+            upsert_catalog_agent,
+            import_repo_agents,
+            detect_repo_agents,
+            delete_catalog_agent,
+            install_catalog_agent,
+            install_repo_agent,
+            scaffold_project_from_repo,
             list_inbox,
             inbox_unread_count,
             mark_inbox_read,

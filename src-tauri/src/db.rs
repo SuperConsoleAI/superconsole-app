@@ -12,6 +12,17 @@ pub struct Workspace {
     pub organization_id: i64,
     pub created_at: String,
     pub project_id: Option<String>,
+    pub default_run_mode: String,
+    pub default_cli: String,
+    pub default_provider: String,
+    pub default_model: String,
+    pub script_setup: String,
+    pub script_run: String,
+    pub script_teardown: String,
+    pub script_auto_run: bool,
+    pub repo_url: String,
+    pub description: String,
+    pub env_files: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,6 +321,33 @@ impl Db {
         if !has_project_col {
             conn.execute_batch("ALTER TABLE workspaces ADD COLUMN project_id TEXT;")
                 .map_err(|e| e.to_string())?;
+        }
+
+        // Project settings: default session, lifecycle scripts, repo/description.
+        // All defaulted so existing rows keep current behaviour.
+        for (col, decl) in [
+            ("default_run_mode", "TEXT NOT NULL DEFAULT 'cli'"),
+            ("default_cli", "TEXT NOT NULL DEFAULT 'claude'"),
+            ("default_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
+            ("default_model", "TEXT NOT NULL DEFAULT ''"),
+            ("script_setup", "TEXT NOT NULL DEFAULT ''"),
+            ("script_run", "TEXT NOT NULL DEFAULT ''"),
+            ("script_teardown", "TEXT NOT NULL DEFAULT ''"),
+            ("script_auto_run", "INTEGER NOT NULL DEFAULT 0"),
+            ("repo_url", "TEXT NOT NULL DEFAULT ''"),
+            ("description", "TEXT NOT NULL DEFAULT ''"),
+            ("env_files", "TEXT NOT NULL DEFAULT '[]'"),
+        ] {
+            let exists = conn
+                .prepare(&format!("SELECT {} FROM workspaces LIMIT 1", col))
+                .is_ok();
+            if !exists {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE workspaces ADD COLUMN {} {};",
+                    col, decl
+                ))
+                .map_err(|e| e.to_string())?;
+            }
         }
 
         // Phase 16b — jobs run mode / trigger / connector restriction. All
@@ -674,6 +712,17 @@ impl Db {
             organization_id: r.get(4)?,
             created_at: r.get(5)?,
             project_id: r.get(6)?,
+            default_run_mode: r.get(7)?,
+            default_cli: r.get(8)?,
+            default_provider: r.get(9)?,
+            default_model: r.get(10)?,
+            script_setup: r.get(11)?,
+            script_run: r.get(12)?,
+            script_teardown: r.get(13)?,
+            script_auto_run: r.get::<_, i64>(14)? != 0,
+            repo_url: r.get(15)?,
+            description: r.get(16)?,
+            env_files: r.get(17)?,
         })
     }
 
@@ -716,7 +765,7 @@ impl Db {
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, path, cli, organization_id, created_at, project_id FROM workspaces ORDER BY name")
+            .prepare("SELECT id, name, path, cli, organization_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces ORDER BY name")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], Self::workspace_from_row)
@@ -739,7 +788,7 @@ impl Db {
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, created_at, project_id FROM workspaces WHERE id = ?1",
+            "SELECT id, name, path, cli, organization_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE id = ?1",
             [id],
             Self::workspace_from_row,
         )
@@ -750,6 +799,100 @@ impl Db {
         let conn = self.0.lock().unwrap();
         conn.execute("UPDATE workspaces SET cli = ?1 WHERE id = ?2", (cli, id))
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_workspace(
+        &self,
+        id: i64,
+        default_run_mode: &str,
+        default_cli: &str,
+        default_provider: &str,
+        default_model: &str,
+        script_setup: &str,
+        script_run: &str,
+        script_teardown: &str,
+        script_auto_run: bool,
+        repo_url: &str,
+        description: &str,
+    ) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE workspaces SET
+                default_run_mode = ?1, default_cli = ?2, default_provider = ?3,
+                default_model = ?4, script_setup = ?5, script_run = ?6,
+                script_teardown = ?7, script_auto_run = ?8, repo_url = ?9,
+                description = ?10
+             WHERE id = ?11",
+            rusqlite::params![
+                default_run_mode,
+                default_cli,
+                default_provider,
+                default_model,
+                script_setup,
+                script_run,
+                script_teardown,
+                script_auto_run as i64,
+                repo_url,
+                description,
+                id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Apply cloud-synced project settings to the local workspace row matched by
+    /// project_id. Env files and the workspace .env stay local and are untouched.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_workspace_settings_by_project(
+        &self,
+        project_id: &str,
+        default_run_mode: &str,
+        default_cli: &str,
+        default_provider: &str,
+        default_model: &str,
+        script_setup: &str,
+        script_run: &str,
+        script_teardown: &str,
+        script_auto_run: bool,
+        repo_url: &str,
+        description: &str,
+    ) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE workspaces SET
+                default_run_mode = ?1, default_cli = ?2, default_provider = ?3,
+                default_model = ?4, script_setup = ?5, script_run = ?6,
+                script_teardown = ?7, script_auto_run = ?8, repo_url = ?9,
+                description = ?10
+             WHERE project_id = ?11",
+            rusqlite::params![
+                default_run_mode,
+                default_cli,
+                default_provider,
+                default_model,
+                script_setup,
+                script_run,
+                script_teardown,
+                script_auto_run as i64,
+                repo_url,
+                description,
+                project_id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn set_workspace_env_files(&self, id: i64, env_files: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE workspaces SET env_files = ?1 WHERE id = ?2",
+            (env_files, id),
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -1055,7 +1198,7 @@ impl Db {
     pub fn find_workspace_by_name(&self, name: &str) -> Result<Workspace, String> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, created_at, project_id FROM workspaces WHERE LOWER(name) = LOWER(?1)",
+            "SELECT id, name, path, cli, organization_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE LOWER(name) = LOWER(?1)",
             [name],
             Self::workspace_from_row,
         )
@@ -1603,7 +1746,7 @@ impl Db {
     pub fn get_workspace(&self, id: i64) -> Result<Workspace, String> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, created_at, project_id FROM workspaces WHERE id = ?1",
+            "SELECT id, name, path, cli, organization_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE id = ?1",
             [id],
             Self::workspace_from_row,
         )

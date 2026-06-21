@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useRouter } from "@tanstack/react-router";
 import {
+  Bot,
   Brain,
   CalendarClock,
   ChevronLeft,
@@ -11,6 +12,7 @@ import {
   Library,
   Moon,
   PanelLeft,
+  Play,
   ScrollText,
   Sun,
 } from "lucide-react";
@@ -18,10 +20,17 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useTheme } from "@/components/theme-provider";
 import { JobsDialog } from "@/components/JobsDialog";
+import { AgentsDialog } from "@/components/AgentsDialog";
 import { SkillsDialog } from "@/components/SkillsDialog";
 import { MemoryDialog } from "@/components/MemoryDialog";
 import { WikiDialog } from "@/components/WikiDialog";
 import { ContextDialog } from "@/components/ContextDialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { useWorkspaces } from "@/lib/workspace-context";
 import { type Workspace } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -42,7 +51,9 @@ export function TopBar({
 }: TopBarProps) {
   const { theme, setTheme } = useTheme();
   const router = useRouter();
+  const { openScriptTab } = useWorkspaces();
   const [jobsOpen, setJobsOpen] = useState(false);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [wikiOpen, setWikiOpen] = useState(false);
@@ -99,6 +110,36 @@ export function TopBar({
       <div className="ml-auto flex items-center gap-0.5">
         {workspace && (
           <>
+            {workspace.script_run.trim() ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => openScriptTab(workspace.id, "Run", workspace.script_run)}
+                  >
+                    <Play className="h-4 w-4" strokeWidth={1} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Run script</TooltipContent>
+              </Tooltip>
+            ) : (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-7 w-7">
+                    <Play className="h-4 w-4" strokeWidth={1} />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-64 p-3">
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    No run script configured. Set one in Project Settings →
+                    Scripts.
+                  </p>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -172,6 +213,20 @@ export function TopBar({
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setAgentsOpen(true)}
+                >
+                  <Bot className="h-4 w-4" strokeWidth={1} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Agents &amp; plugins</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
                   variant={filesOpen ? "secondary" : "ghost"}
                   size="icon"
                   className={cn("h-7 w-7", filesOpen && "text-primary")}
@@ -202,6 +257,11 @@ export function TopBar({
       {workspace && (
         <>
           <JobsDialog workspaceId={workspace.id} open={jobsOpen} onOpenChange={setJobsOpen} />
+          <AgentsDialog
+            workspaceId={workspace.id}
+            open={agentsOpen}
+            onOpenChange={setAgentsOpen}
+          />
           <SkillsDialog
             workspaceId={workspace.id}
             open={skillsOpen}

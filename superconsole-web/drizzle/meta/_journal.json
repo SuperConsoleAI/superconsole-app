@@ -71,6 +71,20 @@
       "when": 1782100000000,
       "tag": "0009_usage_monitoring",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1782200000000,
+      "tag": "0010_project_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1782300000000,
+      "tag": "0011_agent_catalog",
+      "breakpoints": true
     }
   ]
 }
