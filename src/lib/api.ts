@@ -122,6 +122,9 @@ export interface Job {
   trigger_type: "cron" | "api" | "github";
   trigger_config: string;
   allowed_connectors: string;
+  last_run_cost_usd: number;
+  last_run_tokens: number;
+  last_run_session_id: string | null;
 }
 
 export interface JobRunConfig {
@@ -161,6 +164,25 @@ export interface SessionLog {
   started_at: string;
   ended_at: string | null;
   label: string | null;
+  session_id: string;
+}
+
+export interface SessionFeedItem {
+  id: string;
+  session_type: 'cli' | 'chat';
+  workspace_id: number;
+  workspace_name: string;
+  cli: string;
+  provider: string;
+  model: string;
+  last_message_preview: string;
+  started_at: string;
+  updated_at: string;
+  tokens_total: number;
+  cost_usd: number;
+  job_id?: number;
+  agent_id?: string;
+  resume_id: string;
 }
 
 export interface CliSession {
@@ -215,6 +237,27 @@ export interface CatalogAgentInput {
   gitRef: string;
   basePath: string;
   files: string[];
+}
+
+/// Local metadata row for a workspace agent (mirrors `agents` SQLite table).
+export interface AgentRow {
+  id: string;
+  workspaceId: number;
+  name: string;
+  description: string;
+  schedule: string;
+  defaultRunMode: string;
+  defaultCli: string;
+  defaultProvider: string;
+  defaultModel: string;
+  skills: string;       // comma-separated skill names
+  connectors: string;   // comma-separated connector service ids
+  isActive: boolean;
+  agentId: string | null;   // Turso cloud ULID, null until synced
+  lastRun: string | null;
+  nextRun: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export const CLI_PRESETS = [
@@ -408,6 +451,8 @@ export interface ConnectorFieldDef {
   label: string;
   secret: boolean;
   placeholder?: string;
+  /** If true, this field is optional (form shows helper text instead of error). */
+  optional?: boolean;
 }
 
 export interface ConnectorDef {
@@ -562,7 +607,15 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
     label: "Telegram",
     category: "connectors",
     scopes: ALL_CONNECTOR_SCOPES,
-    fields: [{ key: "bot_token", label: "Bot token", secret: true }],
+    fields: [
+      // bot_token: required at org level, optional at project level
+      // (leave blank to inherit the org bot — Option A).
+      // Fill it in to use a dedicated bot for this project (Option B).
+      { key: "bot_token", label: "Bot Token", secret: true, optional: true },
+      { key: "chat_id", label: "Chat ID", secret: false, placeholder: "-100123456789" },
+      { key: "thread_id", label: "Message Thread ID", secret: false, optional: true },
+      { key: "allowed_user_ids", label: "Allowed User IDs", secret: false, optional: true, placeholder: "Add Telegram user IDs separated by ," },
+    ],
   },
   {
     id: "web_search",
@@ -597,6 +650,37 @@ export interface OrgSkillView {
   name: string;
   tags: string[];
   in_library: boolean;
+}
+
+/** A saved session log file (.superconsole/sessions/YYYY-MM-DD-<slug>.md). */
+export interface SessionLogFile {
+  id: string;
+  workspaceId: number;
+  filePath: string;
+  agentId?: string;
+  sessionId?: string;
+  date: string;
+  agentName: string;
+  model: string;
+  costUsd: number;
+  tokens: number;
+  summary: string;
+  cloudId?: string;
+  createdAt: string;
+}
+
+/** An entry in the community skill catalog (Turso skill_catalog table). */
+export interface CatalogSkillEntry {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  tags: string;         // comma-separated
+  githubUrl: string;
+  readme: string;
+  author: string;
+  stars: number;
+  syncedAt: string;
 }
 
 export interface MemoryEntry {
@@ -772,6 +856,32 @@ export const api = {
     invoke<void>("delete_agent", { workspaceId, name }),
   runAgentNow: (workspaceId: number, name: string) =>
     invoke<void>("run_agent_now", { workspaceId, name }),
+  listWorkspaceAgents: (workspaceId: number) =>
+    invoke<AgentRow[]>("list_workspace_agents", { workspaceId }),
+  upsertAgentMetadata: (
+    workspaceId: number,
+    name: string,
+    description: string,
+    schedule: string,
+    defaultRunMode: string,
+    defaultCli: string,
+    defaultProvider: string,
+    defaultModel: string,
+    skills: string,
+    connectors: string,
+    isActive: boolean,
+  ) =>
+    invoke<AgentRow>("upsert_agent_metadata", {
+      workspaceId, name, description, schedule,
+      defaultRunMode, defaultCli, defaultProvider, defaultModel,
+      skills, connectors, isActive,
+    }),
+  deleteAgentMetadata: (workspaceId: number, name: string) =>
+    invoke<void>("delete_agent_metadata", { workspaceId, name }),
+  setAgentActive: (workspaceId: number, name: string, isActive: boolean) =>
+    invoke<void>("set_agent_active", { workspaceId, name, isActive }),
+  listAgentSessions: (workspaceId: number, agentName: string) =>
+    invoke<SessionFeedItem[]>("list_agent_sessions", { workspaceId, agentName }),
   listCatalogAgents: () => invoke<CatalogAgent[]>("list_catalog_agents"),
   installCatalogAgent: (workspaceId: number, id: string) =>
     invoke<void>("install_catalog_agent", { workspaceId, id }),
@@ -794,6 +904,14 @@ export const api = {
     invoke<void>("set_inbox_status", { id, status }),
   listSessionHistory: (workspaceId: number) =>
     invoke<SessionLog[]>("list_session_history", { workspaceId }),
+  listUserSessions: (workspaceId?: number) =>
+    invoke<SessionFeedItem[]>("list_user_sessions", { workspaceId: workspaceId ?? null }),
+  listJobSessions: (jobId: number) =>
+    invoke<SessionFeedItem[]>("list_job_sessions", { jobId }),
+  listAllJobSessions: (workspaceId?: number) =>
+    invoke<SessionFeedItem[]>("list_all_job_sessions", { workspaceId: workspaceId ?? null }),
+  getInboxSession: (inboxId: number) =>
+    invoke<SessionFeedItem | null>("get_inbox_session", { inboxId }),
   getSettings: () => invoke<Record<string, string>>("get_settings"),
   setSetting: (key: string, value: string) => invoke<void>("set_setting", { key, value }),
   ensureWorkspaceProject: (workspaceId: number, cloudOrgId: string) =>
@@ -956,6 +1074,48 @@ export const api = {
   materializeSkillToWorkspace: (workspaceId: number, name: string) =>
     invoke<Skill>("materialize_skill_to_workspace", { workspaceId, name }),
 
+  // Phase B — session log files.
+  saveSessionLog: (
+    workspaceId: number,
+    sessionId: string,
+    agentName: string,
+    model: string,
+    costUsd: number,
+    tokens: number,
+    summary: string,
+    slug: string,
+  ) =>
+    invoke<SessionLogFile>("save_session_log", {
+      workspaceId, sessionId, agentName, model, costUsd, tokens, summary, slug,
+    }),
+  listSessionLogFiles: (workspaceId: number) =>
+    invoke<SessionLogFile[]>("list_session_logs", { workspaceId }),
+  deleteSessionLogFile: (workspaceId: number, id: string) =>
+    invoke<void>("delete_session_log", { workspaceId, id }),
+
+  // Phase C — skill GitHub library + community catalog.
+  installSkillFromGithubUrl: (
+    url: string,
+    name: string | null,
+    scope: "global" | "project",
+    workspaceId?: number,
+  ) =>
+    invoke<Skill>("install_skill_from_github_url", { url, name, scope, workspaceId }),
+  fetchSkillCatalog: () =>
+    invoke<CatalogSkillEntry[]>("fetch_skill_catalog"),
+  submitToSkillCatalog: (
+    name: string,
+    description: string,
+    category: string,
+    tags: string[],
+    githubUrl: string,
+    readme: string,
+    author: string,
+  ) =>
+    invoke<CatalogSkillEntry>("submit_to_skill_catalog", {
+      name, description, category, tags, githubUrl, readme, author,
+    }),
+
   // Phase 19: memory.
   listMemory: (workspaceId: number) =>
     invoke<MemoryEntry[]>("list_memory", { workspaceId }),
@@ -1038,4 +1198,11 @@ export const api = {
   // Phase 16: MCP tool infrastructure.
   ensureMcpConfig: (workspaceId: number) =>
     invoke<string>("ensure_mcp_config", { workspaceId }),
+
+  // Telegram: detect chat_id + thread_id from the first message sent to the bot.
+  detectTelegramChat: () =>
+    invoke<{ chat_id: string; thread_id: string | null; chat_title: string | null }>(
+      "detect_telegram_chat",
+    ),
+  refreshTelegramBots: () => invoke<void>("refresh_telegram_bots"),
 };

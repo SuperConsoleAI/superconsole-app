@@ -109,6 +109,22 @@ export function InboxView({ workspaces }: { workspaces: Workspace[] }) {
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.output}</ReactMarkdown>
                     </div>
                     <div className="flex items-center gap-2 border-t bg-muted/30 px-5 py-2.5">
+                      {item.job_id && (
+                        <button
+                          className="shrink-0 text-xs text-muted-foreground hover:text-primary hover:underline"
+                          onClick={() =>
+                            api.getInboxSession(item.id).then((session) => {
+                              if (session) {
+                                window.dispatchEvent(new CustomEvent('resume-session', {
+                                  detail: { workspaceId: session.workspace_id, cli: session.cli, sessionId: session.resume_id, sessionType: session.session_type }
+                                }));
+                              }
+                            }).catch(console.error)
+                          }
+                        >
+                          View session →
+                        </button>
+                      )}
                       {item.status === "approved" ? (
                         <Badge className="gap-1 bg-emerald-600 text-white">
                           <Check className="h-3 w-3" /> Approved

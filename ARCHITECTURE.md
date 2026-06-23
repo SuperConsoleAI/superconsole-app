@@ -12,10 +12,12 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
  events                     ├─► pty.rs        portable-pty sessions (one per tab, keyed "wsId:cli" / "wsId:shell-N")
  pty-output                 ├─► files.rs      sandboxed file ops inside workspace folder
  pty-exit                   ├─► scheduler.rs  30s tick loop → runs due cron jobs headless → inbox
- inbox-new                  ├─► remote.rs     Telegram long-poll bot + local tiny_http server (127.0.0.1)
- chat-token                 │
- chat-done                  │   ── cloud layer ──
- chat-error                 ├─► cli_sessions.rs read/resume native CLI transcripts off disk (claude/droid/codex)
+ inbox-new                  ├─► remote.rs     Telegram long-poll bot (typed update structs, full routing decision tree:
+ chat-token                 │                  DM→org workspace, group→(chat_id+thread_id) project match;
+ chat-done                  │                  commands /inbox /status /agents /agent /task /schedule /help;
+ chat-error                 │                  inline approval keyboards; free-text→one_shot_completion;
+                            │                  allowed_user_ids whitelist; outbound per-project topic notify)
+                            │                  + local tiny_http server (127.0.0.1)
                             ├─► auth.rs       WorkOS loopback OAuth (127.0.0.1:4666) + keyring; upserts user/orgs to Turso
                             ├─► cloud.rs      Turso HTTP exec helper (turso_execute / rows / cell_*)
                             ├─► crypto.rs     AES-256-GCM (HKDF from WORKOS_COOKIE_PASSWORD); key cached in keychain
@@ -33,7 +35,12 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
 
 - UI never touches disk/processes/cloud directly; everything goes through `invoke()` commands.
 - PTY output streams via Tauri events (`pty-output` with `session_id`), filtered per terminal in the frontend; `session-usage` is emitted on exit (screen-scraped tokens + est. cost) for the footer. Chat streams via `chat-token`/`chat-done`/`chat-error`, where `chat-done` carries `tokens_prompt`/`tokens_completion`/`cost_usd` (cost prefers OpenRouter live pricing).
-- Three trigger paths (scheduler, HTTP `/trigger`, Telegram `/run`) all funnel into `scheduler::exec_in_workspace`, so results consistently land in the Inbox and notify Telegram.
+- Three trigger paths (scheduler, HTTP `/trigger`, Telegram) all funnel into `scheduler::exec_in_workspace`, so results consistently land in the Inbox. After recording, `run_and_record` also calls `notify_telegram` (global bot) and `notify_telegram_topic` (per-project topic via `get_telegram_route_for_workspace`).
+- **Session page routing** — `session_history` and `chat_sessions` each carry `job_id` and `agent_id` columns, used to route rows to the right surface:
+  - Sessions page: `job_id IS NULL AND agent_id IS NULL` → `list_user_sessions`
+  - Agent Activity tab: `agent_id IS NOT NULL` → `list_agent_sessions(workspace_id, agent_name)`
+  - Tasks Activity tab: `job_id IS NOT NULL AND agent_id IS NULL` → `list_all_job_sessions`
+
 
 ## Cloud layer (identity + sync)
 
@@ -54,10 +61,13 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
 ## Frontend structure
 
 - `src/router.tsx` is the spine: TanStack Router (memory history), code-based route tree, and the `Shell` layout.
-- Routes: `/` (welcome), `/workspace/$workspaceId` (+ search params `file`, `files`), `/inbox`, `/tasks`, `/sessions` (history: CLI + chat threads), `/usage` (usage monitoring), `/settings`.
+- Routes: `/` (welcome), `/workspace/$workspaceId` (+ search params `file`, `files`), `/inbox`, `/tasks`, `/sessions` (history: CLI + chat threads), `/usage` (usage monitoring), `/settings` (tab + section search params: `?tab=account|org|project&section=Skills|Connectors|Commands|Context|Messaging`).
 - CRITICAL: terminals are rendered in the root layout (`Shell`), NOT inside route outlets. Routes only control visibility. This keeps PTY sessions alive across navigation.
 - Tabs are typed: terminal tabs render `TerminalView`, chat tabs (`{workspaceId}:chat`) render `ChatView`. The router picks the view by `tab.cli`; chat is its own tab type, not a per-tab toggle.
 - `TerminalView` and `ChatView` share `StatusFooter` (git stat / files toggle / branch / token·cost, with a `leftExtra` slot). Chat uses `ChatComposer` (OpenRouter-backed model selector, reasoning, agent mode, web search, attachments) and quick-prompt chips; the terminal exposes an optional rich-text input + file-path attach.
+- **Slash-command UX**: both `ChatComposer` and `TerminalView` rich input support `/` autocomplete. Items come from `lib/slash-items.ts` (`loadSlashItems`) in ChatComposer, and from an async `ensureCtx()` in TerminalView that loads skills/context/commands/connectors/agents/sessions lazily on first `/` keypress. Items are memoized via `useMemo` and suggestions recompute reactively via `useEffect([allSlashItems, slashToken])`. Slash tokens are colour-coded in TerminalView (amber=skill, blue=context, green=command, purple=connector, teal=agent, grey=session).
+- **`[+]` menus**: `ChatComposer` and `TerminalView` both expose a `[+]` dropdown with per-type submenus (Skills, Agents, Connectors, Context, Commands, Sessions). Each submenu item shows a **clean name** only (no `/prefix:` in the display); on click it inserts the full `/prefix:name` token. Every submenu has a `[+ Add …]` footer that navigates to the correct settings tab+section via `router.navigate({ to: "/settings", search: { tab, section } })`. The Connectors submenu includes the Tool access radio (auto/direct). Token routing in TerminalView: rich input open → insert into textarea; closed → write to live PTY buffer (no `\r`).
+- **Session logs**: `.superconsole/sessions/` holds structured session-log files (opt-in, not raw CLI history). Listed via `api.listSessionLogFiles(workspaceId)` and accessible as `/session:id` tokens. The `SessionLogFile` type carries `id`, `summary?`.
 - Shared state lives in `WorkspaceProvider` (src/lib/workspace-context.tsx): workspaces, organizations, per-workspace tab sets, live sessions, active org (localStorage). Cloud identity/session state lives in `AuthProvider` (src/lib/auth-context.tsx): WorkOS user, orgs, active cloud org.
 - Layout: full-width `TopBar` (holds macOS traffic lights via titleBarStyle Overlay + drag region) → below it `Sidebar`/`SidebarRail` + content column (`TabStrip` → terminal/editor + optional `FilePanel`).
 
@@ -67,7 +77,7 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
 - Sessions keyed by string session id, namespaced per workspace (`"3:claude"`, `"3:shell-1718..."`): allows multiple CLIs running concurrently per workspace, isolated tab sets per workspace.
 - Scheduler is a 30s SQLite-driven tick loop, not an in-memory cron scheduler: job edits apply instantly and runs missed during laptop sleep fire on next tick after wake.
 - xterm.js (real terminal) instead of markdown chat for sessions: agent CLIs are full TUIs; markdown rendering is used where it fits (Inbox, file editor preview). The terminal uses the WebGL renderer + a bundled JetBrains Mono Nerd Font; it waits for `document.fonts.ready` before the first fit (so cols/rows match real cell metrics) and clears the texture atlas on resize to avoid stale-glyph artifacts.
-- Headless job runs use CLI print modes (`claude -p`, `droid exec`, `codex exec`), a chat one-shot, or an `agent` (instructions from a file + harness/model from the job), selected by the job's `run_mode`; triggers are cron/manual/api/github.
+- Headless job runs use CLI print modes (`claude -p`, `droid exec`, `codex exec`), a chat one-shot, or an `agent` (instructions from a file + harness/model from the job), selected by the job's `run_mode`; triggers are cron/manual/api/github. All task creation and editing flows through the shared **`TaskFormContent`** component (org/project picker, run-via CLI·Chat·Agent, schedule frequency, connector restrictions, OpenRouter model picker) mounted by both the `/tasks` page dialogs and the per-workspace `JobsDialog`. Shell is not offered as a CLI preset for headless jobs.
 - One MCP tool layer for two transports (native chat loop + stdio server) keeps tool behavior identical whether an agent runs inside SuperConsole's chat or an external CLI.
 
 ## Folder map

@@ -63,7 +63,7 @@ export function SkillsDialog({ workspaceId, open, onOpenChange }: SkillsDialogPr
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="flex max-h-[90vh] max-w-2xl flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-primary" />
@@ -204,8 +204,8 @@ function MySkills({
   }
 
   return (
-    <ScrollArea className="max-h-96">
-      <div className="flex flex-col gap-1.5 pr-2">
+    <ScrollArea className="h-[420px]">
+      <div className="flex flex-col gap-1.5 pb-2 pr-2">
         {skills.length === 0 && (
           <p className="py-6 text-center text-sm text-muted-foreground">
             No skills yet. Add one from the library or create your own.
@@ -252,7 +252,7 @@ function MySkills({
                 ))}
               </div>
               {s.description && (
-                <p className="truncate text-xs text-muted-foreground">{s.description}</p>
+                <p className="line-clamp-2 text-xs text-muted-foreground">{s.description}</p>
               )}
             </div>
             {s.source === "superconsole" ? (
@@ -603,7 +603,7 @@ function LibraryBrowser({
         ))}
       </div>
       <ScrollArea className="max-h-80">
-        <div className="flex flex-col gap-1.5 pr-2">
+        <div className="flex flex-col gap-1.5 pb-2 pr-2">
           {filtered.map((l) => {
             const isInstalled = installed.has(l.name);
             return (
@@ -618,7 +618,7 @@ function LibraryBrowser({
                       {l.category}
                     </Badge>
                   </div>
-                  <p className="truncate text-xs text-muted-foreground">{l.description}</p>
+                  <p className="line-clamp-2 text-xs text-muted-foreground">{l.description}</p>
                 </div>
                 <Button
                   variant={isInstalled ? "ghost" : "outline"}

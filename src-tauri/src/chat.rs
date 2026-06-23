@@ -294,6 +294,16 @@ pub async fn chat_send(
                 ..Default::default()
             };
             crate::usage::record_usage(&app, ev);
+            // Also accumulate into chat_sessions for the Sessions feed display.
+            let db = app.state::<Db>();
+            db.update_chat_session_cost(
+                &request_id,
+                usage.prompt + usage.cached,
+                usage.completion + usage.reasoning,
+                cost,
+                &model,
+                &provider,
+            );
         }
     }
 

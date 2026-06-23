@@ -429,10 +429,24 @@ const inboxRoute = createRoute({
 });
 
 function TasksRoute() {
-  const { workspaces, activeOrgId } = useWorkspaces();
+  const { workspaces, organizations, activeOrgId, openWorkspace, openResumeTab } = useWorkspaces();
+  const navigate = useNavigate();
   return (
     <div className="absolute inset-0 bg-background">
-      <TasksView workspaces={workspaces.filter((w) => w.organization_id === activeOrgId)} />
+      <TasksView
+        workspaces={workspaces}
+        organizations={organizations}
+        activeOrgId={activeOrgId}
+        onResume={(workspaceId, cli, sessionId) => {
+          openWorkspace(workspaceId, cli);
+          openResumeTab(workspaceId, cli, sessionId);
+          navigate({
+            to: "/workspace/$workspaceId",
+            params: { workspaceId: String(workspaceId) },
+            search: {},
+          });
+        }}
+      />
     </div>
   );
 }
@@ -521,14 +535,16 @@ async function saveAuthoredAgent(workspaceId: number, agent: Agent, skills: stri
 function AgentsRoute() {
   const {
     workspaces,
+    organizations,
     activeOrgId,
     setAddOpen,
     setPendingAgent,
     setPendingNewAgent,
     setPendingRepoImport,
+    openWorkspace,
+    openResumeTab,
   } = useWorkspaces();
   const navigate = useNavigate();
-  const orgWorkspaces = workspaces.filter((w) => w.organization_id === activeOrgId);
   const go = (workspaceId: number) =>
     navigate({
       to: "/workspace/$workspaceId",
@@ -538,7 +554,9 @@ function AgentsRoute() {
   return (
     <div className="absolute inset-0 bg-background">
       <AgentsView
-        workspaces={orgWorkspaces}
+        workspaces={workspaces}
+        organizations={organizations}
+        activeOrgId={activeOrgId}
         onUseInProject={async (id, workspaceId) => {
           await api.installCatalogAgent(workspaceId, id);
           go(workspaceId);
@@ -565,6 +583,15 @@ function AgentsRoute() {
         onAddConnector={(scope) =>
           navigate({ to: "/settings", search: { tab: scope, section: "Connectors" } })
         }
+        onResume={(workspaceId, cli, sessionId) => {
+          openWorkspace(workspaceId, cli);
+          openResumeTab(workspaceId, cli, sessionId);
+          navigate({
+            to: "/workspace/$workspaceId",
+            params: { workspaceId: String(workspaceId) },
+            search: {},
+          });
+        }}
       />
     </div>
   );

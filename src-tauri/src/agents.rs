@@ -1098,3 +1098,184 @@ async fn install_input(ws_path: &str, input: &CatalogAgentInput) -> Result<(), S
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Turso metadata sync — project_agents
+//
+// Mirrors the local `agents` table to Turso so metadata (last_run, schedule,
+// defaults) can be restored cross-device alongside the agent.md files from git.
+// The table is keyed by (project_id, name); `id` is a ULID generated locally.
+// Content (instructions) is NEVER stored here — always lives in agent.md.
+// ---------------------------------------------------------------------------
+
+pub async fn ensure_agent_index_table(
+    client: &reqwest::Client,
+    cfg: &cloud::TursoConfig,
+) -> Result<(), String> {
+    cloud::turso_execute(
+        client,
+        cfg,
+        "CREATE TABLE IF NOT EXISTS project_agents (\
+            id TEXT PRIMARY KEY NOT NULL, \
+            project_id TEXT NOT NULL, \
+            name TEXT NOT NULL, \
+            description TEXT NOT NULL DEFAULT '', \
+            schedule TEXT NOT NULL DEFAULT '', \
+            default_run_mode TEXT NOT NULL DEFAULT 'cli', \
+            default_cli TEXT NOT NULL DEFAULT 'claude', \
+            default_provider TEXT NOT NULL DEFAULT 'anthropic', \
+            default_model TEXT NOT NULL DEFAULT '', \
+            skills TEXT NOT NULL DEFAULT '', \
+            connectors TEXT NOT NULL DEFAULT '', \
+            is_active INTEGER NOT NULL DEFAULT 1, \
+            last_run TEXT, \
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+        vec![],
+    )
+    .await?;
+    cloud::turso_execute(
+        client,
+        cfg,
+        "CREATE UNIQUE INDEX IF NOT EXISTS project_agents_unq \
+         ON project_agents (project_id, name)",
+        vec![],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Push one agent's metadata to Turso after a local save.
+/// `project_id` is the workspace's cloud ULID; silently no-ops if not linked.
+#[allow(clippy::too_many_arguments)]
+pub async fn push_agent_to_cloud(
+    app: &tauri::AppHandle,
+    project_id: Option<&str>,
+    local_id: &str,
+    name: &str,
+    description: &str,
+    schedule: &str,
+    default_run_mode: &str,
+    default_cli: &str,
+    default_provider: &str,
+    default_model: &str,
+    skills: &str,
+    connectors: &str,
+    is_active: bool,
+    last_run: Option<&str>,
+) {
+    let Some(project_id) = project_id else { return };
+    let Ok(cfg) = cloud::turso_config() else { return };
+    let client = reqwest::Client::new();
+    if ensure_agent_index_table(&client, &cfg).await.is_err() {
+        return;
+    }
+    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let result = cloud::turso_execute(
+        &client,
+        &cfg,
+        "INSERT INTO project_agents \
+            (id, project_id, name, description, schedule, default_run_mode, \
+             default_cli, default_provider, default_model, skills, connectors, \
+             is_active, last_run, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(project_id, name) DO UPDATE SET \
+            description      = excluded.description, \
+            schedule         = excluded.schedule, \
+            default_run_mode = excluded.default_run_mode, \
+            default_cli      = excluded.default_cli, \
+            default_provider = excluded.default_provider, \
+            default_model    = excluded.default_model, \
+            skills           = excluded.skills, \
+            connectors       = excluded.connectors, \
+            is_active        = excluded.is_active, \
+            last_run         = COALESCE(excluded.last_run, project_agents.last_run), \
+            updated_at       = excluded.updated_at",
+        vec![
+            Some(local_id.to_string()),
+            Some(project_id.to_string()),
+            Some(name.to_string()),
+            Some(description.to_string()),
+            Some(schedule.to_string()),
+            Some(default_run_mode.to_string()),
+            Some(default_cli.to_string()),
+            Some(default_provider.to_string()),
+            Some(default_model.to_string()),
+            Some(skills.to_string()),
+            Some(connectors.to_string()),
+            Some(if is_active { "1" } else { "0" }.to_string()),
+            last_run.map(|s| s.to_string()),
+            Some(ts),
+        ],
+    )
+    .await;
+    if result.is_ok() {
+        crate::sync_manager::sync_on_update(app, "project", project_id).await;
+    }
+}
+
+/// Delete one agent's Turso row after a local delete.
+pub async fn delete_agent_from_cloud(
+    app: &tauri::AppHandle,
+    project_id: Option<&str>,
+    name: &str,
+) {
+    let Some(project_id) = project_id else { return };
+    let Ok(cfg) = cloud::turso_config() else { return };
+    let client = reqwest::Client::new();
+    if ensure_agent_index_table(&client, &cfg).await.is_err() {
+        return;
+    }
+    let result = cloud::turso_execute(
+        &client,
+        &cfg,
+        "DELETE FROM project_agents WHERE project_id = ? AND name = ?",
+        vec![Some(project_id.to_string()), Some(name.to_string())],
+    )
+    .await;
+    if result.is_ok() {
+        crate::sync_manager::sync_on_update(app, "project", project_id).await;
+    }
+}
+
+/// Fetch all agent index rows for a project from Turso (used by the sync layer).
+#[allow(dead_code)]
+pub async fn fetch_cloud_agents(
+    client: &reqwest::Client,
+    cfg: &cloud::TursoConfig,
+    project_id: &str,
+) -> Vec<(String, String, String, String, String, String, String, String, String, bool, Option<String>)> {
+    // Returns: (name, description, schedule, run_mode, cli, provider, model, skills, connectors, is_active, last_run)
+    if ensure_agent_index_table(client, cfg).await.is_err() {
+        return Vec::new();
+    }
+    let Ok(result) = cloud::turso_execute(
+        client,
+        cfg,
+        "SELECT name, description, schedule, default_run_mode, default_cli, \
+                default_provider, default_model, skills, connectors, is_active, last_run \
+         FROM project_agents WHERE project_id = ? ORDER BY name",
+        vec![Some(project_id.to_string())],
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    cloud::rows(&result)
+        .iter()
+        .map(|row| {
+            (
+                cloud::cell_text(row, 0),           // name
+                cloud::cell_opt(row, 1).unwrap_or_default(), // description
+                cloud::cell_opt(row, 2).unwrap_or_default(), // schedule
+                cloud::cell_opt(row, 3).unwrap_or_else(|| "cli".to_string()), // run_mode
+                cloud::cell_opt(row, 4).unwrap_or_else(|| "claude".to_string()), // cli
+                cloud::cell_opt(row, 5).unwrap_or_else(|| "anthropic".to_string()), // provider
+                cloud::cell_opt(row, 6).unwrap_or_default(), // model
+                cloud::cell_opt(row, 7).unwrap_or_default(), // skills
+                cloud::cell_opt(row, 8).unwrap_or_default(), // connectors
+                cloud::cell_text(row, 9) == "1",    // is_active
+                cloud::cell_opt(row, 10),            // last_run
+            )
+        })
+        .collect()
+}

@@ -1,12 +1,34 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Plus, RefreshCw, TextCursorInput } from "lucide-react";
-import { api, type SessionInfo, type SessionTab, type Workspace } from "@/lib/api";
+import { BookOpen, Bot, ClipboardList, Paperclip, Plug, Plus, RefreshCw, ScrollText, TextCursorInput, TerminalSquare } from "lucide-react";
+import { useRouter } from "@tanstack/react-router";
+import {
+  api,
+  type Agent,
+  type ContextFile,
+  type SessionInfo,
+  type SessionLogFile,
+  type SessionTab,
+  type Skill,
+  type SlashCommand,
+  type Workspace,
+  type WorkspaceConnector,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { StatusFooter } from "@/components/StatusFooter";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface TerminalViewProps {
   workspace: Workspace;
@@ -42,6 +64,96 @@ export function TerminalView({
   const [cmd, setCmd] = useState("");
   const [usage, setUsage] = useState({ tokens: 0, cost: 0 });
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Context dropdown — lazy loaded on first open
+  const [skills, setSkills]           = useState<Skill[]>([]);
+  const [connectors, setConnectors]   = useState<WorkspaceConnector[]>([]);
+  const [commands, setCommands]       = useState<SlashCommand[]>([]);
+  const [ctxFiles, setCtxFiles]       = useState<ContextFile[]>([]);
+  const [agents, setAgents]           = useState<Agent[]>([]);
+  const [sessionLogs, setSessionLogs] = useState<SessionLogFile[]>([]);
+  const ctxLoadedRef = useRef(false);
+
+  // Rich-input slash autocomplete
+  const [slashSuggestions, setSlashSuggestions] = useState<Array<{ value: string; label: string; color: string }>>([]);
+  const [slashToken, setSlashToken]   = useState("");
+  const [slashSelected, setSlashSelected] = useState(0);
+
+  const router = useRouter();
+  const goSettingsTo = (tab: "account" | "org" | "project", section: string) =>
+    router.navigate({ to: "/settings", search: { tab, section } });
+
+  const ensureCtx = () => {
+    if (ctxLoadedRef.current) return;
+    ctxLoadedRef.current = true;
+    api.listSkills(workspace.id).then(setSkills).catch(() => {});
+    api.listWorkspaceConnectors(workspace.id).then(setConnectors).catch(() => {});
+    api.listCommands(workspace.id).then(setCommands).catch(() => {});
+    api.listContextFiles(workspace.id).then(setCtxFiles).catch(() => {});
+    api.listAgents(workspace.id).then(setAgents).catch(() => {});
+    api.listSessionLogFiles(workspace.id).then(setSessionLogs).catch(() => {});
+  };
+
+  /** All slash items — memoized so both onChange and the effect see the same fresh list. */
+  const allSlashItems = useMemo(() => [
+    ...skills.filter((s) => s.active).map((s) => ({ value: `/skill:${s.name}`, label: `/skill:${s.name}`, color: "#c9944a" })),
+    ...ctxFiles.map((f) => ({ value: `/context:${f.slug}`, label: `/context:${f.slug}`, color: "#7b9bc4" })),
+    ...commands.map((c) => ({ value: c.slash, label: c.slash, color: "#8aa05f" })),
+    ...connectors.map((c) => ({ value: `/connector:${c.service}`, label: `/connector:${c.service}`, color: "#b07ba8" })),
+    ...agents.map((a) => ({ value: `/agent:${a.name}`, label: `/agent:${a.name}`, color: "#7fa8a0" })),
+    ...sessionLogs.map((s) => ({ value: `/session:${s.id}`, label: `/session:${s.id}`, color: "#5e5b54" })),
+  ], [skills, ctxFiles, commands, connectors, agents, sessionLogs]);
+
+  // Recompute suggestions whenever data arrives from ensureCtx (all async).
+  useEffect(() => {
+    if (!slashToken) return;
+    const q = slashToken.slice(1).toLowerCase();
+    const filtered = allSlashItems.filter((x) => !q || x.value.toLowerCase().includes(q)).slice(0, 40);
+    setSlashSuggestions(filtered);
+  }, [allSlashItems, slashToken]);
+
+  /** Write a token directly to the live CLI pty (no \r, user presses Enter). Kept for future direct-inject use. */
+  const writeToSession = (token: string) => {
+    api.writeSession(tab.id, token).catch(() => {});
+    termRef.current?.focus();
+  };
+  void writeToSession; // available for future use
+
+  /** Insert a token into the rich textarea (appends at end). */
+  const insertIntoRich = (token: string) => {
+    setCmd((prev) => prev + (prev && !prev.endsWith(" ") ? " " : "") + token + " ");
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  /**
+   * Route token from the [+] menu:
+   * - Rich input open → insert into textarea (user reviews & sends)
+   * - Rich input closed → type into the live CLI buffer (no \r — user presses Enter)
+   */
+  const addToken = (token: string) => {
+    if (richOpen) {
+      insertIntoRich(token);
+    } else {
+      writeToSession(token);
+    }
+  };
+
+  /** Insert token into the rich text input at the current /word position. */
+  const insertRichToken = (item: { value: string }) => {
+    const pos = inputRef.current?.selectionStart ?? cmd.length;
+    const before = cmd.slice(0, pos);
+    const tokenStart = before.lastIndexOf(slashToken);
+    const after = cmd.slice(pos);
+    const next =
+      tokenStart >= 0
+        ? cmd.slice(0, tokenStart) + item.value + " " + after.trimStart()
+        : cmd + item.value + " ";
+    setCmd(next);
+    setSlashSuggestions([]);
+    setSlashToken("");
+    setSlashSelected(0);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
 
   useEffect(() => {
     const ta = inputRef.current;
@@ -286,27 +398,88 @@ export function TerminalView({
       </div>
 
       {richOpen && (
-        <textarea
-          ref={inputRef}
-          value={cmd}
-          onChange={(e) => setCmd(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              const t = cmd.trim();
-              if (t) {
-                sendCommand(t);
-                setCmd("");
+        <div className="relative z-10">
+          {/* Slash autocomplete overlay for rich input */}
+          {slashSuggestions.length > 0 && (
+            <div className="absolute bottom-full left-0 right-0 max-h-52 overflow-y-auto border border-white/15 bg-[#1f1e1b] shadow-xl">
+              {slashSuggestions.map((item, i) => (
+                <button
+                  key={item.value}
+                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs ${
+                    i === slashSelected
+                      ? "bg-white/12 text-[#f0eee7]"
+                      : "text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7]"
+                  }`}
+                  onMouseEnter={() => setSlashSelected(i)}
+                  onMouseDown={(e) => { e.preventDefault(); insertRichToken(item); }}
+                >
+                  <span style={{ color: item.color }}>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <textarea
+            ref={inputRef}
+            value={cmd}
+            onChange={(e) => {
+              const next = e.target.value;
+              setCmd(next);
+              const pos = e.target.selectionStart ?? next.length;
+              const before = next.slice(0, pos);
+              const match = before.match(/(?:^|\s)(\/.*)$/);
+              if (match) {
+                const tok = match[1];
+                ensureCtx(); // start loading data immediately
+                setSlashToken(tok);
+                const q = tok.slice(1).toLowerCase();
+                const filtered = allSlashItems.filter(
+                  (x) => !q || x.value.toLowerCase().includes(q),
+                ).slice(0, 40);
+                setSlashSuggestions(filtered);
+                setSlashSelected(0);
+              } else {
+                setSlashSuggestions([]);
+                setSlashToken("");
               }
-            }
-          }}
-          rows={1}
-          autoFocus
-          placeholder="Type a message…"
-          style={{ lineHeight: "20px" }}
-          className="relative z-10 max-h-64 min-h-[2.25rem] w-full resize-none border-t border-border bg-background px-3 py-2 font-mono text-sm placeholder:text-muted-foreground focus-visible:outline-none"
-          spellCheck={false}
-        />
+            }}
+            onKeyDown={(e) => {
+              if (slashSuggestions.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSlashSelected((s) => (s + 1) % slashSuggestions.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSlashSelected((s) => (s - 1 + slashSuggestions.length) % slashSuggestions.length);
+                  return;
+                }
+                if (e.key === "Tab" || e.key === "Enter") {
+                  e.preventDefault();
+                  insertRichToken(slashSuggestions[slashSelected]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSlashSuggestions([]);
+                  setSlashToken("");
+                  return;
+                }
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                const t = cmd.trim();
+                if (t) { sendCommand(t); setCmd(""); setSlashSuggestions([]); }
+              }
+            }}
+            rows={1}
+            autoFocus
+            placeholder="Type a message or / to insert skills, context, commands…"
+            style={{ lineHeight: "20px" }}
+            className="max-h-64 min-h-[2.25rem] w-full resize-none border-t border-border bg-background px-3 py-2 font-mono text-sm placeholder:text-muted-foreground/50 focus-visible:outline-none"
+            spellCheck={false}
+          />
+        </div>
       )}
 
       <StatusFooter
@@ -316,13 +489,234 @@ export function TerminalView({
         cost={exited ? usage.cost : 0}
         leftExtra={
           <>
-            <button
-              className="flex items-center rounded border px-1.5 py-0.5 hover:text-foreground"
-              title="Attach file path"
-              onClick={attachPath}
-            >
-              <Plus className="h-3 w-3" />
-            </button>
+            {/* [+] context injection dropdown — terminal feel */}
+            <DropdownMenu onOpenChange={(o) => { if (o) ensureCtx(); }}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="flex items-center gap-0.5 rounded border px-1.5 py-0.5 hover:text-foreground"
+                  title="Insert context into session"
+                >
+                  <Plus className="h-3 w-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="top"
+                align="start"
+                className="w-44 rounded border border-white/15 bg-[#1f1e1b] p-0.5 text-[#f0eee7] shadow-xl"
+              >
+                {/* Attach file */}
+                <DropdownMenuItem
+                  onClick={attachPath}
+                  className="gap-2 rounded px-2 py-1.5 text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] font-mono"
+                >
+                  <Paperclip className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                  Attach file
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator className="my-0.5 bg-white/10" />
+
+                {/* Skills sub-menu */}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                  >
+                    <ScrollText className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                    <span className="text-[#c9944a]">Skills</span>
+                    <span className="ml-auto text-[10px] text-[#5e5b54]">{skills.filter(s => s.active).length}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent
+                    className="max-h-64 w-52 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                  >
+                    {skills.filter((s) => s.active).length === 0 ? (
+                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No active skills</div>
+                    ) : (
+                      skills.filter((s) => s.active).map((s) => (
+                        <DropdownMenuItem
+                          key={s.name}
+                          onClick={() => addToken(`/skill:${s.name}`)}
+                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                        >
+                          {s.name}
+                        </DropdownMenuItem>
+                      ))
+                    )}
+                    <DropdownMenuSeparator className="my-0.5 bg-white/10" />
+                    <DropdownMenuItem
+                      onClick={() => goSettingsTo("project", "Skills")}
+                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-[#5e5b54] hover:bg-white/8 hover:text-[#f0eee7]"
+                    >
+                      <Plus className="h-3 w-3" /> Add skill
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                {/* Agents sub-menu */}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                  >
+                    <Bot className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                    <span className="text-[#7fa8a0]">Agents</span>
+                    <span className="ml-auto text-[10px] text-[#5e5b54]">{agents.length}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent
+                    className="max-h-64 w-52 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                  >
+                    {agents.length === 0 ? (
+                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No agents</div>
+                    ) : (
+                      agents.map((a) => (
+                        <DropdownMenuItem
+                          key={a.name}
+                          onClick={() => addToken(`/agent:${a.name}`)}
+                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                        >
+                          {a.name}
+                        </DropdownMenuItem>
+                      ))
+                    )}
+                    <DropdownMenuSeparator className="my-0.5 bg-white/10" />
+                    <DropdownMenuItem
+                      onClick={() => router.navigate({ to: "/agents" })}
+                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-[#5e5b54] hover:bg-white/8 hover:text-[#f0eee7]"
+                    >
+                      <Plus className="h-3 w-3" /> Add agent
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                {/* Context sub-menu */}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                  >
+                    <BookOpen className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                    <span className="text-[#7b9bc4]">Context</span>
+                    <span className="ml-auto text-[10px] text-[#5e5b54]">{ctxFiles.length}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent
+                    className="max-h-64 w-52 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                  >
+                    {ctxFiles.length === 0 ? (
+                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No context files</div>
+                    ) : (
+                      ctxFiles.map((f) => (
+                        <DropdownMenuItem
+                          key={f.slug}
+                          onClick={() => addToken(`/context:${f.slug}`)}
+                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                        >
+                          {f.slug}
+                        </DropdownMenuItem>
+                      ))
+                    )}
+                    <DropdownMenuSeparator className="my-0.5 bg-white/10" />
+                    <DropdownMenuItem
+                      onClick={() => goSettingsTo("project", "Context")}
+                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-[#5e5b54] hover:bg-white/8 hover:text-[#f0eee7]"
+                    >
+                      <Plus className="h-3 w-3" /> Add context file
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                {/* Commands sub-menu */}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                  >
+                    <TerminalSquare className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                    <span className="text-[#8aa05f]">Commands</span>
+                    <span className="ml-auto text-[10px] text-[#5e5b54]">{commands.length}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent
+                    className="max-h-64 w-52 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                  >
+                    {commands.length === 0 ? (
+                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No commands</div>
+                    ) : (
+                      commands.map((c) => (
+                        <DropdownMenuItem
+                          key={c.file_path}
+                          onClick={() => addToken(c.slash)}
+                          className="rounded px-2 py-1.5 font-mono text-xs text-[#8aa05f] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                        >
+                          {c.slash}
+                        </DropdownMenuItem>
+                      ))
+                    )}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                {/* Connectors sub-menu */}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                  >
+                    <Plug className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                    <span className="text-[#b07ba8]">Connectors</span>
+                    <span className="ml-auto text-[10px] text-[#5e5b54]">{connectors.length}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent
+                    className="max-h-64 w-52 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                  >
+                    {connectors.length === 0 ? (
+                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No connectors</div>
+                    ) : (
+                      connectors.map((c) => (
+                        <DropdownMenuItem
+                          key={`${c.scope}-${c.service}`}
+                          onClick={() => addToken(`/connector:${c.service}`)}
+                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                        >
+                          {c.service}
+                        </DropdownMenuItem>
+                      ))
+                    )}
+                    <DropdownMenuSeparator className="my-0.5 bg-white/10" />
+                    <DropdownMenuItem
+                      onClick={() => goSettingsTo("project", "Connectors")}
+                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-[#5e5b54] hover:bg-white/8 hover:text-[#f0eee7]"
+                    >
+                      <Plus className="h-3 w-3" /> Add connector
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                {/* Sessions sub-menu */}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                  >
+                    <ClipboardList className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                    <span className="text-[#7fa8a0]">Sessions</span>
+                    <span className="ml-auto text-[10px] text-[#5e5b54]">{sessionLogs.length}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent
+                    className="max-h-64 w-60 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                  >
+                    {sessionLogs.length === 0 ? (
+                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No saved sessions</div>
+                    ) : (
+                      sessionLogs.map((s) => (
+                        <DropdownMenuItem
+                          key={s.id}
+                          onClick={() => addToken(`/session:${s.id}`)}
+                          className="flex-col items-start gap-0 rounded px-2 py-1.5 font-mono text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                        >
+                          <span className="truncate w-full">{s.id}</span>
+                          {s.summary && (
+                            <span className="truncate w-full text-[10px] text-[#5e5b54]">{s.summary}</span>
+                          )}
+                        </DropdownMenuItem>
+                      ))
+                    )}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Rich text input toggle */}
             <button
               className={
                 "flex items-center gap-1 rounded border px-1.5 py-0.5 hover:text-foreground" +

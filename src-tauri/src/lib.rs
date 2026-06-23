@@ -14,6 +14,7 @@ mod memory;
 mod pty;
 mod remote;
 mod scheduler;
+mod session_logs;
 mod skills;
 mod mcp;
 mod mcp_server;
@@ -24,7 +25,7 @@ mod wiki;
 
 use auth::AuthState;
 
-use db::{ChatMessage, Db, InboxItem, Job, Organization, SessionLog, Workspace};
+use db::{AgentRow, ChatMessage, Db, InboxItem, Job, Organization, SessionFeedItem, SessionLog, Workspace};
 use files::FileEntry;
 use pty::{SessionInfo, SessionManager};
 use std::path::Path;
@@ -142,7 +143,7 @@ async fn start_session(
     )?;
     if !was_active {
         let db = app.state::<Db>();
-        let _ = db.log_session(workspace_id, &session_id, &cli);
+        let _ = db.log_session(workspace_id, &session_id, &cli, None, None);
     }
     Ok(info)
 }
@@ -179,6 +180,7 @@ fn resize_session(
 #[tauri::command]
 fn stop_session(db: State<Db>, sessions: State<SessionManager>, session_id: String) -> Result<(), String> {
     let _ = db.close_session_log(&session_id);
+    db.finalize_cli_session_cost(&session_id);
     pty::stop_session(&sessions, &session_id)
 }
 
@@ -530,6 +532,99 @@ async fn run_agent_now(app: AppHandle, workspace_id: i64, name: String) -> Resul
     Ok(())
 }
 
+/// List the local agent metadata rows for a workspace (merged with file presence).
+#[tauri::command]
+fn list_workspace_agents(db: State<Db>, workspace_id: i64) -> Result<Vec<AgentRow>, String> {
+    db.list_agent_rows(workspace_id)
+}
+
+/// Upsert an agent metadata row — called when saving an agent from the UI.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn upsert_agent_metadata(
+    app: AppHandle,
+    workspace_id: i64,
+    name: String,
+    description: String,
+    schedule: String,
+    default_run_mode: String,
+    default_cli: String,
+    default_provider: String,
+    default_model: String,
+    skills: String,
+    connectors: String,
+    is_active: bool,
+) -> Result<AgentRow, String> {
+    let (row, project_id) = {
+        let db = app.state::<Db>();
+        let id = ulid::Ulid::new().to_string();
+        let row = db.upsert_agent_row(
+            &id,
+            workspace_id,
+            &name,
+            &description,
+            &schedule,
+            &default_run_mode,
+            &default_cli,
+            &default_provider,
+            &default_model,
+            &skills,
+            &connectors,
+            is_active,
+            None,
+        )?;
+        let pid = db.get_workspace_project_id(workspace_id);
+        (row, pid)
+    };
+    // Mirror to Turso if the workspace is linked to a cloud project.
+    agents::push_agent_to_cloud(
+        &app,
+        project_id.as_deref(),
+        &row.id,
+        &name,
+        &description,
+        &schedule,
+        &default_run_mode,
+        &default_cli,
+        &default_provider,
+        &default_model,
+        &skills,
+        &connectors,
+        is_active,
+        row.last_run.as_deref(),
+    )
+    .await;
+    Ok(row)
+}
+
+/// Delete an agent metadata row (does NOT delete the agent.md file).
+#[tauri::command]
+async fn delete_agent_metadata(app: AppHandle, workspace_id: i64, name: String) -> Result<(), String> {
+    let project_id = {
+        let db = app.state::<Db>();
+        db.delete_agent_row(workspace_id, &name)?;
+        db.get_workspace_project_id(workspace_id)
+    };
+    agents::delete_agent_from_cloud(&app, project_id.as_deref(), &name).await;
+    Ok(())
+}
+
+/// Toggle an agent's active flag (pauses/resumes scheduled runs).
+#[tauri::command]
+fn set_agent_active(db: State<Db>, workspace_id: i64, name: String, is_active: bool) -> Result<(), String> {
+    db.set_agent_active(workspace_id, &name, is_active)
+}
+
+/// List sessions attributed to a specific agent (for the Activity tab).
+#[tauri::command]
+fn list_agent_sessions(
+    db: State<Db>,
+    workspace_id: i64,
+    agent_name: String,
+) -> Result<Vec<SessionFeedItem>, String> {
+    db.list_agent_sessions(workspace_id, &agent_name)
+}
+
 #[tauri::command]
 fn list_inbox(db: State<Db>) -> Result<Vec<InboxItem>, String> {
     db.list_inbox()
@@ -558,6 +653,26 @@ fn set_inbox_status(db: State<Db>, id: i64, status: String) -> Result<(), String
 #[tauri::command]
 fn list_session_history(db: State<Db>, workspace_id: i64) -> Result<Vec<SessionLog>, String> {
     db.list_session_history(workspace_id)
+}
+
+#[tauri::command]
+fn list_user_sessions(db: State<Db>, workspace_id: Option<i64>) -> Result<Vec<SessionFeedItem>, String> {
+    db.list_user_sessions(workspace_id)
+}
+
+#[tauri::command]
+fn list_job_sessions(db: State<Db>, job_id: i64) -> Result<Vec<SessionFeedItem>, String> {
+    db.list_job_sessions(job_id)
+}
+
+#[tauri::command]
+fn list_all_job_sessions(db: State<Db>, workspace_id: Option<i64>) -> Result<Vec<SessionFeedItem>, String> {
+    db.list_all_job_sessions(workspace_id)
+}
+
+#[tauri::command]
+fn get_inbox_session(db: State<Db>, inbox_id: i64) -> Result<Option<SessionFeedItem>, String> {
+    db.get_inbox_session(inbox_id)
 }
 
 #[tauri::command]
@@ -736,6 +851,16 @@ fn move_chat_session(db: State<Db>, id: String, to_project: String) -> Result<()
     db.move_chat_session(&id, &to_project)
 }
 
+#[tauri::command]
+async fn refresh_telegram_bots(app: AppHandle) {
+    remote::refresh_telegram_bots(&app);
+}
+
+#[tauri::command]
+async fn detect_telegram_chat(app: AppHandle) -> Result<remote::TelegramChatDetected, String> {
+    remote::detect_telegram_chat(app).await
+}
+
 /// Remove all locally cached cloud data + the derived encryption key from this
 /// machine. Does not sign out and does not touch Turso.
 #[tauri::command]
@@ -777,6 +902,7 @@ pub fn run() {
             app.manage(SessionManager::default());
             app.manage(chat::ChatCancel::default());
             app.manage(AuthState::load_from_keyring());
+            app.manage(remote::TelegramState::default());
             scheduler::spawn(app.handle().clone());
             sync_manager::spawn(app.handle().clone());
             remote::spawn_http(app.handle().clone());
@@ -926,7 +1052,26 @@ pub fn run() {
             commands::read_global_command,
             commands::write_global_command,
             commands::delete_global_command,
-            mcp::ensure_mcp_config
+            mcp::ensure_mcp_config,
+            list_user_sessions,
+            list_job_sessions,
+            list_all_job_sessions,
+            get_inbox_session,
+            refresh_telegram_bots,
+            detect_telegram_chat,
+            list_workspace_agents,
+            upsert_agent_metadata,
+            delete_agent_metadata,
+            set_agent_active,
+            list_agent_sessions,
+            // Phase B — session log files
+            session_logs::save_session_log,
+            session_logs::list_session_logs,
+            session_logs::delete_session_log,
+            // Phase C — skill GitHub library + catalog
+            skills::install_skill_from_github_url,
+            skills::fetch_skill_catalog,
+            skills::submit_to_skill_catalog,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

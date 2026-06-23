@@ -19,6 +19,7 @@ import {
   type ChatSession,
   type CliSession,
   type Organization,
+  type SessionFeedItem,
   type SessionLog,
   type Workspace,
 } from "@/lib/api";
@@ -133,6 +134,7 @@ export function SessionsView({
   const [threads, setThreads] = useState<ChatRow[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [native, setNative] = useState<Record<number, CliSession[] | "loading">>({});
+  const [feedMap, setFeedMap] = useState<Record<string, SessionFeedItem>>({});
 
   const wsName = useCallback(
     (id: number) => workspaces.find((w) => w.id === id)?.name ?? "unknown",
@@ -207,6 +209,13 @@ export function SessionsView({
       );
       setThreads(flat);
     });
+
+    // Load feed items for cost/token metadata
+    api.listUserSessions().then((items) => {
+      const map: Record<string, SessionFeedItem> = {};
+      for (const item of items) map[item.resume_id] = item;
+      setFeedMap(map);
+    }).catch(() => {});
   }, [workspaces]);
 
   useEffect(() => {
@@ -396,6 +405,15 @@ export function SessionsView({
                         {!s.ended_at && (
                           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
                         )}
+                        {(() => {
+                          const feed = feedMap[s.session_id ?? ""];
+                          if (!feed || feed.cost_usd <= 0) return null;
+                          return (
+                            <span className="hidden shrink-0 gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
+                              ~${feed.cost_usd.toFixed(2)} · {Math.round(feed.tokens_total / 1000)}K tok
+                            </span>
+                          );
+                        })()}
                         <span className="hidden max-w-[26%] shrink-0 truncate text-xs text-muted-foreground sm:inline">
                           {s.wsName}
                         </span>
@@ -404,6 +422,17 @@ export function SessionsView({
                           {s.ended_at && ` · ${duration(s.started_at, s.ended_at)}`}
                         </span>
                       </button>
+                      {s.ended_at && (
+                        <button
+                          className="shrink-0 rounded px-2 py-1 text-xs font-medium text-primary opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
+                          onClick={() => {
+                            const feed = feedMap[s.session_id ?? ""];
+                            onResume(s.workspace_id, s.cli, feed?.resume_id ?? (s as any).session_id ?? "");
+                          }}
+                        >
+                          Continue →
+                        </button>
+                      )}
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100 data-[state=open]:opacity-100">
@@ -475,6 +504,15 @@ export function SessionsView({
                       <span className="shrink-0 text-xs text-muted-foreground">
                         {fmtRelative(t.last_at ?? t.updated_at)}
                       </span>
+                      {(() => {
+                        const feed = feedMap[t.id];
+                        if (!feed || feed.cost_usd <= 0) return null;
+                        return (
+                          <span className="hidden shrink-0 gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
+                            ~${feed.cost_usd.toFixed(2)} · {Math.round(feed.tokens_total / 1000)}K tok
+                          </span>
+                        );
+                      })()}
                     </button>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>

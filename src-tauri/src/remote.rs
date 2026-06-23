@@ -2,8 +2,16 @@ use crate::db::Db;
 use crate::scheduler;
 use rand::Rng;
 use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
+
+/// App-managed state tracking which bot tokens currently have a running
+/// long-poll loop, so `refresh_telegram_bots` can add new loops without
+/// restarting existing ones or dropping in-flight messages.
+#[derive(Default)]
+pub struct TelegramState(pub Arc<Mutex<HashSet<String>>>);
 
 pub const DEFAULT_HTTP_PORT: u16 = 4665;
 
@@ -87,40 +95,120 @@ pub fn spawn_telegram(app: AppHandle) {
     // long-poll task per token. Project bots route straight to their workspace;
     // the global bot keeps the /workspaces + /run command interface.
     tauri::async_runtime::spawn(async move {
-        let active: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
-            Default::default();
         loop {
-            let mut bots: Vec<(String, Option<i64>)> = Vec::new();
-            {
-                let db = app.state::<Db>();
-                if let Some(tok) = db.get_setting("telegram_token").filter(|t| !t.is_empty()) {
-                    bots.push((tok, None));
-                }
-                for (tok, ws_id) in crate::connectors::project_telegram_bots(&db) {
-                    if !bots.iter().any(|(t, _)| t == &tok) {
-                        bots.push((tok, Some(ws_id)));
-                    }
-                }
-            }
-            for (token, ws) in bots {
-                let is_new = {
-                    let mut guard = active.lock().unwrap();
-                    guard.insert(token.clone())
-                };
-                if is_new {
-                    spawn_telegram_bot(app.clone(), active.clone(), token, ws);
-                }
-            }
+            spawn_new_telegram_bots(&app);
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
     });
 }
 
-/// Long-poll a single Telegram bot. Exits (freeing its slot in `active`) once
-/// its token is no longer registered, so the manager can re-spawn on change.
+/// Check for tokens not yet running a loop and spawn one for each new token.
+/// Called by the 30s manager loop and by `refresh_telegram_bots` on demand.
+/// Never restarts existing loops — safe to call at any time.
+pub fn refresh_telegram_bots(app: &AppHandle) {
+    spawn_new_telegram_bots(app);
+}
+
+fn spawn_new_telegram_bots(app: &AppHandle) {
+    // Collect ALL unique tokens from every source:
+    //   1. Global telegram_token setting (legacy / backward compat)
+    //   2. Org-level connector bot_tokens (Option A \u2014 shared org bot)
+    //   3. Project-level connector bot_tokens (Option B \u2014 own bot per project)
+    // One long-poll loop per unique token. Routing inside the loop is by
+    // matching (chat_id, thread_id) against project_telegram_bots().
+    let mut bots: Vec<(String, Option<i64>)> = Vec::new();
+    {
+        let db = app.state::<Db>();
+
+        // 1. Global setting.
+        if let Some(tok) = db.get_setting("telegram_token").filter(|t| !t.is_empty()) {
+            bots.push((tok, None));
+        }
+
+        // 2. Org-level connectors.
+        for ws in db.list_workspaces().unwrap_or_default() {
+            if let Some(pid) = db.get_workspace_project_id(ws.id) {
+                if let Some(oid) = db.get_project_org(&pid) {
+                    if let Some(tok) = crate::connectors::get_telegram_bot_token(&db, Some(&oid)) {
+                        if !bots.iter().any(|(t, _)| t == &tok) {
+                            bots.push((tok, None)); // No specific workspace \u2014 routes by chat_id
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Per-project entries \u2014 also adds project-owned bot tokens (Option B).
+        for (tok, ws_id, _chat_id, _thread_id, _allowed) in crate::connectors::project_telegram_bots(&db) {
+            if !bots.iter().any(|(t, _)| t == &tok) {
+                bots.push((tok, Some(ws_id)));
+            }
+        }
+    }
+    let active = app.state::<TelegramState>().0.clone();
+    for (token, ws) in bots {
+        let is_new = {
+            let mut guard = active.lock().unwrap();
+            guard.insert(token.clone())
+        };
+        if is_new {
+            spawn_telegram_bot(app.clone(), active.clone(), token, ws);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Telegram typed structs
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize, Default)]
+struct TelegramUpdate {
+    update_id: i64,
+    message: Option<TgMessage>,
+    callback_query: Option<CallbackQuery>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct TgMessage {
+    message_id: i64,
+    from: Option<TgUser>,
+    chat: TgChat,
+    message_thread_id: Option<i64>,
+    text: Option<String>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct TgUser {
+    id: i64,
+    #[allow(dead_code)]
+    username: Option<String>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+struct TgChat {
+    id: i64,
+    #[serde(rename = "type")]
+    chat_type: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CallbackQuery {
+    id: String,
+    #[allow(dead_code)]
+    from: TgUser,
+    message: Option<TgMessage>,
+    data: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Long-poll loop
+// ---------------------------------------------------------------------------
+
+/// Long-poll a single Telegram bot. Exits once its token is no longer
+/// registered, so the manager can re-spawn on change.
 fn spawn_telegram_bot(
     app: AppHandle,
-    active: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    active: Arc<Mutex<HashSet<String>>>,
     token: String,
     workspace: Option<i64>,
 ) {
@@ -131,12 +219,10 @@ fn spawn_telegram_bot(
             let still_registered = {
                 let db = app.state::<Db>();
                 match workspace {
-                    None => {
-                        db.get_setting("telegram_token").as_deref() == Some(token.as_str())
-                    }
+                    None => db.get_setting("telegram_token").as_deref() == Some(token.as_str()),
                     Some(_) => crate::connectors::project_telegram_bots(&db)
                         .iter()
-                        .any(|(t, _)| t == &token),
+                        .any(|(t, _, _, _, _)| t == &token),
                 }
             };
             if !still_registered {
@@ -160,62 +246,683 @@ fn spawn_telegram_bot(
                 continue;
             };
 
-            for update in body["result"].as_array().cloned().unwrap_or_default() {
-                if let Some(id) = update["update_id"].as_i64() {
-                    offset = offset.max(id + 1);
-                }
-                let msg = &update["message"];
-                let Some(text) = msg["text"].as_str() else { continue };
-                let Some(chat_id) = msg["chat"]["id"].as_i64() else { continue };
+            let updates: Vec<TelegramUpdate> = body["result"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|v| serde_json::from_value(v).ok())
+                .collect();
 
-                // The global bot pairs with the first chat that contacts it.
-                // Project bots are scoped by their own token, so accept any chat.
+            for update in updates {
+                offset = offset.max(update.update_id + 1);
+
+                // --- Callback query (inline button tap) ---
+                if let Some(cb) = update.callback_query {
+                    handle_callback_query(&client, &token, cb, &app).await;
+                    continue;
+                }
+
+                // --- Regular message ---
+                let Some(msg) = update.message else { continue };
+                let Some(ref text) = msg.text.clone() else { continue };
+                let chat_id_str = msg.chat.id.to_string();
+                let thread_id_str = msg.message_thread_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_default();
+                let sender_id = msg.from.as_ref().map(|u| u.id.to_string());
+                let chat_type = msg.chat.chat_type.as_str();
+
                 if workspace.is_none() {
+                    // Global legacy bot — gate on stored chat_id.
                     let allowed = {
                         let db = app.state::<Db>();
                         let saved = db.get_setting("telegram_chat_id").unwrap_or_default();
                         if saved.is_empty() {
-                            let _ = db.set_setting("telegram_chat_id", &chat_id.to_string());
+                            let _ = db.set_setting("telegram_chat_id", &chat_id_str);
                             true
                         } else {
-                            saved == chat_id.to_string()
+                            saved == chat_id_str
                         }
                     };
-                    if !allowed {
+                    if !allowed { continue; }
+                    let reply = handle_telegram_text(&app, text).await;
+                    let _ = client
+                        .post(format!("https://api.telegram.org/bot{}/sendMessage", token))
+                        .json(&json!({ "chat_id": chat_id_str, "text": reply }))
+                        .send()
+                        .await;
+                    continue;
+                }
+
+                // Project bot — full routing + message handler.
+                let route = {
+                    let db = app.state::<Db>();
+                    resolve_route(&db, &token, &chat_id_str, &thread_id_str, chat_type)
+                };
+
+                let (ws_id, reply_token, reply_chat, reply_thread, allowed_ids) = match route {
+                    Some(r) => r,
+                    None => {
+                        // No project match for this chat — only reply in DMs.
+                        if chat_type == "private" {
+                            send_tg_message(&client, &token, &chat_id_str, "", 
+                                "No project configured for this chat. Set up a project connector in SuperConsole.").await;
+                        }
+                        continue;
+                    }
+                };
+
+                // Allowed-user check.
+                if !allowed_ids.is_empty() {
+                    let sid = sender_id.clone().unwrap_or_default();
+                    if !allowed_ids.contains(&sid) {
+                        send_tg_message(&client, &reply_token, &reply_chat, &reply_thread,
+                            "⛔ Not authorized.").await;
                         continue;
                     }
                 }
 
-                let reply = match workspace {
-                    Some(ws_id) => handle_project_telegram(&app, ws_id, text).await,
-                    None => handle_telegram_text(&app, text).await,
-                };
-                let _ = client
-                    .post(format!("https://api.telegram.org/bot{}/sendMessage", token))
-                    .json(&json!({ "chat_id": chat_id, "text": reply }))
-                    .send()
-                    .await;
+                handle_telegram_message(
+                    &client, &app, ws_id, text,
+                    &reply_token, &reply_chat, &reply_thread,
+                ).await;
             }
         }
     });
 }
 
-/// A project bot routes every message straight to its workspace.
-async fn handle_project_telegram(app: &AppHandle, workspace_id: i64, text: &str) -> String {
-    let text = text.trim();
-    if text == "/start" || text == "/help" {
-        return "Connected to this project. Send a message to run it here.".into();
+// ---------------------------------------------------------------------------
+// Routing
+// ---------------------------------------------------------------------------
+
+/// Returns (workspace_id, bot_token, chat_id, thread_id, allowed_user_ids).
+fn resolve_route(
+    db: &Db,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+    chat_type: &str,
+) -> Option<(i64, String, String, String, Vec<String>)> {
+    if chat_type == "private" {
+        return resolve_dm_route(db, token);
     }
-    let command = text.strip_prefix("/run ").unwrap_or(text).trim();
-    if command.is_empty() {
-        return "Send a command to run in this project.".into();
+    find_project_route(db, token, chat_id, thread_id)
+}
+
+/// DM route — find the org that owns this bot token; use its first workspace.
+fn resolve_dm_route(db: &Db, token: &str) -> Option<(i64, String, String, String, Vec<String>)> {
+    // Check project bots for a token match — use the first workspace found.
+    let bots = crate::connectors::project_telegram_bots(db);
+    if let Some((_, ws_id, chat_id, thread_id, allowed_ids)) = bots.iter().find(|(t, _, _, _, _)| t == token) {
+        return Some((*ws_id, token.to_string(), chat_id.clone(), thread_id.clone(), allowed_ids.clone()));
     }
-    match scheduler::exec_in_workspace(app, workspace_id, command, "Telegram trigger", None).await {
-        Ok(body) => {
-            let out: String = body.chars().take(3800).collect();
-            if out.trim().is_empty() { "Done.".into() } else { out }
+    // Global setting fallback — route to any workspace.
+    for ws in db.list_workspaces().unwrap_or_default() {
+        return Some((ws.id, token.to_string(), String::new(), String::new(), Vec::new()));
+    }
+    None
+}
+
+/// Group message routing — exact (chat_id+thread_id) then chat-only fallback.
+fn find_project_route(
+    db: &Db,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+) -> Option<(i64, String, String, String, Vec<String>)> {
+    let bots = crate::connectors::project_telegram_bots(db);
+    // Exact match.
+    for (tok, ws_id, c, t, allowed) in &bots {
+        if tok == token && c == chat_id && t == thread_id {
+            return Some((*ws_id, tok.clone(), c.clone(), t.clone(), allowed.clone()));
         }
-        Err(e) => format!("Error: {}", e),
+    }
+    // Chat-only match.
+    if !thread_id.is_empty() {
+        for (tok, ws_id, c, t, allowed) in &bots {
+            if tok == token && c == chat_id && t.is_empty() {
+                return Some((*ws_id, tok.clone(), c.clone(), t.clone(), allowed.clone()));
+            }
+        }
+    }
+    None
+}
+
+/// Get the outbound Telegram route for a workspace (for job completion notifications).
+pub fn get_telegram_route_for_workspace(
+    db: &Db,
+    workspace_id: i64,
+) -> Option<(String, String, String)> {
+    let bots = crate::connectors::project_telegram_bots(db);
+    if let Some((tok, _, chat_id, thread_id, _)) = bots.iter().find(|(_, ws, _, _, _)| *ws == workspace_id) {
+        return Some((tok.clone(), chat_id.clone(), thread_id.clone()));
+    }
+    // Global fallback.
+    let token = db.get_setting("telegram_token").filter(|t| !t.is_empty())?;
+    let chat_id = db.get_setting("telegram_chat_id").unwrap_or_default();
+    if chat_id.is_empty() { return None; }
+    Some((token, chat_id, String::new()))
+}
+
+// ---------------------------------------------------------------------------
+// Message handler
+// ---------------------------------------------------------------------------
+
+async fn handle_telegram_message(
+    client: &reqwest::Client,
+    app: &AppHandle,
+    workspace_id: i64,
+    text: &str,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+) {
+    let trimmed = text.trim();
+
+    // Built-in commands
+    match trimmed {
+        "/inbox" => {
+            handle_inbox_command(client, app, workspace_id, token, chat_id, thread_id).await;
+            return;
+        }
+        "/status" => {
+            handle_status_command(client, app, workspace_id, token, chat_id, thread_id).await;
+            return;
+        }
+        "/agents" => {
+            handle_agents_command(client, app, workspace_id, token, chat_id, thread_id).await;
+            return;
+        }
+        "/help" | "/start" => {
+            send_tg_message(client, token, chat_id, thread_id,
+                "Commands:\n\
+                /inbox           — pending approvals\n\
+                /status          — running jobs\n\
+                /agents          — list agents\n\
+                /agent <name>    — run agent now\n\
+                /task <cmd>      — create manual job\n\
+                /task <freq> <cmd> — daily/weekly/hourly job\n\
+                /schedule <cmd> <cron> — raw cron job\n\
+                /help            — this message\n\
+                \n\
+                Free text → chat with your project agent.\n\
+                Resource tokens: /skill:name /context:name /wiki:name /memory:name",
+            ).await;
+            return;
+        }
+        _ => {}
+    }
+
+    if trimmed.starts_with("/agent ") {
+        let agent_name = trimmed.trim_start_matches("/agent ").trim();
+        handle_run_agent(client, app, workspace_id, agent_name, token, chat_id, thread_id).await;
+        return;
+    }
+
+    if trimmed.starts_with("/task ") {
+        let args = trimmed.trim_start_matches("/task ").trim();
+        handle_create_task(client, app, workspace_id, args, token, chat_id, thread_id).await;
+        return;
+    }
+
+    if trimmed.starts_with("/schedule ") {
+        let args = trimmed.trim_start_matches("/schedule ").trim();
+        handle_create_schedule(client, app, workspace_id, args, token, chat_id, thread_id).await;
+        return;
+    }
+
+    // Any other slash command → exec_in_workspace
+    if trimmed.starts_with('/') {
+        match scheduler::exec_in_workspace(app, workspace_id, trimmed, "Telegram trigger", None).await {
+            Ok(body) => {
+                let out = tg_truncate(&body);
+                let reply = if out.trim().is_empty() { format!("✅ {}", trimmed) } else { format!("✅ {}\n\n{}", trimmed, out) };
+                send_tg_message(client, token, chat_id, thread_id, &reply).await;
+            }
+            Err(e) => {
+                send_tg_message(client, token, chat_id, thread_id, &format!("❌ {} failed\n{}", trimmed, e)).await;
+            }
+        }
+        return;
+    }
+
+    // Free text → native chat one-shot
+    let reply = exec_chat_message(app, workspace_id, trimmed).await;
+    send_tg_message(client, token, chat_id, thread_id, &reply).await;
+}
+
+// ---------------------------------------------------------------------------
+// Built-in command handlers
+// ---------------------------------------------------------------------------
+
+async fn handle_inbox_command(
+    client: &reqwest::Client,
+    app: &AppHandle,
+    workspace_id: i64,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+) {
+    let items = {
+        let db = app.state::<Db>();
+        db.list_inbox()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| i.workspace_id == workspace_id && i.status == "unread")
+            .take(3)
+            .collect::<Vec<_>>()
+    };
+
+    if items.is_empty() {
+        send_tg_message(client, token, chat_id, thread_id, "📭 No pending inbox items.").await;
+        return;
+    }
+
+    for item in items {
+        let text = format!(
+            "📬 *{}*\n{}\n\n_{}_{}", 
+            item.title, 
+            tg_truncate(&item.output),
+            item.created_at,
+            ""
+        );
+        send_with_approval_keyboard(client, token, chat_id, thread_id, &text, item.id).await;
+    }
+}
+
+async fn handle_status_command(
+    client: &reqwest::Client,
+    app: &AppHandle,
+    workspace_id: i64,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+) {
+    let text = {
+        let db = app.state::<Db>();
+        let jobs = db.list_jobs(workspace_id).unwrap_or_default();
+        let enabled: Vec<_> = jobs.iter().filter(|j| j.enabled).collect();
+        if enabled.is_empty() {
+            "📋 No active jobs.".to_string()
+        } else {
+            let lines = enabled.iter()
+                .map(|j| format!("• {} — next: {}", j.name, j.next_run.as_deref().unwrap_or("manual")))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("📋 Jobs:\n{}", lines)
+        }
+    };
+    send_tg_message(client, token, chat_id, thread_id, &text).await;
+}
+
+async fn handle_agents_command(
+    client: &reqwest::Client,
+    app: &AppHandle,
+    workspace_id: i64,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+) {
+    let ws_path = {
+        let db = app.state::<Db>();
+        db.get_workspace(workspace_id).map(|w| w.path).unwrap_or_default()
+    };
+    let agents = crate::agents::list_agents(&ws_path);
+    if agents.is_empty() {
+        send_tg_message(client, token, chat_id, thread_id,
+            "No agents configured.\nCreate one in SuperConsole → Agents.").await;
+        return;
+    }
+    let list = agents.iter()
+        .map(|a| format!("• {} — {}", a.name, a.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    send_tg_message(client, token, chat_id, thread_id,
+        &format!("🤖 Agents:\n{}\n\nRun with: /agent <name>", list)).await;
+}
+
+async fn handle_run_agent(
+    client: &reqwest::Client,
+    app: &AppHandle,
+    workspace_id: i64,
+    agent_name: &str,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+) {
+    let ws_path = {
+        let db = app.state::<Db>();
+        match db.get_workspace(workspace_id) {
+            Ok(w) => w.path,
+            Err(e) => {
+                send_tg_message(client, token, chat_id, thread_id, &format!("❌ {}", e)).await;
+                return;
+            }
+        }
+    };
+    let agent = match crate::agents::read_agent(&ws_path, agent_name) {
+        Ok(a) => a,
+        Err(_) => {
+            send_tg_message(client, token, chat_id, thread_id,
+                &format!("❌ Agent '{}' not found.\nSend /agents to see available agents.", agent_name)).await;
+            return;
+        }
+    };
+    send_tg_message(client, token, chat_id, thread_id,
+        &format!("▶️ Running {}…\nResult will appear here when done.", agent.name)).await;
+
+    let app2 = app.clone();
+    let tok = token.to_string();
+    let cid = chat_id.to_string();
+    let tid = thread_id.to_string();
+    let aname = agent.name.clone();
+    tokio::spawn(async move {
+        let client2 = reqwest::Client::new();
+        let result = crate::scheduler::exec_agent(&app2, workspace_id, &agent).await;
+        match result {
+            Ok(body) => send_tg_message(&client2, &tok, &cid, &tid,
+                &format!("✅ {} complete\n\n{}", aname, tg_truncate(&body))).await,
+            Err(e) => send_tg_message(&client2, &tok, &cid, &tid,
+                &format!("❌ {} failed\n{}", aname, e)).await,
+        }
+    });
+}
+
+async fn handle_create_task(
+    client: &reqwest::Client,
+    app: &AppHandle,
+    workspace_id: i64,
+    args: &str,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+) {
+    // "/task /ceo" → manual | "/task daily /ceo" → scheduled
+    let parts: Vec<&str> = args.splitn(2, ' ').collect();
+    let (schedule_keyword, command) = if parts.len() == 2 && !parts[0].starts_with('/') {
+        (parts[0], parts[1])
+    } else {
+        ("", args)
+    };
+    let cron = frequency_to_cron(schedule_keyword);
+    let job_name = format!("telegram-{}", command.trim_start_matches('/'));
+    {
+        let db = app.state::<Db>();
+        let next = if cron.is_empty() { None } else { crate::scheduler::next_run(&cron).ok() };
+        let _ = db.add_job(workspace_id, &job_name, command, &cron, next.as_deref(), "cli", "{}", "cron", "{}", "[]");
+    }
+    let schedule_str = if cron.is_empty() {
+        "manual".to_string()
+    } else {
+        format!("{} ({})", schedule_keyword, cron)
+    };
+    send_tg_message(client, token, chat_id, thread_id,
+        &format!("✅ Task created\n• Command: {}\n• Schedule: {}\n\nManage in SuperConsole → Tasks", command, schedule_str)).await;
+}
+
+async fn handle_create_schedule(
+    client: &reqwest::Client,
+    app: &AppHandle,
+    workspace_id: i64,
+    args: &str,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+) {
+    let parts: Vec<&str> = args.splitn(2, ' ').collect();
+    if parts.len() < 2 {
+        send_tg_message(client, token, chat_id, thread_id,
+            "Usage: /schedule <command> <cron>\nExample: /schedule /ceo 0 9 * * 1").await;
+        return;
+    }
+    let command = parts[0];
+    let cron = parts[1];
+    if cron.split_whitespace().count() != 5 {
+        send_tg_message(client, token, chat_id, thread_id,
+            "❌ Invalid cron. Use 5 fields: minute hour day month weekday\nExample: 0 9 * * 1").await;
+        return;
+    }
+    let job_name = format!("telegram-{}", command.trim_start_matches('/'));
+    {
+        let db = app.state::<Db>();
+        let next = crate::scheduler::next_run(cron).ok();
+        let _ = db.add_job(workspace_id, &job_name, command, cron, next.as_deref(), "cli", "{}", "cron", "{}", "[]");
+    }
+    send_tg_message(client, token, chat_id, thread_id,
+        &format!("✅ Scheduled\n• Command: {}\n• Cron: {}\n\nManage in SuperConsole → Tasks", command, cron)).await;
+}
+
+fn frequency_to_cron(freq: &str) -> String {
+    match freq.to_lowercase().as_str() {
+        "hourly"    => "0 * * * *".to_string(),
+        "daily"     => "0 9 * * *".to_string(),
+        "weekly" | "monday" => "0 9 * * 1".to_string(),
+        "tuesday"   => "0 9 * * 2".to_string(),
+        "wednesday" => "0 9 * * 3".to_string(),
+        "thursday"  => "0 9 * * 4".to_string(),
+        "friday"    => "0 9 * * 5".to_string(),
+        "weekdays"  => "0 9 * * 1-5".to_string(),
+        _           => String::new(),
+    }
+}
+
+/// Free-text → native chat one-shot completion with project system prompt.
+async fn exec_chat_message(app: &AppHandle, workspace_id: i64, text: &str) -> String {
+    // Resolve provider/model from workspace defaults (same as chat.rs).
+    let (provider, model) = {
+        let db = app.state::<Db>();
+        let ws = db.get_workspace(workspace_id);
+        match ws {
+            Ok(w) => {
+                let p = if w.default_provider.is_empty() { "anthropic".to_string() } else { w.default_provider.clone() };
+                let m = if w.default_model.is_empty() { "claude-sonnet-4-5".to_string() } else { w.default_model.clone() };
+                (p, m)
+            }
+            Err(_) => ("anthropic".to_string(), "claude-sonnet-4-5".to_string()),
+        }
+    };
+    let system = crate::chat::build_system_prompt(app, workspace_id);
+    match crate::llm::one_shot_completion(app, workspace_id, &provider, &model, &system, text).await {
+        Ok(r) => tg_truncate(&r),
+        Err(e) => format!("❌ Error: {}", e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inline approval keyboard
+// ---------------------------------------------------------------------------
+
+async fn send_with_approval_keyboard(
+    client: &reqwest::Client,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+    text: &str,
+    inbox_id: i64,
+) {
+    let truncated = tg_truncate(text);
+    let mut params = json!({
+        "chat_id": chat_id,
+        "text": truncated,
+        "parse_mode": "Markdown",
+        "reply_markup": {
+            "inline_keyboard": [[
+                { "text": "✅ Approve", "callback_data": format!("approve:{}", inbox_id) },
+                { "text": "❌ Reject",  "callback_data": format!("reject:{}", inbox_id) }
+            ]]
+        }
+    });
+    if !thread_id.is_empty() {
+        if let Ok(tid) = thread_id.parse::<i64>() {
+            params["message_thread_id"] = json!(tid);
+        }
+    }
+    let _ = client
+        .post(format!("https://api.telegram.org/bot{}/sendMessage", token))
+        .json(&params)
+        .send()
+        .await;
+}
+
+async fn answer_callback_query(client: &reqwest::Client, token: &str, callback_id: &str, text: &str) {
+    let _ = client
+        .post(format!("https://api.telegram.org/bot{}/answerCallbackQuery", token))
+        .json(&json!({ "callback_query_id": callback_id, "text": text }))
+        .send()
+        .await;
+}
+
+async fn edit_message_reply_markup(
+    client: &reqwest::Client,
+    token: &str,
+    chat_id: &str,
+    message_id: i64,
+    keyboard: Option<Value>,
+) {
+    let mut params = json!({ "chat_id": chat_id, "message_id": message_id });
+    params["reply_markup"] = keyboard.unwrap_or(json!({}));
+    let _ = client
+        .post(format!("https://api.telegram.org/bot{}/editMessageReplyMarkup", token))
+        .json(&params)
+        .send()
+        .await;
+}
+
+async fn handle_callback_query(
+    client: &reqwest::Client,
+    token: &str,
+    cb: CallbackQuery,
+    app: &AppHandle,
+) {
+    let data = cb.data.unwrap_or_default();
+    let (chat_id, thread_id, msg_id) = match &cb.message {
+        Some(m) => (
+            m.chat.id.to_string(),
+            m.message_thread_id.map(|id| id.to_string()).unwrap_or_default(),
+            m.message_id,
+        ),
+        None => return,
+    };
+
+    if let Some((action, id_str)) = data.split_once(':') {
+        if let Ok(inbox_id) = id_str.parse::<i64>() {
+            let approved = action == "approve";
+            let status = if approved { "approved" } else { "rejected" };
+            {
+                let db = app.state::<Db>();
+                let _ = db.set_inbox_status(inbox_id, status);
+            }
+            answer_callback_query(client, token, &cb.id,
+                if approved { "✅ Approved" } else { "❌ Rejected" }).await;
+            edit_message_reply_markup(client, token, &chat_id, msg_id, None).await;
+            send_tg_message(client, token, &chat_id, &thread_id,
+                if approved { "✅ Approved and marked in inbox." } else { "❌ Rejected and marked in inbox." }).await;
+        }
+    }
+    // Always answer to dismiss loading spinner, even on parse failure.
+    let _ = answer_callback_query(client, token, &cb.id, "").await;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn tg_truncate(s: &str) -> String {
+    let max = 3800;
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
+}
+
+async fn send_tg_message(client: &reqwest::Client, token: &str, chat_id: &str, thread_id: &str, text: &str) {
+    let truncated = tg_truncate(text);
+    let mut params = json!({ "chat_id": chat_id, "text": truncated });
+    if !thread_id.is_empty() {
+        if let Ok(tid) = thread_id.parse::<i64>() {
+            params["message_thread_id"] = json!(tid);
+        }
+    }
+    let _ = client
+        .post(format!("https://api.telegram.org/bot{}/sendMessage", token))
+        .json(&params)
+        .send()
+        .await;
+}
+
+/// Public alias — used by scheduler.rs to notify a project's Telegram topic
+/// when a job completes. Thin wrapper over send_tg_message.
+pub async fn notify_telegram_topic(client: &reqwest::Client, token: &str, chat_id: &str, thread_id: &str, text: &str) {
+    send_tg_message(client, token, chat_id, thread_id, text).await;
+}
+
+
+/// Detected Telegram chat info returned by the auto-detect command.
+#[derive(serde::Serialize)]
+pub struct TelegramChatDetected {
+    pub chat_id: String,
+    pub thread_id: Option<String>,
+    pub chat_title: Option<String>,
+}
+
+/// Poll getUpdates for up to 30s using the org-level bot token and return
+/// the first NEW message's chat_id + thread_id. Used by the [Detect →] button
+/// in the project Telegram connector form.
+pub async fn detect_telegram_chat(app: AppHandle) -> Result<TelegramChatDetected, String> {
+    let token = {
+        let db = app.state::<Db>();
+        crate::connectors::get_telegram_bot_token(&db, None)
+            .ok_or_else(|| "No Telegram bot token found. Set one in Org → Connectors → Telegram first.".to_string())?
+    };
+    let client = reqwest::Client::new();
+    // Snapshot the current offset so we only see messages arriving AFTER this call.
+    let mut offset: i64 = 0;
+    if let Ok(resp) = client
+        .get(format!("https://api.telegram.org/bot{}/getUpdates", token))
+        .query(&[("timeout", "0"), ("offset", "-1")])
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+    {
+        if let Ok(body) = resp.json::<Value>().await {
+            if let Some(arr) = body["result"].as_array() {
+                if let Some(last) = arr.last() {
+                    if let Some(id) = last["update_id"].as_i64() {
+                        offset = id + 1;
+                    }
+                }
+            }
+        }
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(32);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err("No message received in 30s. Make sure you sent a message to the bot in your group.".to_string());
+        }
+        let resp = client
+            .get(format!("https://api.telegram.org/bot{}/getUpdates", token))
+            .query(&[("timeout", "25"), ("offset", &offset.to_string())])
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let body = resp.json::<Value>().await.map_err(|e| e.to_string())?;
+        for update in body["result"].as_array().cloned().unwrap_or_default() {
+            if let Some(id) = update["update_id"].as_i64() {
+                offset = offset.max(id + 1);
+            }
+            let msg = &update["message"];
+            let Some(chat_id) = msg["chat"]["id"].as_i64() else { continue };
+            let thread_id = msg["message_thread_id"].as_i64().map(|id| id.to_string());
+            let chat_title = msg["chat"]["title"].as_str().map(|s| s.to_string());
+            return Ok(TelegramChatDetected {
+                chat_id: chat_id.to_string(),
+                thread_id,
+                chat_title,
+            });
+        }
     }
 }
 

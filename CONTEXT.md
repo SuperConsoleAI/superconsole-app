@@ -24,9 +24,16 @@ Patterns, constraints, and gotchas specific to this codebase.
 
 - TanStack Router with `createMemoryHistory` (desktop app, no URL bar). Routes are markers; heavy components live in the root `Shell` so terminals survive navigation.
 - UI state that must survive route changes goes in `WorkspaceProvider`; ephemeral per-view state stays local.
-- Search params are the API for panels: `?file=rel/path.md` opens the editor, `?files=true` opens the file tree.
+- Search params are the API for panels: `?file=rel/path.md` opens the editor, `?files=true` opens the file tree, `?tab=account|org|project&section=Skills|Connectors|Commands|Context` deep-links into settings.
 - Theme: `ThemeProvider` toggles `.dark` on `<html>`, persisted to localStorage (`superconsole-theme`); active org persisted as `superconsole-org`.
 - Tailwind v4 CSS-first: all design tokens in `src/index.css` under `:root` / `.dark` / `@theme inline`. No tailwind.config file.
+
+## Slash-command autocomplete patterns
+
+- **ChatComposer**: uses `loadSlashItems(workspaceId)` from `lib/slash-items.ts` (called lazily once on first `/`). Items are `SlashItem[]` with `value`, `label`, `description`, `source` groupings. Dropdown shows label inline with description truncated to 1 line (`items-baseline` flex, `truncate` on description span).
+- **TerminalView rich input**: uses a local `ensureCtx()` that fires all data fetches on first `/` keypress (`api.listSkills`, `listContextFiles`, `listCommands`, `listWorkspaceConnectors`, `listAgents`, `listSessionLogFiles`). Items built via `useMemo` keyed on all state arrays. Suggestions recompute via `useEffect([allSlashItems, slashToken])` — no stale-closure risk. Colour-coded by type (amber/blue/green/purple/teal/grey).
+- **[+] menu token routing** (TerminalView): if rich input is open → `insertIntoRich(token)` (appends to textarea); if closed → `writeToSession(token)` (writes to live PTY buffer, no `\r`—user presses Enter).
+- **Settings deep-link**: `router.navigate({ to: "/settings", search: { tab: "project", section: "Skills" } })` navigates to the right tab+section from any [+ Add …] footer.
 
 ## Gotchas / workarounds
 
@@ -39,7 +46,15 @@ Patterns, constraints, and gotchas specific to this codebase.
 - `files.rs::resolve` rejects `..`/absolute paths — every file op must go through it.
 - Settings changes for HTTP server / Telegram token require app restart (loops read config at boot; Telegram re-reads token each poll, so token alone hot-applies).
 - Updater is wired but inert: empty `pubkey` and placeholder endpoint in tauri.conf.json; `createUpdaterArtifacts` not enabled, so unsigned builds work. UI handles check failure gracefully.
-- Telegram pairing: first chat to message the bot gets saved as `telegram_chat_id`; other chats are ignored afterward.
+- **Telegram routing (dual-mode)**:
+  - Option A — shared org bot: `bot_token` set once at org level; each project gets `chat_id` + optional `thread_id` (topic). One bot serves all projects.
+  - Option B — dedicated bot per project: project connector has its own `bot_token`; resolution order: project `bot_token` → org `bot_token` → local `telegram_token` setting → skip.
+  - `connectors.rs::project_telegram_bots` returns a 5-tuple `(token, workspace_id, chat_id, thread_id, allowed_user_ids)`. `allowed_user_ids` is an optional comma-separated whitelist of Telegram user IDs checked before any handler runs.
+  - Inbound commands handled by `handle_telegram_message`: `/inbox` (inline ✅/❌ keyboards via `send_with_approval_keyboard`), `/status`, `/agents`, `/agent <name>`, `/task [freq] <cmd>`, `/schedule <cmd> <cron>`, `/help`; any `/` slash token → `exec_in_workspace`; free text → `exec_chat_message` → `one_shot_completion`.
+  - Callbacks (approve/reject) handled by `handle_callback_query`; confirms via `answer_callback_query` + removes keyboard via `edit_message_reply_markup`.
+  - Outbound: job completion (`run_and_record`) calls both `notify_telegram` (global bot fallback) and `notify_telegram_topic` (per-project, via `get_telegram_route_for_workspace`).
+  - Configure at **Settings → Project → Messaging** (dedicated tab with explanation + embedded connector form). Required field validation: org scope requires `bot_token`; project scope requires `chat_id`. Save button disabled until requirement met.
+  - All Telegram messages are truncated to 3800 chars (safe under the 4096-char API limit).
 
 ## Environment / credentials
 
@@ -80,6 +95,13 @@ Patterns, constraints, and gotchas specific to this codebase.
 - An agent is a *definition* in `.superconsole/agents/<name>/agent.md` (`agents.rs`): instructions + skills + connectors + context, NO harness/model/schedule. Those are picked on the job that runs it (`run_mode: "agent"` → `run_config` supplies cli/chat + model) or via `run_agent_now`/`scheduler::exec_agent` (uses the workspace default CLI).
 - `scheduler::with_available_resources` parses `@skill:`/`@context:`/`@connector:`/`@agent:` tokens from the instructions and prepends ONE availability hint line; resources are fetched on demand via MCP tools at runtime, never inlined.
 - SuperConsole catalog = Turso `agent_catalog` (curated, no org scope) + files in a public GitHub repo; install fetches via raw GitHub. Repos can self-describe with a `.superconsole-plugin/plugin.json` (falls back to `.claude-plugin/` then README). `install_repo_agent` clones a repo into a new project (+ generated `agent.md` + all skills + `.superconsole-plugin`); `scaffold_project_from_repo` clones + scaffolds `.superconsole/`. Full design: `AGENT_SYSTEM_NEW.md`.
+
+## Session logs
+
+- Session logs are **structured opt-in summaries**, NOT raw CLI history. Saved to `.superconsole/sessions/` (user/agent opts in per session).
+- Listed via `api.listSessionLogFiles(workspaceId)` → `SessionLogFile[]` with `id` and optional `summary`.
+- Accessible as `/session:id` tokens in the `[+]` menu and `/` autocomplete in both ChatComposer and TerminalView.
+- The `SessionLogFile` type and `listSessionLogFiles` command live in `lib/api.ts` and `lib.rs` respectively.
 
 ## Native CLI sessions (read + resume)
 

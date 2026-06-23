@@ -4,12 +4,14 @@ import {
   Bot,
   Check,
   ChevronsUpDown,
+  FolderOpen,
   History,
   Inbox,
   ListTodo,
   LogOut,
   Plus,
   Settings,
+  Terminal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,7 +39,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { CLI_PRESETS, type Organization, type Workspace } from "@/lib/api";
+import { type Organization, type Workspace } from "@/lib/api";
 import { AccountMenu } from "@/components/AccountMenu";
 import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
@@ -214,8 +216,6 @@ interface SidebarProps {
   onSettings: () => void;
 }
 
-const cliLabel = (id: string) =>
-  CLI_PRESETS.find((p) => p.id === id)?.label ?? id;
 
 function OrgAvatar({ name, logoUrl }: { name: string; logoUrl?: string | null }) {
   if (logoUrl) {
@@ -250,7 +250,7 @@ export function Sidebar({
   onNewOrg,
   onSelect,
   onAdd,
-  onRemove,
+  onRemove: _onRemove,
   onInbox,
   onTasks,
   onSessions,

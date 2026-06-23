@@ -13,6 +13,7 @@ import {
   KeyRound,
   type LucideIcon,
   ArrowLeft,
+  MessageSquare,
   Palette,
   Pencil,
   Play,
@@ -95,6 +96,7 @@ const NAV: Record<TopTab, string[]> = {
     "Skills",
     "Integrations",
     "Connectors",
+    "Messaging",
     "Automations",
   ],
 };
@@ -110,6 +112,7 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   Commands: Terminal,
   Integrations: Blocks,
   Connectors: Plug,
+  Messaging: MessageSquare,
   Security: Shield,
   Notifications: Bell,
   Team: Users,
@@ -444,6 +447,8 @@ function Content({
         );
       case "Automations":
         return <Placeholder name="Automations" />;
+      case "Messaging":
+        return <MessagingSection projectId={projectId} />;
     }
   }
 
@@ -1385,15 +1390,26 @@ function useSettings() {
   return { settings, update };
 }
 
-function SaveButton({ onSave }: { onSave: () => Promise<void> }) {
+function SaveButton({
+  onSave,
+  disabled,
+}: {
+  onSave: () => Promise<void>;
+  disabled?: boolean;
+}) {
   const [saved, setSaved] = useState(false);
   return (
     <Button
       size="sm"
+      disabled={disabled}
       onClick={async () => {
-        await onSave();
-        setSaved(true);
-        setTimeout(() => setSaved(false), 2000);
+        try {
+          await onSave();
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+        } catch {
+          // error handled by parent
+        }
       }}
     >
       {saved && <Check className="h-3.5 w-3.5" />}
@@ -1403,39 +1419,26 @@ function SaveButton({ onSave }: { onSave: () => Promise<void> }) {
 }
 
 function IntegrationsSection() {
-  const { settings, update } = useSettings();
   return (
     <div className="flex flex-col gap-4">
-      <div>
+      <div className="rounded-lg border bg-card px-4 py-4">
         <h3 className="text-sm font-medium">Telegram bot</h3>
-        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          Trigger agents from your phone and get job reports pushed back.
-          Create a bot with @BotFather, paste the token, then message your bot
-          once to pair. Restart SuperConsole after changing the token.
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Telegram bots are now configured under{" "}
+          <strong>Org → Connectors → Telegram</strong> (shared org bot) and{" "}
+          <strong>Project → Connectors → Telegram</strong> (per-project routing).
+          The old global token setting still works as a fallback.
         </p>
-        <div className="flex flex-col gap-2">
-          <Input
-            value={settings.telegram_token ?? ""}
-            onChange={(e) => update("telegram_token", e.target.value)}
-            placeholder="Bot token"
-            type="password"
-            className="h-8 font-mono text-xs"
-          />
-          <Input
-            value={settings.telegram_chat_id ?? ""}
-            onChange={(e) => update("telegram_chat_id", e.target.value)}
-            placeholder="Chat ID (auto-filled on first message)"
-            className="h-8 font-mono text-xs"
-          />
-        </div>
-      </div>
-      <div>
-        <SaveButton
-          onSave={async () => {
-            await api.setSetting("telegram_token", settings.telegram_token ?? "");
-            await api.setSetting("telegram_chat_id", settings.telegram_chat_id ?? "");
-          }}
-        />
+        <ul className="mt-3 flex flex-col gap-1 text-xs text-muted-foreground">
+          <li>
+            <span className="font-medium text-foreground">Option A — shared bot:</span>{" "}
+            Set bot_token at org level, then set chat_id (+ optional topic) per project.
+          </li>
+          <li>
+            <span className="font-medium text-foreground">Option B — own bot:</span>{" "}
+            Set bot_token + chat_id per project to give each client their own bot.
+          </li>
+        </ul>
       </div>
     </div>
   );
@@ -1874,17 +1877,106 @@ function ProjectTeamSection({ projectId }: { projectId: string }) {
   );
 }
 
+function MessagingSection({ projectId }: { projectId: string }) {
+  return (
+    <div className="flex flex-col gap-6">
+      {/* How it works */}
+      <div className="rounded-xl border bg-card px-5 py-5">
+        <div className="mb-3 flex items-center gap-2">
+          <MessageSquare className="h-4 w-4 text-primary" />
+          <h3 className="text-sm font-semibold">How Telegram messaging works</h3>
+        </div>
+        <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
+          Each project can receive messages and send notifications through Telegram.
+          Two setups are supported — pick whichever fits your team:
+        </p>
+        <div className="mb-4 grid gap-3 sm:grid-cols-2">
+          <div className="rounded-lg border bg-muted/40 px-4 py-3">
+            <p className="mb-1 text-xs font-medium">Option A — shared org bot</p>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              Set <code className="rounded bg-background px-1">bot_token</code> once at{" "}
+              <strong>Org → Connectors → Telegram</strong>. Each project gets its own
+              Telegram group topic — set <code className="rounded bg-background px-1">chat_id</code>{" "}
+              and optionally <code className="rounded bg-background px-1">Message Thread ID</code>{" "}
+              here. One bot serves all projects.
+            </p>
+          </div>
+          <div className="rounded-lg border bg-muted/40 px-4 py-3">
+            <p className="mb-1 text-xs font-medium">Option B — dedicated bot per project</p>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              Fill in <code className="rounded bg-background px-1">Bot Token</code> below to give
+              this project its own Telegram bot — useful when each client should see a
+              branded bot. Set <code className="rounded bg-background px-1">chat_id</code> to
+              their group.
+            </p>
+          </div>
+        </div>
+        <div className="border-t pt-3">
+          <p className="mb-2 text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+            What you can do once connected
+          </p>
+          <ul className="grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
+            <li>
+              <span className="font-medium text-foreground">/inbox</span> — see pending approvals
+              with ✅ / ❌ buttons
+            </li>
+            <li>
+              <span className="font-medium text-foreground">/agents</span> — list agents,{" "}
+              <span className="font-medium text-foreground">/agent name</span> — run one now
+            </li>
+            <li>
+              <span className="font-medium text-foreground">/status</span> — running jobs &amp; next
+              scheduled run
+            </li>
+            <li>
+              <span className="font-medium text-foreground">/task daily /cmd</span> — create a
+              scheduled job
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Free text</span> — chat directly with
+              your project agent
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Allowed User IDs</span> — whitelist who
+              can trigger the bot
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      {/* Telegram connector form */}
+      <div>
+        <p className="mb-3 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Telegram connector
+        </p>
+        <ConnectorManager
+          scope="project"
+          scopeId={projectId}
+          category="connectors"
+          filterService="telegram"
+        />
+      </div>
+    </div>
+  );
+}
+
 function ConnectorManager({
   scope,
   scopeId,
   category,
+  filterService,
 }: {
   scope: ConnectorScope;
   scopeId: string;
   category: ConnectorCategory;
+  /** If set, show only this service and hide the selector dropdown. */
+  filterService?: string;
 }) {
   const available = CONNECTOR_REGISTRY.filter(
-    (d) => d.scopes.includes(scope) && d.category === category,
+    (d) =>
+      d.scopes.includes(scope) &&
+      d.category === category &&
+      (!filterService || d.id === filterService),
   );
   const inCategory = (svc: string) =>
     CONNECTOR_REGISTRY.find((d) => d.id === svc)?.category === category;
@@ -1892,9 +1984,13 @@ function ConnectorManager({
   const [service, setService] = useState<string>(available[0]?.id ?? "");
   const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const [detectHint, setDetectHint] = useState<string | null>(null);
 
   const def = CONNECTOR_REGISTRY.find((d) => d.id === service);
   const current = list.find((c) => c.service === service);
+  const isTelegram = service === "telegram";
+  const isProjectScope = scope === "project";
 
   const load = async () => {
     try {
@@ -1920,6 +2016,7 @@ function ConnectorManager({
       next[f.key] = !f.secret && ev?.value ? ev.value : "";
     }
     setValues(next);
+    setDetectHint(null);
   }, [service, list, def]);
 
   const save = async () => {
@@ -1932,6 +2029,29 @@ function ConnectorManager({
     }
   };
 
+  // Determine whether the form has enough data to save.
+  // Required fields per service/scope:
+  //   telegram @ org     → bot_token
+  //   telegram @ project → chat_id
+  //   everything else    → any non-empty field
+  const canSave = (() => {
+    if (!def) return false;
+    if (service === "telegram") {
+      if (scope === "org") {
+        // bot_token required; may already be set (fieldSet) or freshly typed
+        const botFieldSet = current?.fields.find((x) => x.key === "bot_token")?.has_value;
+        return !!(values["bot_token"]?.trim() || botFieldSet);
+      }
+      // project scope — chat_id required
+      const chatFieldSet = current?.fields.find((x) => x.key === "chat_id")?.has_value;
+      return !!(values["chat_id"]?.trim() || chatFieldSet);
+    }
+    // Generic: any field filled
+    const anyTyped = Object.values(values).some((v) => v.trim().length > 0);
+    const anySet = current?.fields.some((f) => f.has_value) ?? false;
+    return anyTyped || anySet;
+  })();
+
   const remove = async (svc: string) => {
     setError(null);
     try {
@@ -1939,6 +2059,29 @@ function ConnectorManager({
       await load();
     } catch (e) {
       setError(String(e));
+    }
+  };
+
+  const detectChat = async () => {
+    setDetecting(true);
+    setDetectHint("Waiting for a message… Send any message to the bot in your group now.");
+    setError(null);
+    try {
+      const result = await api.detectTelegramChat();
+      setValues((v) => ({
+        ...v,
+        chat_id: result.chat_id,
+        ...(result.thread_id ? { thread_id: result.thread_id } : {}),
+      }));
+      const label = result.chat_title ? `"${result.chat_title}"` : result.chat_id;
+      setDetectHint(
+        `Detected: ${label}${result.thread_id ? ` · topic ${result.thread_id}` : ""}. Click Save to confirm.`,
+      );
+    } catch (e) {
+      setDetectHint(null);
+      setError(String(e));
+    } finally {
+      setDetecting(false);
     }
   };
 
@@ -2000,38 +2143,82 @@ function ConnectorManager({
       )}
 
       <div className="flex flex-col gap-2 rounded-lg border bg-card p-3">
-        <select
-          value={service}
-          onChange={(e) => setService(e.target.value)}
-          className="h-8 rounded-md border bg-background px-2 text-[13px]"
-        >
-          {available.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.label}
-            </option>
-          ))}
-        </select>
+        {!filterService && (
+          <select
+            value={service}
+            onChange={(e) => setService(e.target.value)}
+            className="h-8 rounded-md border bg-background px-2 text-[13px]"
+          >
+            {available.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+        )}
+
         {def?.fields.map((f) => {
           const fieldSet = current?.fields.find((x) => x.key === f.key)?.has_value;
+          // Telegram project-scope: bot_token hint when blank
+          const showBotHint =
+            isTelegram && isProjectScope && f.key === "bot_token" && !values["bot_token"];
+          // chat_id gets a [Detect] button at project scope
+          const showDetect = isTelegram && isProjectScope && f.key === "chat_id";
+
           return (
-            <Input
-              key={f.key}
-              value={values[f.key] ?? ""}
-              onChange={(e) =>
-                setValues((v) => ({ ...v, [f.key]: e.target.value }))
-              }
-              type={f.secret ? "password" : "text"}
-              placeholder={
-                f.secret && fieldSet
-                  ? `${f.label} •••• set (leave blank to keep)`
-                  : (f.placeholder ?? f.label)
-              }
-              className="h-8 font-mono text-xs"
-            />
+            <div key={f.key} className="flex flex-col gap-1">
+              {showDetect ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={values[f.key] ?? ""}
+                    onChange={(e) =>
+                      setValues((v) => ({ ...v, [f.key]: e.target.value }))
+                    }
+                    type="text"
+                    placeholder={f.placeholder ?? f.label}
+                    className="h-8 flex-1 font-mono text-xs"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 shrink-0 text-xs"
+                    disabled={detecting}
+                    onClick={detectChat}
+                  >
+                    {detecting ? "Listening…" : "Detect →"}
+                  </Button>
+                </div>
+              ) : (
+                <Input
+                  value={values[f.key] ?? ""}
+                  onChange={(e) =>
+                    setValues((v) => ({ ...v, [f.key]: e.target.value }))
+                  }
+                  type={f.secret ? "password" : "text"}
+                  placeholder={
+                    f.secret && fieldSet
+                      ? `${f.label} •••• set (leave blank to keep)`
+                      : (f.placeholder ?? f.label)
+                  }
+                  className="h-8 font-mono text-xs"
+                />
+              )}
+              {showBotHint && (
+                <p className="text-[11px] text-muted-foreground">
+                  Leave blank to use the org-level Telegram bot (Option A).
+                  Fill in to give this project its own bot (Option B).
+                </p>
+              )}
+            </div>
           );
         })}
+
+        {detectHint && (
+          <p className="text-[11px] text-primary">{detectHint}</p>
+        )}
+
         <div>
-          <SaveButton onSave={save} />
+          <SaveButton onSave={save} disabled={!canSave} />
         </div>
       </div>
 

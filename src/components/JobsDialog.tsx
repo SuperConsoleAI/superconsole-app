@@ -1,33 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+/**
+ * JobsDialog — project-page "Scheduled jobs" dialog.
+ *
+ * The form itself is now fully provided by TaskFormContent.
+ * This file only owns: the dialog shell, the job list, and session history.
+ */
+import { useCallback, useEffect, useState } from "react";
 import {
   CalendarClock,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Copy,
   History,
-  Maximize2,
-  Minimize2,
   Pencil,
   Play,
-  Plus,
   Trash2,
-  X,
 } from "lucide-react";
 import {
   api,
-  CHAT_PROVIDERS,
-  CLI_PRESETS,
-  type Agent,
-  type ContextFile,
   type Job,
+  type Organization,
   type SessionLog,
-  type Skill,
-  type WorkspaceConnector,
+  type Workspace,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -36,164 +28,136 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { TaskFormContent } from "@/components/TaskFormContent";
+import { PresetIcon } from "@/components/PresetIcon";
+import { ProviderIcon } from "@/components/ProviderIcon";
 
-type Freq = "hourly" | "daily" | "weekdays" | "weekly" | "custom";
-
-const FREQUENCIES: { id: Freq; label: string }[] = [
-  { id: "hourly", label: "Hourly" },
-  { id: "daily", label: "Daily" },
-  { id: "weekdays", label: "Weekdays" },
-  { id: "weekly", label: "Weekly" },
-  { id: "custom", label: "Custom" },
-];
-
-const WEEKDAYS = [
-  { v: 1, label: "Monday" },
-  { v: 2, label: "Tuesday" },
-  { v: 3, label: "Wednesday" },
-  { v: 4, label: "Thursday" },
-  { v: 5, label: "Friday" },
-  { v: 6, label: "Saturday" },
-  { v: 0, label: "Sunday" },
-];
-
-const GH_EVENTS = ["push", "pull_request", "release", "workflow_run"];
-
-const pad = (n: number) => String(n).padStart(2, "0");
-
-// Compose a 5-field cron from the friendly schedule controls.
-function buildCron(freq: Freq, time: string, weekday: number, custom: string): string {
-  const [h, m] = time.split(":").map((x) => parseInt(x, 10) || 0);
-  switch (freq) {
-    case "hourly":
-      return "0 * * * *";
-    case "daily":
-      return `${m} ${h} * * *`;
-    case "weekdays":
-      return `${m} ${h} * * 1-5`;
-    case "weekly":
-      return `${m} ${h} * * ${weekday}`;
-    default:
-      return custom.trim();
-  }
-}
-
-// Best-effort reverse: detect which friendly preset a cron matches.
-function parseCron(cron: string): { freq: Freq; time: string; weekday: number } {
-  const fallback = { freq: "custom" as Freq, time: "09:00", weekday: 1 };
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return fallback;
-  const [m, h, dom, mon, dow] = parts;
-  if (dom !== "*" || mon !== "*") return fallback;
-  const numeric = (s: string) => /^\d+$/.test(s);
-  if (m === "0" && h === "*" && dow === "*") return { freq: "hourly", time: "09:00", weekday: 1 };
-  if (numeric(m) && numeric(h)) {
-    const time = `${pad(parseInt(h, 10))}:${pad(parseInt(m, 10))}`;
-    if (dow === "*") return { freq: "daily", time, weekday: 1 };
-    if (dow === "1-5") return { freq: "weekdays", time, weekday: 1 };
-    if (/^[0-6]$/.test(dow)) return { freq: "weekly", time, weekday: parseInt(dow, 10) };
-  }
-  return fallback;
-}
-
-function scheduleSummary(freq: Freq, time: string, weekday: number, cron: string): string {
-  const wd = WEEKDAYS.find((w) => w.v === weekday)?.label ?? "Monday";
-  switch (freq) {
-    case "hourly":
-      return "Every hour";
-    case "daily":
-      return `Every day at ${time}`;
-    case "weekdays":
-      return `Weekdays (Mon-Fri) at ${time}`;
-    case "weekly":
-      return `Every ${wd} at ${time}`;
-    default:
-      return `cron: ${cron || "—"}`;
-  }
-}
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface JobsDialogProps {
   workspaceId: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** When set the dialog opens directly in edit mode for this job */
+  initialJob?: Job;
+  /** Passed through to TaskFormContent for the org/project picker */
+  workspaces?: Workspace[];
+  organizations?: Organization[];
 }
 
-function parseJson<T>(s: string | undefined, fallback: T): T {
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function parseJson<T>(s: string | undefined | null, fallback: T): T {
   if (!s) return fallback;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return fallback;
-  }
+  try { return JSON.parse(s) as T; } catch { return fallback; }
 }
 
-function Segment({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
+function fmtCronHuman(cron: string): string {
+  if (!cron || cron === "manual") return "Manual";
+  const p = cron.trim().split(/\s+/);
+  if (p.length !== 5) return cron;
+  const [m, h, dom, , dow] = p;
+  if (dom !== "*") return cron;
+  const hh = parseInt(h, 10);
+  const mm = parseInt(m, 10);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const time = isNaN(hh) ? "" : ` at ${pad(hh)}:${pad(mm)}`;
+  if (h === "*") return "Every hour";
+  if (dow === "*") return `Daily${time}`;
+  if (dow === "1-5") return `Weekdays${time}`;
+  const d = parseInt(dow, 10);
+  const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  return `${DAYS[d] ?? dow}s${time}`;
+}
+
+// ─── Job row (list item inside dialog) ────────────────────────────────────────
+
+export function JobRunBadges({ job }: { job: Job }) {
+  const rc = parseJson<{ cli?: string; provider?: string; agent?: string }>(job.run_config, {});
+  if (job.run_mode === "agent") {
+    return (
+      <span className="text-[11px] text-muted-foreground">
+        Agent · {rc.agent ?? "?"} · {job.trigger_type}
+      </span>
+    );
+  }
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-        active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
-      )}
-    >
-      {children}
-    </button>
+    <span className="text-[11px] text-muted-foreground">
+      {job.run_mode === "chat" ? "Chat" : "CLI"} · {job.trigger_type}
+    </span>
   );
 }
 
-export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps) {
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [history, setHistory] = useState<SessionLog[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [running, setRunning] = useState<number | null>(null);
+function JobRow({
+  job, running, onToggle, onRun, onEdit, onDelete,
+}: {
+  job: Job;
+  running: boolean;
+  onToggle: () => void;
+  onRun: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const rc = parseJson<{ cli?: string; provider?: string; model?: string }>(job.run_config, {});
+  const isChat = job.run_mode === "chat";
+  const presetId = rc.cli ?? "claude";
+  const providerId = rc.provider ?? "anthropic";
 
-  // Form state.
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [name, setName] = useState("");
-  const [command, setCommand] = useState("");
-  const [freq, setFreq] = useState<Freq>("weekly");
-  const [timeOfDay, setTimeOfDay] = useState("09:00");
-  const [weekday, setWeekday] = useState(1);
-  const [customCron, setCustomCron] = useState("0 9 * * 1");
-  const [runMode, setRunMode] = useState<"cli" | "chat" | "agent">("cli");
-  const [agentName, setAgentName] = useState("");
-  const [agentMode, setAgentMode] = useState<"cli" | "chat">("cli");
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [cli, setCli] = useState("claude");
-  const [provider, setProvider] = useState("anthropic");
-  const [model, setModel] = useState("");
-  const [triggerType, setTriggerType] = useState<"cron" | "manual" | "api" | "github">("cron");
-  const [ghRepo, setGhRepo] = useState("");
-  const [ghEvent, setGhEvent] = useState("push");
-  const [ghBranch, setGhBranch] = useState("main");
-  const [promptExpanded, setPromptExpanded] = useState(false);
-  const [connectorsOpen, setConnectorsOpen] = useState(false);
-  const [connectors, setConnectors] = useState<WorkspaceConnector[]>([]);
-  const [skills, setSkills] = useState<Skill[]>([]);
-  const [contextFiles, setContextFiles] = useState<ContextFile[]>([]);
-  const [checked, setChecked] = useState<Record<string, boolean>>({});
-  const [settings, setSettings] = useState<Record<string, string>>({});
+  return (
+    <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2">
+      {/* Toggle */}
+      <button
+        className={cn("h-4 w-7 shrink-0 rounded-full transition-colors", job.enabled ? "bg-primary" : "bg-muted")}
+        title={job.enabled ? "Disable" : "Enable"}
+        onClick={onToggle}
+      >
+        <span className={cn("block h-3 w-3 rounded-full bg-background transition-transform", job.enabled ? "translate-x-3.5" : "translate-x-0.5")} />
+      </button>
+
+      {/* Icon */}
+      {isChat
+        ? <ProviderIcon provider={providerId} className="h-4 w-4 shrink-0" />
+        : <PresetIcon preset={presetId} className="h-4 w-4 shrink-0" />}
+
+      {/* Name + schedule */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-medium">{job.name}</span>
+          <Badge variant="outline" className="text-[10px]">{fmtCronHuman(job.schedule)}</Badge>
+        </div>
+        <JobRunBadges job={job} />
+      </div>
+
+      {/* Actions */}
+      <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onEdit} title="Edit">
+        <Pencil className="h-3.5 w-3.5 text-muted-foreground" strokeWidth={1} />
+      </Button>
+      <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" disabled={running} onClick={onRun} title="Run now">
+        <Play className={cn("h-3.5 w-3.5", running && "animate-pulse")} strokeWidth={1} />
+      </Button>
+      <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onDelete} title="Delete">
+        <Trash2 className="h-3.5 w-3.5 text-muted-foreground" strokeWidth={1} />
+      </Button>
+    </div>
+  );
+}
+
+// ─── JobsDialog ───────────────────────────────────────────────────────────────
+
+export function JobsDialog({
+  workspaceId,
+  open,
+  onOpenChange,
+  initialJob,
+  workspaces = [],
+  organizations = [],
+}: JobsDialogProps) {
+  const [jobs, setJobs]       = useState<Job[]>([]);
+  const [history, setHistory] = useState<SessionLog[]>([]);
+  const [running, setRunning] = useState<number | null>(null);
+  const [editJob, setEditJob] = useState<Job | null>(null);
 
   const refresh = useCallback(() => {
     api.listJobs(workspaceId).then(setJobs).catch(console.error);
@@ -203,700 +167,76 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
     if (open) {
       refresh();
       api.listSessionHistory(workspaceId).then(setHistory).catch(() => {});
-      api.listWorkspaceConnectors(workspaceId).then(setConnectors).catch(() => {});
-      api.listAgents(workspaceId).then(setAgents).catch(() => {});
-      api.listSkills(workspaceId).then(setSkills).catch(() => {});
-      api.listContextFiles(workspaceId).then(setContextFiles).catch(() => {});
-      api.getSettings().then(setSettings).catch(() => {});
     }
   }, [open, refresh, workspaceId]);
 
-  const resetForm = () => {
-    setEditingId(null);
-    setName("");
-    setCommand("");
-    setFreq("weekly");
-    setTimeOfDay("09:00");
-    setWeekday(1);
-    setCustomCron("0 9 * * 1");
-    setPromptExpanded(false);
-    setRunMode("cli");
-    setAgentName("");
-    setAgentMode("cli");
-    setCli("claude");
-    setProvider("anthropic");
-    setModel("");
-    setTriggerType("cron");
-    setGhRepo("");
-    setGhEvent("push");
-    setGhBranch("main");
-    setChecked({});
-    setError(null);
-  };
-
-  const schedule = useMemo(
-    () => buildCron(freq, timeOfDay, weekday, customCron),
-    [freq, timeOfDay, weekday, customCron],
-  );
-
-  // allowed_connectors: [] when everything is checked (unrestricted), else the
-  // checked service ids only.
-  const allowedConnectors = useMemo(() => {
-    const ids = Array.from(new Set(connectors.map((c) => c.service)));
-    const on = ids.filter((id) => checked[id] !== false);
-    return on.length === ids.length ? [] : on;
-  }, [connectors, checked]);
-
-  const loadForEdit = (job: Job) => {
-    const rc = parseJson<{
-      cli?: string;
-      provider?: string;
-      model?: string;
-      agent?: string;
-      mode?: "cli" | "chat";
-    }>(job.run_config, {});
-    const tc = parseJson<{ cron?: string; repo?: string; event?: string; branch?: string }>(
-      job.trigger_config,
-      {},
-    );
-    const allow = parseJson<string[]>(job.allowed_connectors, []);
-    const cron = tc.cron ?? job.schedule;
-    const parsed = parseCron(cron);
-    setEditingId(job.id);
-    setName(job.name);
-    setCommand(job.command);
-    setFreq(parsed.freq);
-    setTimeOfDay(parsed.time);
-    setWeekday(parsed.weekday);
-    setCustomCron(cron);
-    setRunMode(job.run_mode);
-    setAgentName(rc.agent ?? "");
-    setAgentMode(rc.mode ?? "cli");
-    setCli(rc.cli ?? "claude");
-    setProvider(rc.provider ?? "anthropic");
-    setModel(rc.model ?? "");
-    setTriggerType(job.trigger_type as "cron" | "manual" | "api" | "github");
-    setGhRepo(tc.repo ?? "");
-    setGhEvent(tc.event ?? "push");
-    setGhBranch(tc.branch ?? "main");
-    if (allow.length > 0) {
-      const map: Record<string, boolean> = {};
-      for (const c of connectors) map[c.service] = allow.includes(c.service);
-      setChecked(map);
-      setConnectorsOpen(true);
-    } else {
-      setChecked({});
-    }
-  };
-
-  const insert = (snippet: string) =>
-    setCommand((c) => (c.trim() ? `${c.replace(/\s+$/, "")} ${snippet} ` : `${snippet} `));
-
-  const submit = async () => {
-    if (!name.trim()) {
-      setError("Name is required.");
-      return;
-    }
-    if (runMode === "agent") {
-      if (!agentName) {
-        setError("Pick an agent to run.");
-        return;
-      }
-    } else if (!command.trim()) {
-      setError("A command/prompt is required.");
-      return;
-    }
-    if (triggerType === "cron" && !schedule.trim()) {
-      setError("Schedule is required for cron triggers.");
-      return;
-    }
-    const runConfig =
-      runMode === "agent"
-        ? {
-            agent: agentName,
-            mode: agentMode,
-            ...(agentMode === "cli" ? { cli } : { provider }),
-            model: model || undefined,
-          }
-        : runMode === "cli"
-          ? { cli, model: model || undefined }
-          : { provider, model: model || undefined };
-    const triggerConfig =
-      triggerType === "cron"
-        ? { cron: schedule.trim() }
-        : triggerType === "github"
-          ? { repo: ghRepo.trim(), event: ghEvent, branch: ghBranch.trim() }
-          : {};
-    setError(null);
-    try {
-      if (editingId !== null) {
-        await api.updateJob(
-          editingId,
-          name.trim(),
-          command.trim(),
-          schedule.trim(),
-          runMode,
-          JSON.stringify(runConfig),
-          triggerType,
-          JSON.stringify(triggerConfig),
-          JSON.stringify(allowedConnectors),
-        );
-      } else {
-        await api.addJob(workspaceId, name.trim(), command.trim(), schedule.trim(), {
-          runMode,
-          runConfig: JSON.stringify(runConfig),
-          triggerType,
-          triggerConfig: JSON.stringify(triggerConfig),
-          allowedConnectors: JSON.stringify(allowedConnectors),
-        });
-      }
-      resetForm();
-      refresh();
-    } catch (e) {
-      setError(String(e));
-    }
-  };
+  // Open directly to edit when initialJob is provided
+  useEffect(() => {
+    if (open && initialJob) setEditJob(initialJob);
+  }, [open, initialJob]);
 
   const runNow = async (id: number) => {
     setRunning(id);
-    try {
-      await api.runJobNow(id);
-      refresh();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setRunning(null);
-    }
+    try { await api.runJobNow(id); refresh(); }
+    catch { /* ignore */ }
+    finally { setRunning(null); }
   };
 
-  const httpPort = settings.http_port || "8765";
-  const apiToken = settings.api_token || "<token>";
-  const triggerCurl = `curl -X POST http://127.0.0.1:${httpPort}/trigger \\\n  -H "x-superconsole-token: ${apiToken}" \\\n  -d '{"workspace":"<name>","command":"${command || "<cmd>"}"}'`;
-
-  const groups: { scope: "project" | "org" | "account"; label: string }[] = [
-    { scope: "project", label: "Project" },
-    { scope: "org", label: "Org" },
-    { scope: "account", label: "Account" },
-  ];
+  // ── The workspace object for this dialog's workspace ──────────────────────
+  const thisWorkspace = workspaces.find((w) => w.id === workspaceId);
+  const ws = thisWorkspace ?? ({ id: workspaceId, name: "Project", organization_id: 0, created_at: "" } as Workspace);
+  const wsArr: Workspace[] = workspaces.length > 0 ? workspaces : [ws];
+  const orgArr: Organization[] = organizations.length > 0 ? organizations : [{ id: 0, name: "Org", created_at: "" } as Organization];
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) setEditJob(null); onOpenChange(o); }}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <CalendarClock className="h-4 w-4 text-primary" strokeWidth={1} />
-            Scheduled jobs
+            {editJob ? `Edit: ${editJob.name}` : "Scheduled jobs"}
           </DialogTitle>
           <DialogDescription>
-            Recurring commands run in this workspace. Results land in the Inbox.
+            {editJob
+              ? "Update this task's settings."
+              : "Recurring tasks that run in this workspace. Results land in the Inbox."}
           </DialogDescription>
         </DialogHeader>
 
-        <ScrollArea className="max-h-[60vh] [&_[data-slot=scroll-area-viewport]>div]:!block">
-          <div className="min-w-0 space-y-3 pr-2">
-            <div className="space-y-3">
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Job name (CEO brief)"
-                className="h-8 text-sm"
-              />
+        <ScrollArea className="max-h-[70vh] [&_[data-slot=scroll-area-viewport]>div]:!block">
+          <div className="space-y-4 pr-1">
+            {/* ── Form (add or edit) ── */}
+            <TaskFormContent
+              workspaces={wsArr}
+              organizations={orgArr}
+              defaultWsId={workspaceId}
+              initialJob={editJob}
+              onSaved={() => { setEditJob(null); refresh(); }}
+              onCancel={() => setEditJob(null)}
+            />
 
-              {/* Run via */}
-              <div className="space-y-1.5">
-                <div className="text-xs font-medium text-muted-foreground">Run via</div>
-                <div className="flex items-center gap-2">
-                  <div className="flex gap-1 rounded-lg border bg-background p-0.5">
-                    <Segment active={runMode === "cli"} onClick={() => setRunMode("cli")}>
-                      CLI
-                    </Segment>
-                    <Segment active={runMode === "chat"} onClick={() => setRunMode("chat")}>
-                      Chat
-                    </Segment>
-                    <Segment active={runMode === "agent"} onClick={() => setRunMode("agent")}>
-                      Agent
-                    </Segment>
-                  </div>
-                  {runMode === "cli" ? (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" className="h-8 font-normal">
-                          {CLI_PRESETS.find((c) => c.id === cli)?.label ?? cli}
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start">
-                        {CLI_PRESETS.map((c) => (
-                          <DropdownMenuItem key={c.id} onClick={() => setCli(c.id)}>
-                            {c.label}
-                          </DropdownMenuItem>
-                        ))}
-                        <DropdownMenuItem onClick={() => setCli("shell")}>Shell</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  ) : runMode === "chat" ? (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" className="h-8 font-normal">
-                          {CHAT_PROVIDERS.find((p) => p.id === provider)?.label ?? provider}
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start">
-                        {CHAT_PROVIDERS.map((p) => (
-                          <DropdownMenuItem key={p.id} onClick={() => setProvider(p.id)}>
-                            {p.label}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  ) : (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" className="h-8 flex-1 justify-start font-normal">
-                          {agentName || (agents.length ? "Select agent" : "No agents defined")}
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start">
-                        {agents.length === 0 ? (
-                          <DropdownMenuItem disabled>Create one with the bot icon</DropdownMenuItem>
-                        ) : (
-                          agents.map((a) => (
-                            <DropdownMenuItem key={a.name} onClick={() => setAgentName(a.name)}>
-                              {a.name}
-                            </DropdownMenuItem>
-                          ))
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
-                  {runMode !== "agent" && (
-                    <Input
-                      value={model}
-                      onChange={(e) => setModel(e.target.value)}
-                      placeholder={runMode === "cli" ? "claude-sonnet-4-5" : "model id"}
-                      className="h-8 flex-1 font-mono text-xs"
-                    />
-                  )}
-                </div>
-                {runMode === "agent" && (
-                  <div className="space-y-1.5">
-                    <p className="text-[11px] text-muted-foreground">
-                      The agent supplies the instructions, skills, connectors, and context. Pick the
-                      harness and model to run it with:
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <div className="flex gap-1 rounded-lg border bg-background p-0.5">
-                        <Segment active={agentMode === "cli"} onClick={() => setAgentMode("cli")}>
-                          CLI
-                        </Segment>
-                        <Segment active={agentMode === "chat"} onClick={() => setAgentMode("chat")}>
-                          Chat
-                        </Segment>
-                      </div>
-                      {agentMode === "cli" ? (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="sm" className="h-8 font-normal">
-                              {CLI_PRESETS.find((c) => c.id === cli)?.label ?? cli}
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start">
-                            {CLI_PRESETS.map((c) => (
-                              <DropdownMenuItem key={c.id} onClick={() => setCli(c.id)}>
-                                {c.label}
-                              </DropdownMenuItem>
-                            ))}
-                            <DropdownMenuItem onClick={() => setCli("shell")}>Shell</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      ) : (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="sm" className="h-8 font-normal">
-                              {CHAT_PROVIDERS.find((p) => p.id === provider)?.label ?? provider}
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start">
-                            {CHAT_PROVIDERS.map((p) => (
-                              <DropdownMenuItem key={p.id} onClick={() => setProvider(p.id)}>
-                                {p.label}
-                              </DropdownMenuItem>
-                            ))}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      )}
-                      <Input
-                        value={model}
-                        onChange={(e) => setModel(e.target.value)}
-                        placeholder={agentMode === "cli" ? "claude-sonnet-4-5" : "model id"}
-                        className="h-8 flex-1 font-mono text-xs"
-                      />
-                    </div>
-                  </div>
+            {/* ── Job list ── */}
+            {!editJob && (
+              <div className="flex flex-col gap-1.5">
+                {jobs.length === 0 && (
+                  <p className="py-6 text-center text-sm text-muted-foreground">No tasks scheduled yet.</p>
                 )}
-              </div>
-
-              {/* Trigger */}
-              <div className="space-y-1.5">
-                <div className="text-xs font-medium text-muted-foreground">Trigger</div>
-                <div className="flex gap-1 rounded-lg border bg-background p-0.5 w-fit">
-                  <Segment active={triggerType === "cron"} onClick={() => setTriggerType("cron")}>
-                    Schedule
-                  </Segment>
-                  <Segment
-                    active={triggerType === "manual"}
-                    onClick={() => setTriggerType("manual")}
-                  >
-                    Manual
-                  </Segment>
-                  <Segment active={triggerType === "api"} onClick={() => setTriggerType("api")}>
-                    API
-                  </Segment>
-                  <Segment
-                    active={triggerType === "github"}
-                    onClick={() => setTriggerType("github")}
-                  >
-                    GitHub
-                  </Segment>
-                </div>
-
-                {triggerType === "manual" && (
-                  <p className="text-[11px] text-muted-foreground">
-                    Runs only when you trigger it with the play button — no schedule. Great for
-                    one-time or on-demand jobs.
-                  </p>
-                )}
-
-                {triggerType === "cron" && (
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="flex flex-wrap gap-1 rounded-lg border bg-background p-0.5">
-                        {FREQUENCIES.map((fr) => (
-                          <Segment key={fr.id} active={freq === fr.id} onClick={() => setFreq(fr.id)}>
-                            {fr.label}
-                          </Segment>
-                        ))}
-                      </div>
-                      {(freq === "daily" || freq === "weekdays" || freq === "weekly") && (
-                        <Input
-                          type="time"
-                          value={timeOfDay}
-                          onChange={(e) => setTimeOfDay(e.target.value)}
-                          className="h-8 w-28 text-sm"
-                        />
-                      )}
-                      {freq === "weekly" && (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="sm" className="h-8 font-normal">
-                              {WEEKDAYS.find((w) => w.v === weekday)?.label ?? "Monday"}
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="start">
-                            {WEEKDAYS.map((w) => (
-                              <DropdownMenuItem key={w.v} onClick={() => setWeekday(w.v)}>
-                                {w.label}
-                              </DropdownMenuItem>
-                            ))}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      )}
-                    </div>
-                    {freq === "custom" ? (
-                      <Input
-                        value={customCron}
-                        onChange={(e) => setCustomCron(e.target.value)}
-                        placeholder="cron: min hour day-of-month month day-of-week (e.g. 0 6 * * 1)"
-                        className="h-8 font-mono text-sm"
-                      />
-                    ) : (
-                      <p className="text-[11px] text-muted-foreground">
-                        {scheduleSummary(freq, timeOfDay, weekday, schedule)}
-                        <span className="ml-1.5 font-mono opacity-60">({schedule})</span>
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {triggerType === "api" && (
-                  <div className="space-y-1.5 rounded-md border bg-background p-2.5">
-                    <p className="text-xs text-muted-foreground">Trigger this job via HTTP POST:</p>
-                    <div className="flex items-start gap-2">
-                      <pre className="flex-1 overflow-x-auto rounded bg-muted px-2 py-1.5 font-mono text-[11px] leading-relaxed">
-                        {triggerCurl}
-                      </pre>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 shrink-0"
-                        title="Copy"
-                        onClick={() => navigator.clipboard.writeText(triggerCurl)}
-                      >
-                        <Copy className="h-3.5 w-3.5" strokeWidth={1} />
-                      </Button>
-                    </div>
-                  </div>
-                )}
-
-                {triggerType === "github" && (
-                  <div className="space-y-2 rounded-md border bg-background p-2.5">
-                    <div className="grid grid-cols-2 gap-2">
-                      <Input
-                        value={ghRepo}
-                        onChange={(e) => setGhRepo(e.target.value)}
-                        placeholder="owner/repo"
-                        className="h-8 font-mono text-sm"
-                      />
-                      <Input
-                        value={ghBranch}
-                        onChange={(e) => setGhBranch(e.target.value)}
-                        placeholder="main"
-                        className="h-8 font-mono text-sm"
-                      />
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="outline" size="sm" className="h-8 font-normal">
-                            {ghEvent}
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start">
-                          {GH_EVENTS.map((ev) => (
-                            <DropdownMenuItem key={ev} onClick={() => setGhEvent(ev)}>
-                              {ev}
-                            </DropdownMenuItem>
-                          ))}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                    <Badge
-                      variant="outline"
-                      className="border-amber-500/40 text-[10px] text-amber-600 dark:text-amber-400"
-                    >
-                      Webhook not yet active — config saved for future use
-                    </Badge>
-                  </div>
-                )}
-              </div>
-
-              {/* Connectors */}
-              <div className="space-y-1.5">
-                <button
-                  type="button"
-                  className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-                  onClick={() => setConnectorsOpen((v) => !v)}
-                >
-                  {connectorsOpen ? (
-                    <ChevronDown className="h-3.5 w-3.5" strokeWidth={1} />
-                  ) : (
-                    <ChevronRight className="h-3.5 w-3.5" strokeWidth={1} />
-                  )}
-                  Restrict connectors
-                </button>
-                {connectorsOpen && (
-                  <div className="space-y-2 rounded-md border bg-background p-2.5">
-                    {connectors.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        No connectors connected for this project.
-                      </p>
-                    ) : (
-                      <>
-                        {groups.map((g) => {
-                          const rows = connectors.filter((c) => c.scope === g.scope);
-                          if (rows.length === 0) return null;
-                          return (
-                            <div key={g.scope} className="space-y-1">
-                              <div className="text-[10px] font-semibold uppercase text-muted-foreground">
-                                {g.label}
-                              </div>
-                              {rows.map((c) => {
-                                const on = checked[c.service] !== false;
-                                return (
-                                  <button
-                                    key={`${g.scope}:${c.service}`}
-                                    type="button"
-                                    className="flex w-full items-center gap-2 rounded px-1 py-0.5 text-left text-sm hover:bg-muted"
-                                    onClick={() =>
-                                      setChecked((m) => ({ ...m, [c.service]: !on }))
-                                    }
-                                  >
-                                    <span
-                                      className={cn(
-                                        "flex h-4 w-4 items-center justify-center rounded border",
-                                        on
-                                          ? "border-primary bg-primary text-primary-foreground"
-                                          : "border-muted-foreground/40",
-                                      )}
-                                    >
-                                      {on && <Check className="h-3 w-3" strokeWidth={2} />}
-                                    </span>
-                                    {c.label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          );
-                        })}
-                        <p className="text-[11px] text-muted-foreground">
-                          Leave all checked to allow access to all connected services.
-                        </p>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Prompt / command (agent jobs use the agent's own instructions) */}
-              {runMode !== "agent" && (
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <div className="text-xs font-medium text-muted-foreground">Prompt</div>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5"
-                            title="Attach a skill, connector, agent, or context"
-                          >
-                            <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start" className="w-56">
-                          <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>Skills</DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                              {skills.length === 0 ? (
-                                <DropdownMenuItem disabled>No skills</DropdownMenuItem>
-                              ) : (
-                                skills.map((s) => (
-                                  <DropdownMenuItem
-                                    key={s.name}
-                                    onClick={() => insert(`@skill:${s.name}`)}
-                                  >
-                                    {s.name}
-                                  </DropdownMenuItem>
-                                ))
-                              )}
-                            </DropdownMenuSubContent>
-                          </DropdownMenuSub>
-                          <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>Connectors</DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                              {connectors.length === 0 ? (
-                                <DropdownMenuItem disabled>No connectors</DropdownMenuItem>
-                              ) : (
-                                connectors.map((c) => (
-                                  <DropdownMenuItem
-                                    key={`${c.scope}-${c.service}`}
-                                    onClick={() => insert(`@connector:${c.service}`)}
-                                  >
-                                    {c.label}
-                                  </DropdownMenuItem>
-                                ))
-                              )}
-                            </DropdownMenuSubContent>
-                          </DropdownMenuSub>
-                          <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>Agents</DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                              {agents.length === 0 ? (
-                                <DropdownMenuItem disabled>No agents</DropdownMenuItem>
-                              ) : (
-                                agents.map((a) => (
-                                  <DropdownMenuItem
-                                    key={a.name}
-                                    onClick={() => insert(`@agent:${a.name}`)}
-                                  >
-                                    {a.name}
-                                  </DropdownMenuItem>
-                                ))
-                              )}
-                            </DropdownMenuSubContent>
-                          </DropdownMenuSub>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>Context</DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                              {contextFiles.length === 0 ? (
-                                <DropdownMenuItem disabled>No context files</DropdownMenuItem>
-                              ) : (
-                                contextFiles.map((c) => (
-                                  <DropdownMenuItem
-                                    key={c.slug}
-                                    onClick={() => insert(`@context:${c.slug}`)}
-                                  >
-                                    {c.slug}
-                                  </DropdownMenuItem>
-                                ))
-                              )}
-                            </DropdownMenuSubContent>
-                          </DropdownMenuSub>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                    <button
-                      type="button"
-                      className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
-                      onClick={() => setPromptExpanded((v) => !v)}
-                    >
-                      {promptExpanded ? (
-                        <Minimize2 className="h-3 w-3" strokeWidth={1} />
-                      ) : (
-                        <Maximize2 className="h-3 w-3" strokeWidth={1} />
-                      )}
-                      {promptExpanded ? "Collapse" : "Expand"}
-                    </button>
-                  </div>
-                  <Textarea
-                    value={command}
-                    onChange={(e) => setCommand(e.target.value)}
-                    placeholder="/ceo or any prompt — can be as long as you need"
-                    className={cn(
-                      "resize-none font-mono text-sm",
-                      promptExpanded ? "min-h-64" : "min-h-20",
-                    )}
+                {jobs.map((job) => (
+                  <JobRow
+                    key={job.id}
+                    job={job}
+                    running={running === job.id}
+                    onToggle={() => api.setJobEnabled(job.id, !job.enabled).then(refresh).catch(console.error)}
+                    onRun={() => runNow(job.id)}
+                    onEdit={() => setEditJob(job)}
+                    onDelete={() => api.deleteJob(job.id).then(refresh).catch(console.error)}
                   />
-                </div>
-              )}
-
-              {error && <p className="text-xs text-destructive">{error}</p>}
-
-              <div className="flex items-center justify-end gap-2">
-                {editingId !== null && (
-                  <Button variant="ghost" size="sm" className="h-8" onClick={resetForm}>
-                    <X className="h-3.5 w-3.5" strokeWidth={1} />
-                    Cancel
-                  </Button>
-                )}
-                <Button size="sm" className="h-8" onClick={submit}>
-                  <Plus className="h-3.5 w-3.5" strokeWidth={1} />
-                  {editingId !== null ? "Save job" : "Add job"}
-                </Button>
+                ))}
               </div>
-            </div>
+            )}
 
-            <div className="flex flex-col gap-1.5">
-              {jobs.length === 0 && (
-                <p className="py-6 text-center text-sm text-muted-foreground">
-                  No jobs scheduled yet.
-                </p>
-              )}
-              {jobs.map((job) => (
-                <JobRow
-                  key={job.id}
-                  job={job}
-                  running={running === job.id}
-                  onToggle={() =>
-                    api.setJobEnabled(job.id, !job.enabled).then(refresh).catch(console.error)
-                  }
-                  onRun={() => runNow(job.id)}
-                  onEdit={() => loadForEdit(job)}
-                  onDelete={() => api.deleteJob(job.id).then(refresh).catch(console.error)}
-                />
-              ))}
-            </div>
-
-            {history.length > 0 && (
+            {/* ── Session history ── */}
+            {!editJob && history.length > 0 && (
               <div>
                 <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
                   <History className="h-3.5 w-3.5" strokeWidth={1} />
@@ -904,13 +244,8 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
                 </div>
                 <div className="flex flex-col gap-1">
                   {history.map((s) => (
-                    <div
-                      key={s.id}
-                      className="flex items-center gap-2 rounded-md bg-muted/40 px-2.5 py-1 text-xs"
-                    >
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        {s.cli}
-                      </Badge>
+                    <div key={s.id} className="flex items-center gap-2 rounded-md bg-muted/40 px-2.5 py-1 text-xs">
+                      <Badge variant="outline" className="font-mono text-[10px]">{s.cli}</Badge>
                       <span className="text-muted-foreground">{s.started_at}</span>
                       <span className="ml-auto text-muted-foreground">
                         {s.ended_at ? `ended ${s.ended_at}` : "running"}
@@ -924,96 +259,5 @@ export function JobsDialog({ workspaceId, open, onOpenChange }: JobsDialogProps)
         </ScrollArea>
       </DialogContent>
     </Dialog>
-  );
-}
-
-export function JobRunBadges({ job }: { job: Job }) {
-  const rc = parseJson<{ cli?: string; provider?: string; agent?: string }>(job.run_config, {});
-  if (job.run_mode === "agent") {
-    return (
-      <span className="text-[11px] text-muted-foreground">
-        Agent • {rc.agent ?? "?"} · {job.trigger_type}
-      </span>
-    );
-  }
-  const detail = job.run_mode === "chat" ? rc.provider ?? "anthropic" : rc.cli ?? "cli";
-  return (
-    <span className="text-[11px] text-muted-foreground">
-      {job.run_mode === "chat" ? "Chat" : "CLI"} • {detail} · {job.trigger_type}
-    </span>
-  );
-}
-
-function JobRow({
-  job,
-  running,
-  onToggle,
-  onRun,
-  onEdit,
-  onDelete,
-}: {
-  job: Job;
-  running: boolean;
-  onToggle: () => void;
-  onRun: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2">
-      <button
-        className={cn(
-          "h-4 w-7 shrink-0 rounded-full transition-colors",
-          job.enabled ? "bg-primary" : "bg-muted",
-        )}
-        title={job.enabled ? "Disable" : "Enable"}
-        onClick={onToggle}
-      >
-        <span
-          className={cn(
-            "block h-3 w-3 rounded-full bg-background transition-transform",
-            job.enabled ? "translate-x-3.5" : "translate-x-0.5",
-          )}
-        />
-      </button>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium">{job.name}</span>
-          <Badge variant="outline" className="font-mono text-[10px]">
-            {job.schedule}
-          </Badge>
-        </div>
-        <p className="truncate font-mono text-xs text-muted-foreground">{job.command}</p>
-        <JobRunBadges job={job} />
-      </div>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-7 w-7 shrink-0"
-        onClick={onEdit}
-        title="Edit"
-      >
-        <Pencil className="h-3.5 w-3.5 text-muted-foreground" strokeWidth={1} />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-7 w-7 shrink-0"
-        disabled={running}
-        onClick={onRun}
-        title="Run now"
-      >
-        <Play className={cn("h-3.5 w-3.5", running && "animate-pulse")} strokeWidth={1} />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-7 w-7 shrink-0"
-        onClick={onDelete}
-        title="Delete"
-      >
-        <Trash2 className="h-3.5 w-3.5 text-muted-foreground" strokeWidth={1} />
-      </Button>
-    </div>
   );
 }

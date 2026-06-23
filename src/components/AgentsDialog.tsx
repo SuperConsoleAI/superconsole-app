@@ -162,6 +162,8 @@ export function AgentsDialog({ workspaceId, open, onOpenChange }: AgentsDialogPr
     try {
       if (editing && origName && origName !== agent.name) {
         await api.deleteAgent(workspaceId, origName);
+        // Also remove the old metadata row (the new name creates a fresh row).
+        await api.deleteAgentMetadata(workspaceId, origName).catch(() => {});
       }
       // Write any selected account-library skills into the project files so the
       // agent's referenced skills travel with the project.
@@ -172,6 +174,20 @@ export function AgentsDialog({ workspaceId, open, onOpenChange }: AgentsDialogPr
         }
       }
       await api.saveAgent(workspaceId, agent);
+      // Persist metadata (schedule defaults, skills, connectors) to local DB + Turso.
+      await api.upsertAgentMetadata(
+        workspaceId,
+        agent.name,
+        agent.description,
+        "",              // schedule — empty until set via Scheduled jobs
+        "cli",           // default_run_mode
+        "",              // default_cli  — inherits workspace default
+        "",              // default_provider
+        "",              // default_model
+        agent.skills.join(","),
+        agent.connectors.join(","),
+        true,            // is_active
+      ).catch(() => {}); // metadata sync is best-effort
       resetForm();
       refresh();
     } catch (e) {

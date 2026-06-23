@@ -83,28 +83,45 @@ pub async fn exec_in_workspace(
     // them on demand via MCP tools at runtime.
     command = with_available_resources(&command);
 
-    run_and_record(app, &ws, &run_mode, &run_config, &command, title_suffix, job_id).await
+    run_and_record(app, &ws, &run_mode, &run_config, &command, title_suffix, job_id, None).await
 }
 
-/// Run a file-defined agent directly (manual "Run now"), using the workspace's
-/// default CLI as the harness. Not tied to a job row.
+/// Run a file-defined agent directly (manual "Run now"), using the agent's
+/// default CLI/provider/model from the local `agents` row if available,
+/// falling back to workspace defaults. Stamps `agent_id` on the session row.
 pub async fn exec_agent(app: &AppHandle, workspace_id: i64, agent: &crate::agents::Agent) -> Result<String, String> {
     let ws = {
         let db = app.state::<Db>();
         db.get_workspace(workspace_id)?
     };
-    let run_config = serde_json::json!({ "cli": ws.cli, "model": serde_json::Value::Null });
+    // Prefer per-agent defaults from the DB row; fall back to workspace.
+    let (run_mode, cli) = {
+        let db = app.state::<Db>();
+        match db.get_agent_row_by_name(workspace_id, &agent.name) {
+            Ok(row) if !row.default_cli.is_empty() => (row.default_run_mode, row.default_cli),
+            _ => ("cli".to_string(), ws.cli.clone()),
+        }
+    };
+    let run_config = serde_json::json!({ "cli": cli, "model": serde_json::Value::Null });
     let command = with_available_resources(&agent.instructions);
-    run_and_record(
+    let result = run_and_record(
         app,
         &ws,
-        "cli",
+        &run_mode,
         &run_config,
         &command,
         &format!("agent: {}", agent.name),
         None,
+        Some(&agent.name),
     )
-    .await
+    .await?;
+    // Update last_run on the metadata row.
+    {
+        let db = app.state::<Db>();
+        let now = now_utc();
+        let _ = db.mark_agent_ran(workspace_id, &agent.name, &now, None);
+    }
+    Ok(result)
 }
 
 /// Parse `@skill:` / `@context:` / `@connector:` / `@agent:` tokens from an
@@ -128,6 +145,7 @@ async fn run_and_record(
     command: &str,
     title_suffix: &str,
     job_id: Option<i64>,
+    agent_name: Option<&str>,
 ) -> Result<String, String> {
     let workspace_id = ws.id;
     let body = if run_mode == "chat" {
@@ -198,6 +216,12 @@ async fn run_and_record(
     {
         let db = app.state::<Db>();
         db.add_inbox_item(workspace_id, job_id, &title, &body)?;
+        // Tag the most-recent session_history row from this session with agent_name.
+        // exec_in_workspace runs headless (no PTY), so we log a synthetic entry here.
+        if let Some(aname) = agent_name {
+            let session_id = format!("agent-{}-{}", aname, chrono::Utc::now().timestamp_millis());
+            let _ = db.log_session(workspace_id, &session_id, "cli", job_id, Some(aname));
+        }
     }
 
     let _ = app.emit(
@@ -209,11 +233,33 @@ async fn run_and_record(
     );
 
     crate::remote::notify_telegram(app, &format!("{}\n\n{}", title, body)).await;
+    // Also notify the project-specific Telegram topic if configured.
+    {
+        let db = app.state::<Db>();
+        if let Some((token, chat_id, thread_id)) =
+            crate::remote::get_telegram_route_for_workspace(&db, workspace_id)
+        {
+            let client = reqwest::Client::new();
+            crate::remote::notify_telegram_topic(
+                &client, &token, &chat_id, &thread_id,
+                &format!("{}\n\n{}", title, body),
+            )
+            .await;
+        }
+    }
     Ok(body)
 }
 
 pub async fn run_job(app: &AppHandle, job: Job) -> Result<(), String> {
+    // Use a timestamp-scoped synthetic session_id so usage_events written during
+    // this run can be aggregated. The run_and_record path doesn't create a PTY
+    // session, but it may call usage::record_usage for chat-mode jobs.
+    let session_id = format!("job-{}-{}", job.id, chrono::Utc::now().timestamp_millis());
     exec_in_workspace(app, job.workspace_id, &job.command, &job.name, Some(job.id)).await?;
+    {
+        let db = app.state::<Db>();
+        db.finalize_job_cost(job.id, &session_id);
+    }
     let next = next_run(&job.schedule).ok();
     let db = app.state::<Db>();
     db.mark_job_ran(job.id, &now_utc(), next.as_deref())?;

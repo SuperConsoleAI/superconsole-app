@@ -13,6 +13,7 @@ export interface ConnectorFieldDef {
   label: string;
   secret: boolean;
   placeholder?: string;
+  optional?: boolean;
 }
 
 export interface ConnectorDef {
@@ -157,7 +158,12 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
     label: "Telegram",
     category: "connectors",
     scopes: ALL_SCOPES,
-    fields: [{ key: "bot_token", label: "Bot token", secret: true }],
+    fields: [
+      { key: "bot_token", label: "Bot Token", secret: true, optional: true },
+      { key: "chat_id", label: "Chat ID", secret: false, placeholder: "-100123456789" },
+      { key: "thread_id", label: "Message Thread ID", secret: false, optional: true },
+      { key: "allowed_user_ids", label: "Allowed User IDs", secret: false, optional: true, placeholder: "123456789, 987654321" },
+    ],
   },
   {
     id: "web_search",

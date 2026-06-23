@@ -1,11 +1,21 @@
 import { type ClipboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type SlashItem,
+  filterSlashItems,
+  groupSlashItems,
+  loadSlashItems,
+  SLASH_GROUPS,
+} from "@/lib/slash-items";
 import { useRouter } from "@tanstack/react-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowUp,
+  BookOpen,
+  Bot,
   Brain,
   Check,
   ChevronDown,
+  ClipboardList,
   Globe,
   Paperclip,
   Plug,
@@ -17,7 +27,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { api, type OpenrouterModel, type Skill, type SlashCommand } from "@/lib/api";
+import { api, type Agent, type ContextFile, type OpenrouterModel, type SessionLogFile, type Skill, type SlashCommand } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import {
@@ -178,6 +188,9 @@ export function ChatComposer({
   const [skills, setSkills] = useState<Skill[]>([]);
   const [commands, setCommands] = useState<SlashCommand[]>([]);
   const [connectors, setConnectors] = useState<string[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [ctxFiles, setCtxFiles] = useState<ContextFile[]>([]);
+  const [sessionLogs, setSessionLogs] = useState<SessionLogFile[]>([]);
   const [customModel, setCustomModel] = useState(false);
   const [orModels, setOrModels] = useState<OpenrouterModel[]>([]);
   const [modelQuery, setModelQuery] = useState("");
@@ -185,12 +198,30 @@ export function ChatComposer({
   const [activeVendor, setActiveVendor] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
 
+  // Slash autocomplete state
+  const [slashItems, setSlashItems] = useState<SlashItem[]>([]);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashSelected, setSlashSelected] = useState(0);
+  const [slashToken, setSlashToken] = useState(""); // the /word being typed
+  const slashLoadedRef = useRef(false);
+
+  const ensureSlashItems = () => {
+    if (slashLoadedRef.current) return;
+    slashLoadedRef.current = true;
+    loadSlashItems(workspaceId)
+      .then(setSlashItems)
+      .catch(() => setSlashItems([]));
+  };
+
   useEffect(() => {
     api
       .listSkills(workspaceId)
       .then((s) => setSkills(s.filter((x) => x.active)))
       .catch(() => setSkills([]));
     api.listCommands(workspaceId).then(setCommands).catch(() => setCommands([]));
+    api.listAgents(workspaceId).then(setAgents).catch(() => setAgents([]));
+    api.listContextFiles(workspaceId).then(setCtxFiles).catch(() => setCtxFiles([]));
+    api.listSessionLogFiles(workspaceId).then(setSessionLogs).catch(() => setSessionLogs([]));
   }, [workspaceId]);
 
   useEffect(() => {
@@ -272,6 +303,8 @@ export function ChatComposer({
     ? baseList.filter((m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q))
     : baseList;
   const goSettings = () => router.navigate({ to: "/settings" });
+  const goSettingsTo = (tab: "account" | "org" | "project", section: string) =>
+    router.navigate({ to: "/settings", search: { tab, section } });
   const selectModel = (id: string) => {
     // The active tab decides the provider: the OpenRouter tab always routes via
     // OpenRouter (even for a Claude/GPT model); native tabs use their provider.
@@ -338,11 +371,178 @@ export function ChatComposer({
           </div>
         )}
 
+        {/* Slash-token autocomplete dropdown — rendered above the textarea */}
+        {slashOpen && filterSlashItems(slashItems, slashToken).length > 0 && (() => {
+          const filtered = filterSlashItems(slashItems, slashToken);
+          const grouped = groupSlashItems(filtered);
+          // Track which group names are present in this filtered view
+          const presentGroups = new Set(grouped.map(([g]) => g));
+
+          const insertToken = (item: SlashItem) => {
+            // Replace the current /token word in the input with the selected value.
+            const pos = taRef.current?.selectionStart ?? input.length;
+            const before = input.slice(0, pos);
+            // Find start of the /word being typed.
+            const tokenStart = before.lastIndexOf(slashToken);
+            const after = input.slice(pos);
+            const newInput =
+              tokenStart >= 0
+                ? input.slice(0, tokenStart) + item.value + " " + after.trimStart()
+                : input + item.value + " ";
+            setInput(newInput);
+            setSlashOpen(false);
+            setSlashToken("");
+            setSlashSelected(0);
+            // If it's a command, expand its content and send.
+            if (item.source === "command") {
+              api
+                .readCommand(workspaceId, item.value)
+                .then((body) => {
+                  setInput(body.trim() + " ");
+                })
+                .catch(() => {
+                  // fallback: leave the slash token in place.
+                });
+            }
+            setTimeout(() => taRef.current?.focus(), 0);
+          };
+
+          return (
+            <div className="relative mx-3.5 mb-1">
+              <div
+                id="slash-dropdown"
+                className="absolute bottom-0 left-0 right-0 z-50 flex max-h-80 flex-col overflow-hidden rounded-md border bg-popover shadow-lg"
+              >
+                {/* Anchor nav — fixed at top, links to each visible group */}
+                <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/50 bg-muted/40 px-2 py-1">
+                  {SLASH_GROUPS.filter((g) => presentGroups.has(g)).map((g) => (
+                    <a
+                      key={g}
+                      href={`#slash-group-${g.toLowerCase()}`}
+                      className="shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold tracking-wide text-muted-foreground no-underline transition-colors hover:bg-accent hover:text-accent-foreground"
+                      style={{ textDecoration: "none" }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        document.getElementById(`slash-group-${g.toLowerCase()}`)?.scrollIntoView({ block: "start", behavior: "smooth" });
+                      }}
+                    >
+                      /{g.toLowerCase()}
+                    </a>
+                  ))}
+                </div>
+
+                {/* Scrollable list */}
+                <div className="overflow-y-auto">
+                  {grouped.map(([group, items]) => {
+                    const groupStartIdx = filtered.indexOf(items[0]);
+                    return (
+                      <div key={group} id={`slash-group-${group.toLowerCase()}`}>
+                        <div className="border-b border-border/50 bg-muted/30 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          {group}
+                        </div>
+                        {items.map((item, localIdx) => {
+                          const globalIdx = groupStartIdx + localIdx;
+                          return (
+                            <button
+                              key={item.value}
+                              className={`flex w-full items-baseline gap-3 px-3 py-1.5 text-left ${
+                                globalIdx === slashSelected
+                                  ? "bg-accent text-accent-foreground"
+                                  : "text-popover-foreground hover:bg-accent/50"
+                              }`}
+                              onMouseEnter={() => setSlashSelected(globalIdx)}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                insertToken(item);
+                              }}
+                            >
+                              <span className="shrink-0 font-mono text-sm">{item.label}</span>
+                              {item.description && (
+                                <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                                  {item.description}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         <textarea
           ref={taRef}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            const next = e.target.value;
+            setInput(next);
+            // Detect if the cursor is inside a /word token.
+            const pos = e.target.selectionStart ?? next.length;
+            const before = next.slice(0, pos);
+            // Extract the current word up to cursor.
+            const match = before.match(/(?:^|\s)(\/.*)$/);
+            if (match) {
+              const token = match[1];
+              setSlashToken(token);
+              setSlashOpen(true);
+              setSlashSelected(0);
+              ensureSlashItems();
+            } else {
+              setSlashOpen(false);
+              setSlashToken("");
+            }
+          }}
           onKeyDown={(e) => {
+            // Handle slash autocomplete navigation first.
+            if (slashOpen) {
+              const filtered = filterSlashItems(slashItems, slashToken).slice(0, 32);
+              if (filtered.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSlashSelected((s) => (s + 1) % filtered.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSlashSelected((s) => (s - 1 + filtered.length) % filtered.length);
+                  return;
+                }
+                if (e.key === "Tab" || e.key === "Enter") {
+                  e.preventDefault();
+                  const item = filtered[slashSelected];
+                  // Inline reuse of insertToken logic.
+                  const pos = taRef.current?.selectionStart ?? input.length;
+                  const before = input.slice(0, pos);
+                  const tokenStart = before.lastIndexOf(slashToken);
+                  const after = input.slice(pos);
+                  const newInput =
+                    tokenStart >= 0
+                      ? input.slice(0, tokenStart) + item.value + " " + after.trimStart()
+                      : input + item.value + " ";
+                  setInput(newInput);
+                  setSlashOpen(false);
+                  setSlashToken("");
+                  setSlashSelected(0);
+                  if (item.source === "command") {
+                    api
+                      .readCommand(workspaceId, item.value)
+                      .then((body) => setInput(body.trim() + " "))
+                      .catch(() => {});
+                  }
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSlashOpen(false);
+                  setSlashToken("");
+                  return;
+                }
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               onSend();
@@ -350,7 +550,7 @@ export function ChatComposer({
           }}
           onPaste={onPaste}
           rows={4}
-          placeholder="Ask anything, @mention skills, or / for a command…"
+          placeholder="Ask anything or type / for commands & resources…"
           style={{ lineHeight: "20px" }}
           className="resize-none overflow-y-auto bg-transparent px-3.5 py-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none"
           spellCheck={false}
@@ -372,6 +572,7 @@ export function ChatComposer({
                 <DropdownMenuShortcut>⌘U</DropdownMenuShortcut>
               </DropdownMenuItem>
 
+              {/* Skills */}
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
                   <ScrollText className="h-4 w-4" />
@@ -382,34 +583,102 @@ export function ChatComposer({
                     <DropdownMenuItem disabled>No active skills</DropdownMenuItem>
                   ) : (
                     skills.map((s) => (
-                      <DropdownMenuItem key={s.name} onClick={() => insert(`@skill:${s.name}`)}>
+                      <DropdownMenuItem key={s.name} onClick={() => insert(`/skill:${s.name}`)} className="font-mono text-xs">
                         {s.name}
                       </DropdownMenuItem>
                     ))
                   )}
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={goSettings}>Manage skills…</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => goSettingsTo("project", "Skills")}>
+                    <Plus className="h-3.5 w-3.5" /> Add skill
+                  </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+
+              {/* Agents */}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <Bot className="h-4 w-4" />
+                  Agents
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                  {agents.length === 0 ? (
+                    <DropdownMenuItem disabled>No agents</DropdownMenuItem>
+                  ) : (
+                    agents.map((a) => (
+                      <DropdownMenuItem key={a.name} onClick={() => insert(`/agent:${a.name}`)} className="font-mono text-xs">
+                        {a.name}
+                      </DropdownMenuItem>
+                    ))
+                  )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => router.navigate({ to: "/agents" })}>
+                    <Plus className="h-3.5 w-3.5" /> Add agent
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+
+              {/* Connectors */}
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
                   <Plug className="h-4 w-4" />
                   Connectors
                 </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                <DropdownMenuSubContent className="w-56 overflow-y-auto">
+                  {/* Add connector at top */}
+                  <DropdownMenuItem onClick={() => goSettingsTo("project", "Connectors")}>
+                    <Plus className="h-3.5 w-3.5" /> Add connector
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   {connectors.length === 0 ? (
                     <DropdownMenuItem disabled>None connected</DropdownMenuItem>
                   ) : (
                     connectors.map((c) => (
-                      <DropdownMenuItem key={c} disabled className="opacity-100">
+                      <DropdownMenuItem key={c} onClick={() => insert(`/connector:${c}`)} className="font-mono text-xs">
                         {c}
                       </DropdownMenuItem>
                     ))
                   )}
+                  {/* Tool access at bottom */}
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={goSettings}>Manage connectors…</DropdownMenuItem>
+                  <DropdownMenuLabel className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
+                    <Wrench className="h-3.5 w-3.5" />
+                    Tool access
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup
+                    value={toolMode}
+                    onValueChange={(v) => setToolMode(v as "auto" | "direct")}
+                  >
+                    <DropdownMenuRadioItem value="auto">Load tools when needed</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="direct">Tools already loaded</DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+
+              {/* Context */}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <BookOpen className="h-4 w-4" />
+                  Context
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                  {ctxFiles.length === 0 ? (
+                    <DropdownMenuItem disabled>No context files</DropdownMenuItem>
+                  ) : (
+                    ctxFiles.map((f) => (
+                      <DropdownMenuItem key={f.slug} onClick={() => insert(`/context:${f.slug}`)} className="font-mono text-xs">
+                        {f.slug}
+                      </DropdownMenuItem>
+                    ))
+                  )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => goSettingsTo("project", "Context")}>
+                    <Plus className="h-3.5 w-3.5" /> Add context file
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+
+              {/* Commands */}
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
                   <TerminalSquare className="h-4 w-4" />
@@ -429,8 +698,33 @@ export function ChatComposer({
                       </DropdownMenuItem>
                     ))
                   )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => goSettingsTo("project", "Commands")}>
+                    <Plus className="h-3.5 w-3.5" /> Add command
+                  </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+
+              {/* Sessions */}
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <ClipboardList className="h-4 w-4" />
+                  Sessions
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-72 w-60 overflow-y-auto">
+                  {sessionLogs.length === 0 ? (
+                    <DropdownMenuItem disabled>No saved sessions</DropdownMenuItem>
+                  ) : (
+                    sessionLogs.map((s) => (
+                      <DropdownMenuItem key={s.id} onClick={() => insert(`/session:${s.id}`)} className="flex-col items-start font-mono text-xs">
+                        <span className="truncate">{s.id}</span>
+                        {s.summary && <span className="truncate text-[10px] text-muted-foreground">{s.summary}</span>}
+                      </DropdownMenuItem>
+                    ))
+                  )}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+
               <DropdownMenuItem
                 onClick={connectors.includes("web_search") ? undefined : goSettings}
               >
@@ -440,18 +734,6 @@ export function ChatComposer({
                   {connectors.includes("web_search") ? "connected" : "connect"}
                 </DropdownMenuShortcut>
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Wrench className="h-3.5 w-3.5" />
-                Tool access
-              </DropdownMenuLabel>
-              <DropdownMenuRadioGroup
-                value={toolMode}
-                onValueChange={(v) => setToolMode(v as "auto" | "direct")}
-              >
-                <DropdownMenuRadioItem value="auto">Load tools when needed</DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="direct">Tools already loaded</DropdownMenuRadioItem>
-              </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
 

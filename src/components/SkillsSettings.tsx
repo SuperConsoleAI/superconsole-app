@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ArrowLeft,
+  BookOpen,
   Download,
   FileDown,
+  Globe,
   Pencil,
   Plus,
+  Send,
   Trash2,
 } from "lucide-react";
 import {
   api,
-  SKILL_CATEGORIES,
-  type LibrarySkill,
+  type CatalogSkillEntry,
   type OrgSkillView,
   type Skill,
 } from "@/lib/api";
@@ -19,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 function Err({ msg }: { msg: string | null }) {
   if (!msg) return null;
@@ -33,7 +36,6 @@ function SectionIntro({ children }: { children: React.ReactNode }) {
 
 export function AccountSkillsSection() {
   const [skills, setSkills] = useState<Skill[]>([]);
-  const [library, setLibrary] = useState<LibrarySkill[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ name: string; content: string } | null>(null);
@@ -44,12 +46,7 @@ export function AccountSkillsSection() {
     api.listGlobalSkills().then(setSkills).catch((e) => setError(String(e)));
   }, []);
 
-  useEffect(() => {
-    refresh();
-    api.listSkillLibrary().then(setLibrary).catch(() => {});
-  }, [refresh]);
-
-  const installed = new Set(skills.map((s) => s.name));
+  useEffect(() => { refresh(); }, [refresh]);
 
   const openEditor = async (name: string) => {
     try {
@@ -100,11 +97,11 @@ export function AccountSkillsSection() {
   return (
     <div className="flex flex-col gap-4">
       <SectionIntro>
-        Your personal skill library, stored on this machine and available to every project. Org and
-        project scopes reference these skills by name.
+        Your personal skill library, stored on this machine and available to every project.
       </SectionIntro>
       <Err msg={error} />
 
+      {/* Your installed global skills */}
       <div className="flex items-center gap-2">
         <Button size="sm" className="h-8" onClick={() => setCreating(true)}>
           <Plus className="h-3.5 w-3.5" />
@@ -113,7 +110,7 @@ export function AccountSkillsSection() {
         <Input
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="Import from GitHub or raw .md URL"
+          placeholder="Import from GitHub URL or raw .md"
           className="h-8 flex-1 text-sm"
         />
         <Button
@@ -142,35 +139,26 @@ export function AccountSkillsSection() {
 
       <div>
         <p className="mb-1.5 text-xs font-semibold text-muted-foreground">Your skills</p>
-        <ScrollArea className="max-h-72">
-          <div className="flex flex-col gap-1.5 pr-2">
+        <ScrollArea className="max-h-[280px]">
+          <div className="flex flex-col gap-1.5 pb-2 pr-2">
             {skills.length === 0 && (
               <p className="py-4 text-center text-sm text-muted-foreground">
-                No global skills yet. Create one or install from the library below.
+                No global skills yet. Create one or install from the catalog below.
               </p>
             )}
             {skills.map((s) => (
               <Row key={s.name} skill={s}>
                 <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 shrink-0"
-                  title="Edit"
+                  variant="ghost" size="icon" className="h-7 w-7 shrink-0" title="Edit"
                   onClick={() => openEditor(s.name)}
                 >
                   <Pencil className="h-3.5 w-3.5" />
                 </Button>
                 <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 shrink-0"
-                  title="Delete"
+                  variant="ghost" size="icon" className="h-7 w-7 shrink-0" title="Delete"
                   disabled={busy === s.name}
                   onClick={() =>
-                    api
-                      .deleteGlobalSkill(s.name)
-                      .then(refresh)
-                      .catch((e) => setError(String(e)))
+                    api.deleteGlobalSkill(s.name).then(refresh).catch((e) => setError(String(e)))
                   }
                 >
                   <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
@@ -181,23 +169,8 @@ export function AccountSkillsSection() {
         </ScrollArea>
       </div>
 
-      <LibraryGrid
-        library={library}
-        installed={installed}
-        busy={busy}
-        actionLabel="Install"
-        onAction={async (name) => {
-          setBusy(name);
-          try {
-            await api.installLibrarySkillGlobal(name);
-            refresh();
-          } catch (e) {
-            setError(String(e));
-          } finally {
-            setBusy(null);
-          }
-        }}
-      />
+      {/* Skill Catalog tabs */}
+      <SkillCatalogSection installedNames={new Set(skills.map((s) => s.name))} onInstall={refresh} />
     </div>
   );
 }
@@ -274,8 +247,8 @@ export function OrgSkillsSection({ orgId }: { orgId: string }) {
 
       <div>
         <p className="mb-1.5 text-xs font-semibold text-muted-foreground">From your library</p>
-        <ScrollArea className="max-h-72">
-          <div className="flex flex-col gap-1.5 pr-2">
+        <ScrollArea className="max-h-[280px]">
+          <div className="flex flex-col gap-1.5 pb-2 pr-2">
             {global.map((s) => {
               const isAttached = attached.has(s.name);
               return (
@@ -379,8 +352,8 @@ export function ProjectSkillsSection({ workspaceId }: { workspaceId: number }) {
 
       <div>
         <p className="mb-1.5 text-xs font-semibold text-muted-foreground">This project</p>
-        <ScrollArea className="max-h-72">
-          <div className="flex flex-col gap-1.5 pr-2">
+        <ScrollArea className="max-h-[280px]">
+          <div className="flex flex-col gap-1.5 pb-2 pr-2">
             {skills.length === 0 && (
               <p className="py-4 text-center text-sm text-muted-foreground">
                 No skills yet. Create one or attach from your library below.
@@ -454,8 +427,8 @@ export function ProjectSkillsSection({ workspaceId }: { workspaceId: number }) {
 
       <div>
         <p className="mb-1.5 text-xs font-semibold text-muted-foreground">From your library</p>
-        <ScrollArea className="max-h-72">
-          <div className="flex flex-col gap-1.5 pr-2">
+        <ScrollArea className="max-h-[280px]">
+          <div className="flex flex-col gap-1.5 pb-2 pr-2">
             {global.map((s) => {
               const isPresent = present.has(s.name);
               return (
@@ -498,9 +471,9 @@ function Row({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
+    <div className="flex min-w-0 items-start gap-2 rounded-lg border bg-card px-3 py-2">
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <div className="flex flex-wrap items-center gap-1.5">
           <span className="truncate text-sm font-medium">{skill.name}</span>
           {badge && (
             <Badge
@@ -517,100 +490,16 @@ function Row({
           ))}
         </div>
         {skill.description && (
-          <p className="truncate text-xs text-muted-foreground">{skill.description}</p>
+          <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{skill.description}</p>
         )}
       </div>
-      {children}
-    </div>
-  );
-}
-
-function LibraryGrid({
-  library,
-  installed,
-  busy,
-  actionLabel,
-  onAction,
-}: {
-  library: LibrarySkill[];
-  installed: Set<string>;
-  busy: string | null;
-  actionLabel: string;
-  onAction: (name: string) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<string>("all");
-
-  const filtered = library.filter((l) => {
-    const matchesCat = category === "all" || l.category === category;
-    const q = query.trim().toLowerCase();
-    return (
-      matchesCat &&
-      (!q ||
-        l.name.includes(q) ||
-        l.description.toLowerCase().includes(q) ||
-        l.tags.some((t) => t.includes(q)))
-    );
-  });
-
-  return (
-    <div>
-      <p className="mb-1.5 text-xs font-semibold text-muted-foreground">Built-in library</p>
-      <Input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search the library..."
-        className="mb-2 h-8 text-sm"
-      />
-      <div className="mb-2 flex flex-wrap gap-1">
-        {SKILL_CATEGORIES.map((c) => (
-          <Button
-            key={c.id}
-            variant={category === c.id ? "secondary" : "ghost"}
-            size="sm"
-            className="h-7"
-            onClick={() => setCategory(c.id)}
-          >
-            {c.label}
-          </Button>
-        ))}
+      <div className="flex shrink-0 items-center gap-0.5 pt-0.5">
+        {children}
       </div>
-      <ScrollArea className="max-h-72">
-        <div className="flex flex-col gap-1.5 pr-2">
-          {filtered.map((l) => {
-            const isInstalled = installed.has(l.name);
-            return (
-              <div
-                key={l.name}
-                className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium">{l.name}</span>
-                    <Badge variant="outline" className="text-[10px]">
-                      {l.category}
-                    </Badge>
-                  </div>
-                  <p className="truncate text-xs text-muted-foreground">{l.description}</p>
-                </div>
-                <Button
-                  variant={isInstalled ? "ghost" : "outline"}
-                  size="sm"
-                  className="h-7 shrink-0"
-                  disabled={isInstalled || busy === l.name}
-                  onClick={() => onAction(l.name)}
-                >
-                  {!isInstalled && <Download className="h-3.5 w-3.5" />}
-                  {isInstalled ? "Installed" : actionLabel}
-                </Button>
-              </div>
-            );
-          })}
-        </div>
-      </ScrollArea>
     </div>
   );
 }
+
 
 function Editor({
   title,
@@ -722,6 +611,223 @@ function CreateForm({
         >
           <Plus className="h-3.5 w-3.5" />
           Create skill
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ── Skill Catalog (community, backed by Turso skill_catalog) ──────────────────
+
+function SkillCatalogSection({
+  installedNames,
+  onInstall,
+}: {
+  installedNames: Set<string>;
+  onInstall: () => void;
+}) {
+  return (
+    <div>
+      <p className="mb-1.5 text-xs font-semibold text-muted-foreground">Skill Catalog</p>
+      <Tabs defaultValue="catalog">
+        <TabsList className="h-8">
+          <TabsTrigger value="catalog" className="h-7 gap-1.5 text-xs">
+            <Globe className="h-3.5 w-3.5" />
+            Community
+          </TabsTrigger>
+          <TabsTrigger value="submit" className="h-7 gap-1.5 text-xs">
+            <Send className="h-3.5 w-3.5" />
+            Submit
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="catalog">
+          <CatalogBrowser installedNames={installedNames} onInstall={onInstall} />
+        </TabsContent>
+
+        <TabsContent value="submit">
+          <SubmitToCatalog />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function CatalogBrowser({
+  installedNames,
+  onInstall,
+}: {
+  installedNames: Set<string>;
+  onInstall: () => void;
+}) {
+  const [catalog, setCatalog] = useState<CatalogSkillEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    setLoading(true);
+    api.fetchSkillCatalog()
+      .then(setCatalog)
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const filtered = catalog.filter((e) => {
+    const q = query.trim().toLowerCase();
+    return (
+      !q ||
+      e.name.toLowerCase().includes(q) ||
+      e.description.toLowerCase().includes(q) ||
+      e.tags.toLowerCase().includes(q)
+    );
+  });
+
+  return (
+    <div className="mt-2 flex flex-col gap-2">
+      <Input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search catalog..."
+        className="h-8 text-sm"
+      />
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      {loading && <p className="py-3 text-center text-xs text-muted-foreground">Loading catalog…</p>}
+      <ScrollArea className="max-h-[280px]">
+        <div className="flex flex-col gap-1.5 pb-2 pr-2">
+          {!loading && filtered.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              {catalog.length === 0
+                ? "No community skills yet. Be the first to submit one!"
+                : "No results."}
+            </p>
+          )}
+          {filtered.map((entry) => {
+            const isInstalled = installedNames.has(entry.name);
+            return (
+              <div
+                key={entry.id}
+                className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-medium">{entry.name}</span>
+                    {entry.category && (
+                      <Badge variant="outline" className="text-[10px]">
+                        {entry.category}
+                      </Badge>
+                    )}
+                    {entry.author && (
+                      <span className="text-[10px] text-muted-foreground">by {entry.author}</span>
+                    )}
+                  </div>
+                  {entry.description && (
+                    <p className="truncate text-xs text-muted-foreground">{entry.description}</p>
+                  )}
+                  <a
+                    href={entry.githubUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate text-[10px] text-blue-500 hover:underline"
+                  >
+                    {entry.githubUrl}
+                  </a>
+                </div>
+                <Button
+                  variant={isInstalled ? "ghost" : "outline"}
+                  size="sm"
+                  className="h-7 shrink-0"
+                  disabled={isInstalled || busy === entry.name}
+                  onClick={async () => {
+                    setBusy(entry.name);
+                    setError(null);
+                    try {
+                      await api.installSkillFromGithubUrl(entry.githubUrl, entry.name, "global");
+                      onInstall();
+                    } catch (e) {
+                      setError(String(e));
+                    } finally {
+                      setBusy(null);
+                    }
+                  }}
+                >
+                  {!isInstalled && <Download className="h-3.5 w-3.5" />}
+                  {isInstalled ? "Installed" : "Install"}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
+function SubmitToCatalog() {
+  const [githubUrl, setGithubUrl] = useState("");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState("");
+  const [tags, setTags] = useState("");
+  const [author, setAuthor] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!githubUrl.trim() || !name.trim()) {
+      setError("GitHub URL and skill name are required.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      await api.submitToSkillCatalog(
+        name.trim(),
+        description.trim(),
+        category.trim(),
+        tags.split(",").map((t) => t.trim()).filter(Boolean),
+        githubUrl.trim(),
+        "",
+        author.trim(),
+      );
+      setSuccess(`'${name.trim()}' submitted to the catalog!`);
+      setGithubUrl(""); setName(""); setDescription("");
+      setCategory(""); setTags(""); setAuthor("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 flex flex-col gap-2">
+      <p className="text-xs text-muted-foreground">
+        Share a skill with the community by linking a GitHub folder that contains a{" "}
+        <code className="text-[11px]">SKILL.md</code> file.
+      </p>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      {success && <p className="text-xs text-green-600">{success}</p>}
+      <Input
+        value={githubUrl}
+        onChange={(e) => setGithubUrl(e.target.value)}
+        placeholder="https://github.com/owner/repo/tree/main/my-skill"
+        className="h-8 text-sm"
+      />
+      <div className="grid grid-cols-2 gap-2">
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="skill-name" className="h-8 text-sm" />
+        <Input value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="your-github-handle" className="h-8 text-sm" />
+        <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="One-line description" className="col-span-2 h-8 text-sm" />
+        <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="category (e.g. dev, content, ops)" className="h-8 text-sm" />
+        <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="tags, comma, separated" className="h-8 text-sm" />
+      </div>
+      <div className="flex justify-end">
+        <Button size="sm" className="h-8" onClick={submit} disabled={busy}>
+          <BookOpen className="h-3.5 w-3.5" />
+          Submit to catalog
         </Button>
       </div>
     </div>

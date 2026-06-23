@@ -81,8 +81,38 @@ fn skills_dir(ws_path: &str) -> PathBuf {
     Path::new(ws_path).join(SKILLS_DIR)
 }
 
+/// Flat layout (legacy): `.superconsole/skills/<name>.md`
 fn skill_file(ws_path: &str, name: &str) -> PathBuf {
     skills_dir(ws_path).join(format!("{}.md", name))
+}
+
+/// Folder layout (current): `.superconsole/skills/<name>/SKILL.md`
+fn skill_dir(ws_path: &str, name: &str) -> PathBuf {
+    skills_dir(ws_path).join(name)
+}
+fn skill_file_v2(ws_path: &str, name: &str) -> PathBuf {
+    skill_dir(ws_path, name).join("SKILL.md")
+}
+
+/// Resolve the actual skill file: folder layout preferred, flat as fallback.
+pub fn resolve_skill_file(ws_path: &str, name: &str) -> Option<PathBuf> {
+    let v2 = skill_file_v2(ws_path, name);
+    if v2.exists() { return Some(v2); }
+    let v1 = skill_file(ws_path, name);
+    if v1.exists() { return Some(v1); }
+    None
+}
+
+/// Same for the global library (`<app_data>/skills/`).
+fn global_file_v2(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    Ok(global_dir(app)?.join(name).join("SKILL.md"))
+}
+fn resolve_global_file(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    let v2 = global_file_v2(app, name)?;
+    if v2.exists() { return Ok(v2); }
+    let v1 = global_file(app, name)?;
+    if v1.exists() { return Ok(v1); }
+    Err(format!("'{}' is not in your global library", name))
 }
 
 // --- file-based core helpers (no AppHandle), shared with the MCP tool layer ---
@@ -170,12 +200,41 @@ fn scan_dir(ws_path: &str) -> Vec<Skill> {
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
+        // ── Folder layout: <name>/SKILL.md ──────────────────────────────────
+        if path.is_dir() {
+            let skill_md = path.join("SKILL.md");
+            if !skill_md.exists() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let content = std::fs::read_to_string(&skill_md).unwrap_or_default();
+            let fm = parse_frontmatter(&content);
+            out.push(Skill {
+                name: name.to_string(),
+                description: fm.description,
+                tags: fm.tags,
+                scope: fm.scope,
+                version: fm.version,
+                auto: fm.auto,
+                active: true,
+                file_path: format!("{}/{}/SKILL.md", SKILLS_DIR, name),
+                source: "superconsole".into(),
+            });
+            continue;
+        }
+        // ── Flat layout (legacy): <name>.md ─────────────────────────────────
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
         let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
+        // Skip if a folder-layout version already exists (migration in progress)
+        if skill_dir(ws_path, name).join("SKILL.md").exists() {
+            continue;
+        }
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let fm = parse_frontmatter(&content);
         out.push(Skill {
@@ -238,9 +297,56 @@ fn scan_detected(ws_path: &str) -> Vec<Skill> {
 
 // --- commands ---
 
+/// Returns the machine-global library skills as LibrarySkill entries.
+/// The inline `library()` built-ins are the only source; community catalog
+/// is fetched separately via `fetch_skill_catalog`.
 #[tauri::command]
-pub fn list_skill_library() -> Vec<LibrarySkill> {
-    library()
+pub fn list_skill_library(app: AppHandle) -> Vec<LibrarySkill> {
+    // Global library on disk — each installed skill becomes a LibrarySkill
+    let disk: Vec<LibrarySkill> = scan_global_as_library(&app);
+    if !disk.is_empty() {
+        return disk;
+    }
+    // Nothing on disk yet — empty; user adds via catalog or import
+    vec![]
+}
+
+/// Convert global library skills (from disk) into LibrarySkill entries.
+/// Used by list_skill_library so there is one single source of truth.
+fn scan_global_as_library(app: &AppHandle) -> Vec<LibrarySkill> {
+    let Ok(dir) = global_dir(app) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Folder layout: <name>/SKILL.md
+        if path.is_dir() {
+            let skill_md = path.join("SKILL.md");
+            if !skill_md.exists() { continue; }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+            let content = std::fs::read_to_string(&skill_md).unwrap_or_default();
+            let fm = parse_frontmatter(&content);
+            let body = content
+                .find("\n---")
+                .and_then(|i| content[i+4..].find("\n").map(|j| content[i+4+j..].trim().to_string()))
+                .unwrap_or_default();
+            out.push(LibrarySkill { name: name.to_string(), description: fm.description, tags: fm.tags, category: fm.scope.clone(), body });
+            continue;
+        }
+        // Flat layout fallback
+        if path.extension().and_then(|e| e.to_str()) != Some("md") { continue; }
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        if path.parent().map(|p| p.join(name).join("SKILL.md").exists()).unwrap_or(false) { continue; }
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let fm = parse_frontmatter(&content);
+        let body = content
+            .find("\n---")
+            .and_then(|i| content[i+4..].find("\n").map(|j| content[i+4+j..].trim().to_string()))
+            .unwrap_or_default();
+        out.push(LibrarySkill { name: name.to_string(), description: fm.description, tags: fm.tags, category: fm.scope.clone(), body });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
 }
 
 // --- project scope: references to global-library skills ---
@@ -406,8 +512,7 @@ pub async fn set_skill_active(
 }
 
 /// Create a new project skill as a committable workspace file
-/// (`.superconsole/skills/<name>.md`). This is the default location for
-/// new project skills so they live with the repo and any CLI reads them.
+/// (`.superconsole/skills/<name>/SKILL.md`).
 #[tauri::command]
 pub async fn create_skill(
     app: AppHandle,
@@ -423,16 +528,35 @@ pub async fn create_skill(
         let ws = db.get_workspace(workspace_id)?;
         (ws.path, ws.project_id)
     };
-    if skill_file(&ws_path, &slug).exists() {
+    // Reject if already present in either layout
+    if skill_file_v2(&ws_path, &slug).exists() || skill_file(&ws_path, &slug).exists() {
         return Err(format!("Skill '{}' already exists in this project", slug));
     }
-    write_skill_file(&ws_path, &slug, &description, &tags, "project", &body)?;
-    let skill = index_skill(&app, workspace_id, &slug, &description, &tags, "project", false, 1)?;
+    // Write to folder layout
+    let dest_dir = skill_dir(&ws_path, &slug);
+    std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+    let md = build_skill_md(&slug, &description, &tags, "project", &body);
+    std::fs::write(skill_file_v2(&ws_path, &slug), &md).map_err(|e| e.to_string())?;
+    let file_path = format!("{}/{}/SKILL.md", SKILLS_DIR, slug);
+    app.state::<Db>().upsert_skill_index(
+        workspace_id, &slug, &description, &tags.join(","), &file_path,
+        "project", false, 1, "superconsole", true,
+    )?;
     push_skill_to_cloud(&app, project_id.as_deref(), &slug, &tags, "project", true).await;
-    Ok(skill)
+    Ok(Skill {
+        name: slug.clone(),
+        description,
+        tags,
+        scope: "project".into(),
+        version: 1,
+        auto: false,
+        active: true,
+        file_path,
+        source: "superconsole".into(),
+    })
 }
 
-/// Edit a project workspace-file skill's content.
+/// Edit a project workspace-file skill's content (folder or flat layout).
 #[tauri::command]
 pub async fn update_skill(
     app: AppHandle,
@@ -446,10 +570,8 @@ pub async fn update_skill(
         let ws = db.get_workspace(workspace_id)?;
         (ws.path, ws.project_id)
     };
-    let file = skill_file(&ws_path, &slug);
-    if !file.exists() {
-        return Err(format!("'{}' is not a workspace skill in this project", slug));
-    }
+    let file = resolve_skill_file(&ws_path, &slug)
+        .ok_or_else(|| format!("'{}' is not a workspace skill in this project", slug))?;
     std::fs::write(&file, &content).map_err(|e| e.to_string())?;
     let fm = parse_frontmatter(&content);
     let active = app.state::<Db>().get_skill_active(workspace_id, &slug).unwrap_or(true);
@@ -459,8 +581,7 @@ pub async fn update_skill(
     Ok(Skill { active, ..skill })
 }
 
-/// Remove a project skill. Deletes the workspace file if present; always
-/// removes the project reference. Never touches the global library.
+/// Remove a project skill. Deletes the workspace file (flat or folder) if present.
 #[tauri::command]
 pub async fn delete_skill(app: AppHandle, workspace_id: i64, name: String) -> Result<(), String> {
     let slug = sanitize_name(&name)?;
@@ -469,17 +590,21 @@ pub async fn delete_skill(app: AppHandle, workspace_id: i64, name: String) -> Re
         let ws = db.get_workspace(workspace_id)?;
         (ws.path, ws.project_id)
     };
-    let file = skill_file(&ws_path, &slug);
-    if file.exists() {
-        std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+    // Remove folder layout first
+    let dir = skill_dir(&ws_path, &slug);
+    if dir.join("SKILL.md").exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    } else {
+        let flat = skill_file(&ws_path, &slug);
+        if flat.exists() { std::fs::remove_file(&flat).map_err(|e| e.to_string())?; }
     }
     app.state::<Db>().delete_skill_index(workspace_id, &slug)?;
     delete_skill_from_cloud(&app, project_id.as_deref(), &slug).await;
     Ok(())
 }
 
-/// Materialize a global-library skill into the workspace as a committable file,
-/// so the CLI reads it natively and it travels with the repo.
+/// Materialize a global-library skill into the workspace as a committable file
+/// at `.superconsole/skills/<name>/SKILL.md`.
 #[tauri::command]
 pub async fn materialize_skill_to_workspace(
     app: AppHandle,
@@ -487,43 +612,71 @@ pub async fn materialize_skill_to_workspace(
     name: String,
 ) -> Result<Skill, String> {
     let slug = sanitize_name(&name)?;
-    let content = std::fs::read_to_string(global_file(&app, &slug)?)
+    let content = std::fs::read_to_string(resolve_global_file(&app, &slug)?)
         .map_err(|_| format!("'{}' is not in your global library", slug))?;
     let (ws_path, project_id) = {
         let db = app.state::<Db>();
         let ws = db.get_workspace(workspace_id)?;
         (ws.path, ws.project_id)
     };
-    let file = skill_file(&ws_path, &slug);
-    if file.exists() {
+    if skill_file_v2(&ws_path, &slug).exists() || skill_file(&ws_path, &slug).exists() {
         return Err(format!("Skill '{}' is already in this project", slug));
     }
-    std::fs::create_dir_all(skills_dir(&ws_path)).map_err(|e| e.to_string())?;
-    std::fs::write(&file, &content).map_err(|e| e.to_string())?;
+    let dest_dir = skill_dir(&ws_path, &slug);
+    std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+    std::fs::write(skill_file_v2(&ws_path, &slug), &content).map_err(|e| e.to_string())?;
     let fm = parse_frontmatter(&content);
-    let skill = index_skill(&app, workspace_id, &slug, &fm.description, &fm.tags, "project", fm.auto, fm.version)?;
+    let file_path = format!("{}/{}/SKILL.md", SKILLS_DIR, slug);
+    app.state::<Db>().upsert_skill_index(
+        workspace_id, &slug, &fm.description, &fm.tags.join(","), &file_path,
+        "project", fm.auto, fm.version, "superconsole", true,
+    )?;
     push_skill_to_cloud(&app, project_id.as_deref(), &slug, &fm.tags, "project", true).await;
-    Ok(skill)
+    Ok(Skill {
+        name: slug.clone(),
+        description: fm.description,
+        tags: fm.tags,
+        scope: "project".into(),
+        version: fm.version,
+        auto: fm.auto,
+        active: true,
+        file_path,
+        source: "superconsole".into(),
+    })
 }
 
 // --- account scope: machine-global library ---
 
 fn scan_global(app: &AppHandle) -> Vec<Skill> {
-    let Ok(dir) = global_dir(app) else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
-    };
+    let Ok(dir) = global_dir(app) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+        // Folder layout: <name>/SKILL.md
+        if path.is_dir() {
+            let skill_md = path.join("SKILL.md");
+            if !skill_md.exists() { continue; }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+            let content = std::fs::read_to_string(&skill_md).unwrap_or_default();
+            let fm = parse_frontmatter(&content);
+            out.push(Skill {
+                name: name.to_string(),
+                description: fm.description,
+                tags: fm.tags,
+                scope: "account".into(),
+                version: fm.version,
+                auto: fm.auto,
+                active: true,
+                file_path: format!("skills/{}/SKILL.md", name),
+                source: "global".into(),
+            });
             continue;
         }
-        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
+        // Flat layout fallback
+        if path.extension().and_then(|e| e.to_str()) != Some("md") { continue; }
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else { continue; };
+        if path.parent().map(|p| p.join(name).join("SKILL.md").exists()).unwrap_or(false) { continue; }
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let fm = parse_frontmatter(&content);
         out.push(Skill {
@@ -550,7 +703,8 @@ pub fn list_global_skills(app: AppHandle) -> Result<Vec<Skill>, String> {
 #[tauri::command]
 pub fn get_global_skill(app: AppHandle, name: String) -> Result<String, String> {
     let slug = sanitize_name(&name)?;
-    std::fs::read_to_string(global_file(&app, &slug)?).map_err(|e| e.to_string())
+    let file = resolve_global_file(&app, &slug)?;
+    std::fs::read_to_string(file).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -562,12 +716,15 @@ pub fn create_global_skill(
     body: String,
 ) -> Result<Skill, String> {
     let slug = sanitize_name(&name)?;
-    let file = global_file(&app, &slug)?;
-    if file.exists() {
+    // Reject if already present in either layout
+    if global_file_v2(&app, &slug)?.exists() || global_file(&app, &slug)?.exists() {
         return Err(format!("Skill '{}' already exists in your library", slug));
     }
+    // Write folder layout
+    let dest_dir = global_dir(&app)?.join(&slug);
+    std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
     let md = build_skill_md(&slug, &description, &tags, "account", &body);
-    std::fs::write(&file, md).map_err(|e| e.to_string())?;
+    std::fs::write(dest_dir.join("SKILL.md"), md).map_err(|e| e.to_string())?;
     Ok(Skill {
         name: slug.clone(),
         description,
@@ -576,7 +733,7 @@ pub fn create_global_skill(
         version: 1,
         auto: false,
         active: true,
-        file_path: format!("skills/{}.md", slug),
+        file_path: format!("skills/{}/SKILL.md", slug),
         source: "global".into(),
     })
 }
@@ -704,6 +861,7 @@ async fn fetch_skill_url(url: &str) -> Result<String, String> {
     resp.text().await.map_err(|e| e.to_string())
 }
 
+#[allow(dead_code)]
 fn write_skill_file(
     ws_path: &str,
     slug: &str,
@@ -1089,4 +1247,287 @@ fn library() -> Vec<LibrarySkill> {
         lib("ceo-brief-template", "Daily CEO brief", "ops", &["ops", "executive"],
             "## Instructions\nProduce a tight daily brief: top priorities, metrics, decisions needed, risks.\nKeep under 200 words.\n\n## Output\nMarkdown brief. Add to inbox."),
     ]
+}
+
+// ── Phase C: one-time flat → folder layout migration ─────────────────────────
+
+/// Move all flat `.superconsole/skills/<name>.md` files to
+/// `.superconsole/skills/<name>/SKILL.md`.  Only runs when the old file exists
+/// and the new directory does not.  Called from `db.rs::init` for each workspace,
+/// and also exposed as a Tauri command so it can be triggered on demand.
+#[allow(dead_code)]
+pub fn migrate_skill_layout_for_workspace(ws_path: &str) {
+    let dir = skills_dir(ws_path);
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() || path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let new_dir  = skill_dir(ws_path, stem);
+        let new_file = new_dir.join("SKILL.md");
+        if new_file.exists() { continue; } // already migrated
+        if std::fs::create_dir_all(&new_dir).is_err() { continue; }
+        let _ = std::fs::copy(&path, &new_file);
+        // Leave the old file in place (read by fallback) until user confirms migration.
+    }
+}
+
+// ── Phase C: install from GitHub URL ─────────────────────────────────────────
+
+/// Parse a GitHub tree URL into raw-file base URL.
+///
+/// Input:  `https://github.com/owner/repo/tree/branch/folder`
+/// Output: `https://raw.githubusercontent.com/owner/repo/branch/folder`
+fn github_tree_to_raw_base(url: &str) -> Option<String> {
+    // Handle blob URL (single file): already covered by existing github_raw()
+    let rest = url.strip_prefix("https://github.com/")?;
+    // rest = "owner/repo/tree/branch/path/to/folder"
+    let parts: Vec<&str> = rest.splitn(4, '/').collect();
+    if parts.len() < 4 { return None; }
+    let (owner, repo, kind, remainder) = (parts[0], parts[1], parts[2], parts[3]);
+    if kind != "tree" { return None; }
+    Some(format!(
+        "https://raw.githubusercontent.com/{}/{}/{}",
+        owner, repo, remainder
+    ))
+}
+
+/// Fetch `SKILL.md` (preferred) or `<name>.md` (fallback) from a GitHub folder URL.
+async fn fetch_skill_from_folder_url(url: &str) -> Result<(String, String), String> {
+    let client = reqwest::Client::new();
+
+    if let Some(base) = github_tree_to_raw_base(url) {
+        // folder_name is the last segment of the tree URL
+        let folder_name = url.rsplit('/').next().unwrap_or("skill");
+
+        // Try SKILL.md first
+        for filename in &["SKILL.md", &format!("{}.md", folder_name)] {
+            let raw = format!("{}/{}", base, filename);
+            if let Ok(resp) = client.get(&raw).header("User-Agent", "SuperConsole").send().await {
+                if resp.status().is_success() {
+                    let content = resp.text().await.map_err(|e| e.to_string())?;
+                    return Ok((content, folder_name.to_string()));
+                }
+            }
+        }
+        return Err(format!("Could not find SKILL.md or {}.md in {}", folder_name, url));
+    }
+
+    // Fallback: treat as a direct file URL (blob or raw)
+    let content = fetch_skill_url(url).await?;
+    let name = url.rsplit('/').next()
+        .map(|s| s.trim_end_matches(".md").to_string())
+        .unwrap_or_else(|| "imported-skill".to_string());
+    Ok((content, name))
+}
+
+/// Fetch optional README.md from the same folder for catalog submission.
+#[allow(dead_code)]
+async fn fetch_readme_from_folder_url(url: &str) -> String {
+    let Some(base) = github_tree_to_raw_base(url) else { return String::new() };
+    let client = reqwest::Client::new();
+    let raw = format!("{}/README.md", base);
+    client
+        .get(&raw)
+        .header("User-Agent", "SuperConsole")
+        .send()
+        .await
+        .ok()
+        .and_then(|r| if r.status().is_success() { Some(r) } else { None })
+        .and_then(|r| tokio::runtime::Handle::current().block_on(r.text()).ok())
+        .unwrap_or_default()
+}
+
+/// Install a skill from a GitHub folder URL.
+///
+/// - `scope = "global"` → `<app_data>/skills/<name>/SKILL.md` (machine library)
+/// - `scope = "project"` → `<workspace>/.superconsole/skills/<name>/SKILL.md`
+///
+/// URL format: `https://github.com/owner/repo/tree/branch/folder-name`
+#[tauri::command]
+pub async fn install_skill_from_github_url(
+    app: AppHandle,
+    url: String,
+    name: Option<String>,
+    scope: String,            // "global" | "project"
+    workspace_id: Option<i64>,
+) -> Result<Skill, String> {
+    let (content, derived_name) = fetch_skill_from_folder_url(&url).await?;
+    let slug = sanitize_name(&name.unwrap_or(derived_name))?;
+    let fm = parse_frontmatter(&content);
+
+    match scope.as_str() {
+        "project" => {
+            let ws_id = workspace_id.ok_or("workspace_id required for project scope")?;
+            let (ws_path, project_id) = {
+                let db = app.state::<Db>();
+                let ws = db.get_workspace(ws_id)?;
+                (ws.path, ws.project_id)
+            };
+            let dest_dir  = skill_dir(&ws_path, &slug);
+            let dest_file = skill_file_v2(&ws_path, &slug);
+            if dest_file.exists() {
+                return Err(format!("Skill '{}' already exists in this project", slug));
+            }
+            std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+            std::fs::write(&dest_file, &content).map_err(|e| e.to_string())?;
+            let skill = index_skill(&app, ws_id, &slug, &fm.description, &fm.tags, "project", fm.auto, fm.version)?;
+            push_skill_to_cloud(&app, project_id.as_deref(), &slug, &fm.tags, "project", true).await;
+            Ok(skill)
+        }
+        _ => {
+            // "global" (default)
+            let dest_dir  = global_dir(&app)?.join(&slug);
+            let dest_file = dest_dir.join("SKILL.md");
+            if dest_file.exists() {
+                return Err(format!("Skill '{}' already exists in your library", slug));
+            }
+            std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
+            std::fs::write(&dest_file, &content).map_err(|e| e.to_string())?;
+            Ok(Skill {
+                name: slug.clone(),
+                description: fm.description,
+                tags: fm.tags,
+                scope: "account".into(),
+                version: fm.version,
+                auto: fm.auto,
+                active: true,
+                file_path: format!("skills/{}/SKILL.md", slug),
+                source: "global".into(),
+            })
+        }
+    }
+}
+
+// ── Phase C: Turso skill_catalog (global public catalog) ─────────────────────
+
+pub async fn ensure_skill_catalog_table(
+    client: &reqwest::Client,
+    cfg: &cloud::TursoConfig,
+) -> Result<(), String> {
+    cloud::turso_execute(
+        client,
+        cfg,
+        "CREATE TABLE IF NOT EXISTS skill_catalog (\
+            id TEXT PRIMARY KEY NOT NULL, \
+            name TEXT NOT NULL UNIQUE, \
+            description TEXT NOT NULL DEFAULT '', \
+            category TEXT NOT NULL DEFAULT '', \
+            tags TEXT NOT NULL DEFAULT '', \
+            github_url TEXT NOT NULL, \
+            readme TEXT NOT NULL DEFAULT '', \
+            author TEXT NOT NULL DEFAULT '', \
+            stars INTEGER NOT NULL DEFAULT 0, \
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+        vec![],
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Fetch the community skill catalog from Turso and cache it locally.
+#[tauri::command]
+pub async fn fetch_skill_catalog(
+    app: AppHandle,
+) -> Result<Vec<crate::db::CatalogSkillEntry>, String> {
+    let Ok(cfg) = cloud::turso_config() else {
+        // Offline: return local cache
+        return Ok(app.state::<Db>().list_skill_catalog_cache());
+    };
+    let client = reqwest::Client::new();
+    if ensure_skill_catalog_table(&client, &cfg).await.is_err() {
+        return Ok(app.state::<Db>().list_skill_catalog_cache());
+    }
+    let result = cloud::turso_execute(
+        &client,
+        &cfg,
+        "SELECT id, name, description, category, tags, github_url, readme, author, stars, \
+                created_at FROM skill_catalog ORDER BY name",
+        vec![],
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    use crate::cloud::{cell_text, cell_opt, rows};
+    let now = chrono::Utc::now().to_rfc3339();
+    let db = app.state::<Db>();
+    let _ = db.clear_skill_catalog_cache();
+
+    let entries: Vec<crate::db::CatalogSkillEntry> = rows(&result)
+        .iter()
+        .map(|row| {
+            let entry = crate::db::CatalogSkillEntry {
+                id:          cell_text(row, 0),
+                name:        cell_text(row, 1),
+                description: cell_opt(row, 2).unwrap_or_default(),
+                category:    cell_opt(row, 3).unwrap_or_default(),
+                tags:        cell_opt(row, 4).unwrap_or_default(),
+                github_url:  cell_text(row, 5),
+                readme:      cell_opt(row, 6).unwrap_or_default(),
+                author:      cell_opt(row, 7).unwrap_or_default(),
+                stars:       cell_opt(row, 8).and_then(|v| v.parse().ok()).unwrap_or(0),
+                synced_at:   now.clone(),
+            };
+            let _ = db.upsert_skill_catalog_cache(&entry);
+            entry
+        })
+        .collect();
+    Ok(entries)
+}
+
+/// Submit a skill to the global community catalog.
+#[tauri::command]
+pub async fn submit_to_skill_catalog(
+    _app: AppHandle,
+    name: String,
+    description: String,
+    category: String,
+    tags: Vec<String>,
+    github_url: String,
+    readme: String,
+    author: String,
+) -> Result<crate::db::CatalogSkillEntry, String> {
+    let slug = sanitize_name(&name)?;
+    let Ok(cfg) = cloud::turso_config() else {
+        return Err("Cloud connection required to submit to catalog".into());
+    };
+    let client = reqwest::Client::new();
+    ensure_skill_catalog_table(&client, &cfg).await?;
+    let id = Ulid::new().to_string();
+    let tags_csv = tags.join(",");
+    cloud::turso_execute(
+        &client,
+        &cfg,
+        "INSERT INTO skill_catalog (id, name, description, category, tags, github_url, readme, author) \
+         VALUES (?,?,?,?,?,?,?,?) \
+         ON CONFLICT(name) DO UPDATE SET \
+           description=excluded.description, category=excluded.category, \
+           tags=excluded.tags, github_url=excluded.github_url, \
+           readme=excluded.readme, author=excluded.author",
+        vec![
+            Some(id.clone()),
+            Some(slug.clone()),
+            Some(description.clone()),
+            Some(category.clone()),
+            Some(tags_csv.clone()),
+            Some(github_url.clone()),
+            Some(readme.clone()),
+            Some(author.clone()),
+        ],
+    )
+    .await?;
+    Ok(crate::db::CatalogSkillEntry {
+        id,
+        name: slug,
+        description,
+        category,
+        tags: tags_csv,
+        github_url,
+        readme,
+        author,
+        stars: 0,
+        synced_at: chrono::Utc::now().to_rfc3339(),
+    })
 }

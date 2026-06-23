@@ -12,17 +12,36 @@
 use crate::crypto;
 use crate::db::Db;
 
-/// Parse `@skill:` / `@context:` / `@connector:` / `@agent:` tokens from text
-/// and return a single availability hint line (or None). Tokens are NOT
-/// expanded or fetched — the agent pulls each resource on demand via MCP tools.
+/// Parse `/skill:` / `@skill:` / `/context:` / `@context:` / `/connector:` /
+/// `@connector:` / `/agent:` / `@agent:` / `/wiki:` / `@wiki:` /
+/// `/memory:` / `@memory:` tokens from text and return a single availability
+/// hint line (or None). Both `/` and `@` prefixes are accepted for backward
+/// compatibility during the transition; output is always `/kind:name` format.
+/// Tokens are NOT expanded or fetched — the agent pulls each resource on
+/// demand via MCP tools.
 pub fn available_resources_hint(text: &str) -> Option<String> {
-    let mut found: Vec<String> = Vec::new();
-    for (prefix, kind) in [
+    // Each tuple: (prefix_to_scan, canonical_kind)
+    // List both `/` and `@` variants so old messages still work.
+    let patterns: &[(&str, &str)] = &[
+        ("/skill:", "skill"),
         ("@skill:", "skill"),
+        ("/context:", "context"),
         ("@context:", "context"),
+        ("/connector:", "connector"),
         ("@connector:", "connector"),
+        ("/agent:", "agent"),
         ("@agent:", "agent"),
-    ] {
+        ("/wiki:", "wiki"),
+        ("@wiki:", "wiki"),
+        ("/memory:", "memory"),
+        ("@memory:", "memory"),
+    ];
+
+    // Dedup by "kind:name" key so @skill:foo and /skill:foo collapse to one entry.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut found: Vec<String> = Vec::new();
+
+    for &(prefix, kind) in patterns {
         let mut rest = text;
         while let Some(idx) = rest.find(prefix) {
             let after = &rest[idx + prefix.len()..];
@@ -30,19 +49,21 @@ pub fn available_resources_hint(text: &str) -> Option<String> {
                 .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
                 .unwrap_or(after.len());
             if end > 0 {
-                let entry = format!("{}:{}", kind, &after[..end]);
-                if !found.contains(&entry) {
-                    found.push(entry);
+                let key = format!("{}:{}", kind, &after[..end]);
+                if seen.insert(key.clone()) {
+                    // Emit the canonical /kind:name format going forward.
+                    found.push(format!("/{}", key));
                 }
             }
             rest = &after[end..];
         }
     }
+
     if found.is_empty() {
         return None;
     }
     Some(format!(
-        "Available: {} — fetch with the matching MCP tools (skill_view, context_read, connector tools, sc_list_agents) when needed.",
+        "Available: {} — fetch with the matching MCP tools (skill_view, context_read, wiki_read, memory_read, connector tools, sc_list_agents) when needed.",
         found.join(", ")
     ))
 }

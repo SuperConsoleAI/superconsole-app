@@ -101,7 +101,15 @@ const REGISTRY: &[Def] = &[
     },
     Def {
         service: "telegram",
-        fields: &[Field { key: "bot_token", env: "TELEGRAM_BOT_TOKEN", secret: true }],
+        // bot_token: required at org level, optional at project level (Option B own bot)
+        // chat_id + thread_id: project routing target
+        // allowed_user_ids: comma-separated Telegram user IDs; empty = anyone
+        fields: &[
+            Field { key: "bot_token", env: "TELEGRAM_BOT_TOKEN", secret: true },
+            Field { key: "chat_id", env: "TELEGRAM_CHAT_ID", secret: false },
+            Field { key: "thread_id", env: "TELEGRAM_THREAD_ID", secret: false },
+            Field { key: "allowed_user_ids", env: "TELEGRAM_ALLOWED_USER_IDS", secret: false },
+        ],
     },
     Def {
         service: "slack",
@@ -319,6 +327,20 @@ pub async fn set_connector(
         return Err("Enter at least one credential".to_string());
     }
 
+    // Service-specific required-field checks (surface friendly errors before hitting the DB).
+    if service == "telegram" {
+        let has_chat = blob.get("chat_id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        let has_bot = blob.get("bot_token").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        // At org scope, bot_token is required. At project scope, chat_id is required.
+        if scope == "org" && !has_bot {
+            return Err("Telegram: Bot Token is required at org level.".to_string());
+        }
+        if scope == "project" && !has_chat {
+            return Err("Telegram: Chat ID is required. Use the Detect → button to auto-fill it.".to_string());
+        }
+        let _ = has_bot; // may be absent at project scope (Option A)
+    }
+
     let plaintext = serde_json::to_string(&Value::Object(blob)).map_err(|e| e.to_string())?;
     let encrypted = crypto::encrypt(&plaintext)?;
     let user_id = cached_user_id(&app.state::<Db>());
@@ -350,7 +372,7 @@ pub async fn set_connector(
         vec![
             Some(id),
             Some(scope_id.clone()),
-            Some(service),
+            Some(service.clone()),
             Some(encrypted),
             user_id,
             Some(ts),
@@ -359,6 +381,12 @@ pub async fn set_connector(
     .await?;
 
     crate::sync_manager::sync_on_update(&app, &scope, &scope_id).await;
+
+    // Start a new long-poll loop immediately when a Telegram connector is
+    // added or updated — no need to wait for the 30s manager tick.
+    if service == "telegram" {
+        crate::remote::refresh_telegram_bots(&app);
+    }
     Ok(())
 }
 
@@ -379,10 +407,16 @@ pub async fn delete_connector(
         &client,
         &cfg,
         &format!("DELETE FROM {} WHERE {} = ? AND service = ?", table, id_col),
-        vec![Some(scope_id.clone()), Some(service)],
+        vec![Some(scope_id.clone()), Some(service.clone())],
     )
     .await?;
     crate::sync_manager::sync_on_update(&app, &scope, &scope_id).await;
+
+    // Refresh bot list so deleted project bots self-exit on their next
+    // registration check (the loop detects it's no longer registered).
+    if service == "telegram" {
+        crate::remote::refresh_telegram_bots(&app);
+    }
     Ok(())
 }
 
@@ -434,27 +468,77 @@ pub fn session_env(app: &AppHandle, workspace_id: i64) -> Vec<(String, String)> 
     env
 }
 
-/// Per-project Telegram bot tokens mapped to their workspace id. Lets the
-/// Telegram poller route each bot's messages to its own project. Cache-only.
-pub fn project_telegram_bots(db: &Db) -> Vec<(String, i64)> {
-    let mut out: Vec<(String, i64)> = Vec::new();
+/// Per-project Telegram bots.
+/// Returns (bot_token, workspace_id, chat_id, thread_id, allowed_user_ids).
+///
+/// allowed_user_ids is a Vec of Telegram user ID strings (may be empty = allow all).
+/// bot_token resolution: project own → org → global setting.
+/// Cache-only; never hits Turso.
+pub fn project_telegram_bots(db: &Db) -> Vec<(String, i64, String, String, Vec<String>)> {
+    let mut out: Vec<(String, i64, String, String, Vec<String>)> = Vec::new();
     for ws in db.list_workspaces().unwrap_or_default() {
         let Some(project_id) = ws.project_id.clone() else {
             continue;
         };
+        let org_id = db.get_workspace_project_id(ws.id)
+            .and_then(|pid| db.get_project_org(&pid));
+
+        let mut proj_bot_token = String::new();
+        let mut chat_id = String::new();
+        let mut thread_id = String::new();
+        let mut allowed_ids_raw = String::new();
+
         for c in db.get_cached_connectors("project", &project_id) {
+            if c.service != "telegram" { continue; }
+            let blob = parse_blob(c.credentials_encrypted.as_deref());
+            proj_bot_token = field_string(&blob, "bot_token").unwrap_or_default();
+            chat_id = field_string(&blob, "chat_id").unwrap_or_default();
+            thread_id = field_string(&blob, "thread_id").unwrap_or_default();
+            allowed_ids_raw = field_string(&blob, "allowed_user_ids").unwrap_or_default();
+        }
+
+        if chat_id.is_empty() { continue; }
+
+        let token = if !proj_bot_token.is_empty() {
+            proj_bot_token
+        } else {
+            match get_telegram_bot_token(db, org_id.as_deref()) {
+                Some(t) => t,
+                None => continue,
+            }
+        };
+
+        let allowed_ids: Vec<String> = allowed_ids_raw
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if !out.iter().any(|(t, _, c, th, _)| t == &token && c == &chat_id && th == &thread_id) {
+            out.push((token, ws.id, chat_id, thread_id, allowed_ids));
+        }
+    }
+    out
+}
+
+/// Returns the bot token for a given org: org-level Telegram connector first,
+/// then falls back to the global `telegram_token` setting.
+/// Pass `org_id = None` to skip the org lookup (returns global setting only).
+pub fn get_telegram_bot_token(db: &Db, org_id: Option<&str>) -> Option<String> {
+    if let Some(oid) = org_id {
+        for c in db.get_cached_connectors("org", oid) {
             if c.service != "telegram" {
                 continue;
             }
             let blob = parse_blob(c.credentials_encrypted.as_deref());
             if let Some(tok) = field_string(&blob, "bot_token") {
-                if !tok.is_empty() && !out.iter().any(|(t, _)| t == &tok) {
-                    out.push((tok, ws.id));
+                if !tok.is_empty() {
+                    return Some(tok);
                 }
             }
         }
     }
-    out
+    db.get_setting("telegram_token").filter(|t| !t.is_empty())
 }
 
 // --- Connector-bundled MCP servers (auto-wired into .mcp.json) ---
