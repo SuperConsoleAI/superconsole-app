@@ -96,7 +96,7 @@ export function SidebarRail({
     );
 
   return (
-    <aside className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-r border-sidebar-border bg-sidebar py-2">
+    <aside className="flex h-full w-12 shrink-0 flex-col items-center border-r border-sidebar-border bg-sidebar py-2">
       <Tooltip>
         <TooltipTrigger asChild>
           <button className={railButton(false)} onClick={onExpand}>

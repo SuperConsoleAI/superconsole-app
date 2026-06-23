@@ -886,8 +886,11 @@ fn eval_webview(app: AppHandle, label: String, script: String) -> Result<(), Str
 
 #[tauri::command]
 fn open_webview_devtools(app: AppHandle, label: String) -> Result<(), String> {
-    if let Some(webview) = app.get_webview(&label) {
-        webview.open_devtools();
+    if let Some(_webview) = app.get_webview(&label) {
+        #[cfg(debug_assertions)]
+        _webview.open_devtools();
+        #[cfg(not(debug_assertions))]
+        println!("Devtools not available in release build for webview {}", label);
         Ok(())
     } else {
         Err(format!("Webview {} not found", label))
