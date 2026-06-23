@@ -1,4 +1,4 @@
-import { SquareTerminal } from "lucide-react";
+import { SquareTerminal, Globe } from "lucide-react";
 import { getPresetIcon } from "@/assets/icons/preset-icons";
 import { useTheme } from "@/components/theme-provider";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,9 @@ export function PresetIcon({ preset, className }: PresetIconProps) {
   const { theme } = useTheme();
   const src = getPresetIcon(preset, theme === "dark");
   if (!src) {
+    if (preset === "browser") {
+      return <Globe className={className} />;
+    }
     return <SquareTerminal className={className} />;
   }
   return (

@@ -4,21 +4,19 @@ import {
   Bot,
   Brain,
   CalendarClock,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   FileText,
-  Folder,
   FolderOpen,
   Library,
-  Moon,
   PanelLeft,
+  PanelRight,
   Play,
   ScrollText,
-  Sun,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useTheme } from "@/components/theme-provider";
 import { JobsDialog } from "@/components/JobsDialog";
 import { AgentsDialog } from "@/components/AgentsDialog";
 import { SkillsDialog } from "@/components/SkillsDialog";
@@ -28,6 +26,7 @@ import { ContextDialog } from "@/components/ContextDialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useWorkspaces } from "@/lib/workspace-context";
@@ -49,7 +48,6 @@ export function TopBar({
   onToggleFiles,
   onToggleSidebar,
 }: TopBarProps) {
-  const { theme, setTheme } = useTheme();
   const router = useRouter();
   const { openScriptTab } = useWorkspaces();
   const [jobsOpen, setJobsOpen] = useState(false);
@@ -62,38 +60,59 @@ export function TopBar({
   return (
     <header
       data-tauri-drag-region
-      className="flex h-10 shrink-0 items-center gap-1 border-b bg-card/60 pl-[78px] pr-2 backdrop-blur"
+      className="relative z-10 flex h-[38px] shrink-0 items-center gap-1 border-b bg-card/60 pl-[78px] pr-2 backdrop-blur"
     >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={cn("h-7 w-7", !sidebarOpen && "text-primary")}
-            onClick={onToggleSidebar}
-          >
-            <PanelLeft className="h-4 w-4" strokeWidth={1} />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>{sidebarOpen ? "Hide sidebar" : "Show sidebar"}</TooltipContent>
-      </Tooltip>
+      <div
+        className={cn(
+          "pointer-events-none absolute left-0 top-0 w-64 border-r border-sidebar-border bg-sidebar",
+          sidebarOpen ? "opacity-100" : "opacity-0"
+        )}
+        style={{ zIndex: -1, bottom: "-1px" }}
+      />
+      {workspace && (
+        <div
+          className={cn(
+            "pointer-events-none absolute right-0 top-0 border-l border-border bg-sidebar",
+            filesOpen ? "opacity-100" : "opacity-0"
+          )}
+          style={{ zIndex: -1, bottom: 0, width: "var(--file-panel-width, 256px)" }}
+        />
+      )}
 
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-7 w-7"
-        onClick={() => router.history.back()}
-      >
-        <ChevronLeft className="h-4 w-4" strokeWidth={1} />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-7 w-7"
-        onClick={() => router.history.forward()}
-      >
-        <ChevronRight className="h-4 w-4" strokeWidth={1} />
-      </Button>
+      <div className="flex items-center gap-1 mb-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn("h-7 w-7", !sidebarOpen && "text-primary")}
+              onClick={onToggleSidebar}
+            >
+              <PanelLeft className="h-4 w-4" strokeWidth={1} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{sidebarOpen ? "Hide sidebar" : "Show sidebar"}</TooltipContent>
+        </Tooltip>
+
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => router.history.back()}
+        >
+          <ChevronLeft className="h-4 w-4" strokeWidth={1} />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => router.history.forward()}
+        >
+          <ChevronRight className="h-4 w-4" strokeWidth={1} />
+        </Button>
+      </div>
+
+      <div className={cn("shrink-0", sidebarOpen ? "w-[82px]" : "w-0")} />
 
       {workspace && (
         <Tooltip>
@@ -110,119 +129,56 @@ export function TopBar({
       <div className="ml-auto flex items-center gap-0.5">
         {workspace && (
           <>
-            {workspace.script_run.trim() ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={() => openScriptTab(workspace.id, "Run", workspace.script_run)}
-                  >
-                    <Play className="h-4 w-4" strokeWidth={1} />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Run script</TooltipContent>
-              </Tooltip>
-            ) : (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-7 w-7">
-                    <Play className="h-4 w-4" strokeWidth={1} />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-64 p-3">
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    No run script configured. Set one in Project Settings →
-                    Scripts.
-                  </p>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() => setSkillsOpen(true)}
-                >
-                  <ScrollText className="h-4 w-4" strokeWidth={1} />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-6 p-0 overflow-hidden gap-0">
+                  <div className="flex h-full items-center px-1.5 hover:bg-accent">
+                    <span className="text-[11px] font-medium text-muted-foreground">Manage</span>
+                  </div>
+                  <div className="h-full w-px bg-border shrink-0" />
+                  <div className="flex h-full items-center px-1 hover:bg-accent">
+                    <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+                  </div>
                 </Button>
-              </TooltipTrigger>
-              <TooltipContent>Skills</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() => setMemoryOpen(true)}
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuItem
+                  onClick={() =>
+                    workspace.script_run.trim()
+                      ? openScriptTab(workspace.id, "Run", workspace.script_run)
+                      : null
+                  }
+                  disabled={!workspace.script_run.trim()}
                 >
-                  <Brain className="h-4 w-4" strokeWidth={1} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Memory</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() => setWikiOpen(true)}
-                >
-                  <Library className="h-4 w-4" strokeWidth={1} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Wiki</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() => setContextOpen(true)}
-                >
-                  <FileText className="h-4 w-4" strokeWidth={1} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Context</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() => setJobsOpen(true)}
-                >
-                  <CalendarClock className="h-4 w-4" strokeWidth={1} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Scheduled jobs</TooltipContent>
-            </Tooltip>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={() => setAgentsOpen(true)}
-                >
-                  <Bot className="h-4 w-4" strokeWidth={1} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Agents &amp; plugins</TooltipContent>
-            </Tooltip>
+                  <Play className="mr-2 h-4 w-4" />
+                  <span>Run script</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setSkillsOpen(true)}>
+                  <ScrollText className="mr-2 h-4 w-4" />
+                  <span>Skills</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setMemoryOpen(true)}>
+                  <Brain className="mr-2 h-4 w-4" />
+                  <span>Memory</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setWikiOpen(true)}>
+                  <Library className="mr-2 h-4 w-4" />
+                  <span>Wiki</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setContextOpen(true)}>
+                  <FileText className="mr-2 h-4 w-4" />
+                  <span>Context</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setJobsOpen(true)}>
+                  <CalendarClock className="mr-2 h-4 w-4" />
+                  <span>Schedule</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setAgentsOpen(true)}>
+                  <Bot className="mr-2 h-4 w-4" />
+                  <span>Agents</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
 
             <Tooltip>
               <TooltipTrigger asChild>
@@ -232,27 +188,19 @@ export function TopBar({
                   className={cn("h-7 w-7", filesOpen && "text-primary")}
                   onClick={onToggleFiles}
                 >
-                  <Folder className="h-4 w-4" strokeWidth={1} />
+                  <PanelRight className="h-4 w-4" strokeWidth={1} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Files</TooltipContent>
             </Tooltip>
           </>
         )}
-
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-        >
-          {theme === "dark" ? (
-            <Sun className="h-4 w-4" strokeWidth={1} />
-          ) : (
-            <Moon className="h-4 w-4" strokeWidth={1} />
-          )}
-        </Button>
       </div>
+
+      <div
+        className="shrink-0 transition-all duration-0"
+        style={{ width: filesOpen ? "var(--file-panel-width, 256px)" : "0px" }}
+      />
 
       {workspace && (
         <>

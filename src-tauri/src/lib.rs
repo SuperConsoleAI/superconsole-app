@@ -875,6 +875,25 @@ async fn sync_org_cache(app: AppHandle, org_id: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn eval_webview(app: AppHandle, label: String, script: String) -> Result<(), String> {
+    if let Some(webview) = app.get_webview(&label) {
+        webview.eval(&script).map_err(|e| e.to_string())
+    } else {
+        Err(format!("Webview {} not found", label))
+    }
+}
+
+#[tauri::command]
+fn open_webview_devtools(app: AppHandle, label: String) -> Result<(), String> {
+    if let Some(webview) = app.get_webview(&label) {
+        webview.open_devtools();
+        Ok(())
+    } else {
+        Err(format!("Webview {} not found", label))
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Headless MCP stdio server: `superconsole mcp --session <token>`.
@@ -1072,6 +1091,8 @@ pub fn run() {
             skills::install_skill_from_github_url,
             skills::fetch_skill_catalog,
             skills::submit_to_skill_catalog,
+            eval_webview,
+            open_webview_devtools,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

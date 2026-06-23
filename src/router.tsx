@@ -12,6 +12,7 @@ import {
 } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
 import { Anchor } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { api, type Agent } from "@/lib/api";
 import { InboxView } from "@/components/InboxView";
 import { Sidebar, SidebarRail } from "@/components/Sidebar";
@@ -21,6 +22,7 @@ import { TerminalView } from "@/components/TerminalView";
 import { ChatView } from "@/components/ChatView";
 import { FilePanel } from "@/components/FilePanel";
 import { FileEditor } from "@/components/FileEditor";
+import { BrowserView } from "@/components/BrowserView";
 import { AddWorkspaceDialog } from "@/components/AddWorkspaceDialog";
 import { AgentsView } from "@/components/AgentsView";
 import { SettingsPage } from "@/components/SettingsPage";
@@ -62,6 +64,8 @@ function Shell() {
     openWorkspace,
     openTab,
     openChatPicker,
+    setTabState,
+    openFileTab,
     closeTab,
     activateTab,
     addWorkspace,
@@ -98,8 +102,9 @@ function Shell() {
   const activeWorkspace = workspaces.find((w) => w.id === activeId) ?? null;
   const activeTabs = activeId !== null ? (tabsByWs[activeId] ?? []) : [];
   const activeTabId = activeId !== null ? (activeTabByWs[activeId] ?? "") : "";
-  const openedFile = search.file ?? null;
   const filesOpen = search.files ?? false;
+  const activeTab = activeTabs.find((t) => t.id === activeTabId);
+  const openedFile = activeTab?.cli === "file" ? activeTab.relPath ?? null : null;
 
   useEffect(() => {
     if (activeId !== null) {
@@ -113,7 +118,7 @@ function Shell() {
     navigate({
       to: "/workspace/$workspaceId",
       params: { workspaceId: String(id) },
-      search: { files: filesOpen || undefined, ...extra },
+      search: { files: filesOpen, ...extra },
     });
   };
 
@@ -161,8 +166,7 @@ function Shell() {
         onToggleFiles={() =>
           activeWorkspace &&
           goToWorkspace(activeWorkspace.id, {
-            files: !filesOpen || undefined,
-            file: openedFile ?? undefined,
+            files: !filesOpen,
           })
         }
       />
@@ -220,36 +224,46 @@ function Shell() {
           />
         )}
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          {activeWorkspace && (
-            <TabStrip
-              tabs={activeTabs}
-              activeTabId={activeTabId}
-              liveSessions={liveSessions}
-              onActivate={(tabId) => activateTab(activeWorkspace.id, tabId)}
-              onClose={(tabId) => closeTab(activeWorkspace.id, tabId)}
-              onOpen={(cli) =>
-                cli === "chat"
-                  ? openChatPicker(activeWorkspace.id)
-                  : openTab(activeWorkspace.id, cli)
-              }
-            />
-          )}
+        <div className="flex min-h-0 min-w-0 flex-1">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {activeWorkspace && (
+              <TabStrip
+                tabs={activeTabs}
+                activeTabId={activeTabId}
+                liveSessions={liveSessions}
+                onActivate={(tabId) => activateTab(activeWorkspace.id, tabId)}
+                onClose={(tabId) => {
+                  const tab = activeTabs.find((t) => t.id === tabId);
+                  if (tab?.dirty) {
+                    setTabState(activeWorkspace.id, tabId, { closeRequested: true });
+                  } else {
+                    closeTab(activeWorkspace.id, tabId);
+                  }
+                }}
+                onOpen={(cli) =>
+                  cli === "chat"
+                    ? openChatPicker(activeWorkspace.id)
+                    : openTab(activeWorkspace.id, cli)
+                }
+              />
+            )}
 
-          <div className="flex min-h-0 flex-1">
-            <main className="relative min-w-0 flex-1">
+            <main className="relative min-h-0 min-w-0 flex-1">
             {openedWorkspaces.map((ws) =>
               (tabsByWs[ws.id] ?? []).map((tab) => {
-                const isActiveTab =
-                  ws.id === activeId &&
-                  tab.id === activeTabId &&
-                  openedFile === null;
+                const isActiveTab = ws.id === activeId && tab.id === activeTabId;
                 if (tab.cli === "chat") {
                   return (
-                    <ChatView
+                    <div
                       key={tab.id}
-                      workspace={ws}
-                      visible={isActiveTab}
+                      className={cn(
+                        "absolute inset-0 bg-background transition-opacity duration-150",
+                        isActiveTab ? "z-10 opacity-100" : "-z-10 opacity-0 pointer-events-none"
+                      )}
+                    >
+                      <ChatView
+                        workspace={ws}
+                        visible={isActiveTab}
                       tabId={tab.id}
                       onRouteToPty={(text) => {
                         const target = (tabsByWs[ws.id] ?? []).find(
@@ -262,44 +276,81 @@ function Shell() {
                       }}
                       onOpenFiles={() =>
                         goToWorkspace(ws.id, {
-                          files: !filesOpen || undefined,
-                          file: openedFile ?? undefined,
+                          files: !filesOpen,
                         })
                       }
                     />
+                    </div>
+                  );
+                }
+                if (tab.cli === "browser") {
+                  return (
+                    <div
+                      key={tab.id}
+                      className={cn(
+                        "absolute inset-0 bg-background transition-opacity duration-150",
+                        isActiveTab ? "z-10 opacity-100" : "-z-10 opacity-0 pointer-events-none"
+                      )}
+                    >
+                      <BrowserView workspaceId={ws.id} tabId={tab.id} isActive={isActiveTab} />
+                    </div>
+                  );
+                }
+                if (tab.cli === "file") {
+                  return (
+                    <div
+                      key={tab.id}
+                      className={cn(
+                        "absolute inset-0 bg-background transition-opacity duration-150",
+                        isActiveTab ? "z-10 opacity-100" : "-z-10 opacity-0 pointer-events-none"
+                      )}
+                    >
+                      <FileEditor
+                        workspaceId={ws.id}
+                        relPath={tab.relPath!}
+                        tabId={tab.id}
+                        onClose={() => closeTab(ws.id, tab.id)}
+                      />
+                    </div>
                   );
                 }
                 return (
-                  <TerminalView
+                  <div
                     key={tab.id}
-                    workspace={ws}
-                    tab={tab}
-                    visible={isActiveTab}
-                    onSessionState={setSessionState}
-                    onSessionInfo={setSessionInfo}
-                    onOpenFiles={() =>
-                      goToWorkspace(ws.id, {
-                        files: !filesOpen || undefined,
-                        file: openedFile ?? undefined,
-                      })
-                    }
-                  />
+                    className={cn(
+                      "absolute inset-0 bg-background transition-opacity duration-150",
+                      isActiveTab ? "z-10 opacity-100" : "-z-10 opacity-0 pointer-events-none"
+                    )}
+                  >
+                    <TerminalView
+                      workspace={ws}
+                      tab={tab}
+                      visible={isActiveTab}
+                      onSessionState={setSessionState}
+                      onSessionInfo={setSessionInfo}
+                      onOpenFiles={() =>
+                        goToWorkspace(ws.id, {
+                          files: !filesOpen,
+                        })
+                      }
+                    />
+                  </div>
                 );
               }),
             )}
             <Outlet />
-          </main>
-
-            {activeWorkspace && filesOpen && (
-              <FilePanel
-                workspaceId={activeWorkspace.id}
-                openedFile={openedFile}
-                onOpenFile={(rel) =>
-                  goToWorkspace(activeWorkspace.id, { file: rel, files: true })
-                }
-              />
-            )}
+            </main>
           </div>
+
+          {activeWorkspace && filesOpen && (
+            <FilePanel
+              workspaceId={activeWorkspace.id}
+              openedFile={openedFile}
+              onOpenFile={(rel) => {
+                openFileTab(activeWorkspace.id, rel);
+              }}
+            />
+          )}
         </div>
       </div>
 
@@ -377,30 +428,6 @@ function Welcome() {
       <Button onClick={() => setAddOpen(true)}>
         {firstRun ? "Add your first workspace" : "Add workspace"}
       </Button>
-    </div>
-  );
-}
-
-function WorkspaceView() {
-  const { workspaceId } = workspaceRoute.useParams();
-  const { file, files } = workspaceRoute.useSearch();
-  const navigate = useNavigate();
-  const id = Number(workspaceId);
-
-  if (!file) return null;
-  return (
-    <div className="absolute inset-0 z-10">
-      <FileEditor
-        workspaceId={id}
-        relPath={file}
-        onClose={() =>
-          navigate({
-            to: "/workspace/$workspaceId",
-            params: { workspaceId },
-            search: { files: files || undefined },
-          })
-        }
-      />
     </div>
   );
 }
@@ -630,12 +657,15 @@ const settingsRoute = createRoute({
   }),
 });
 
+function WorkspaceView() {
+  return <div className="absolute inset-0" />;
+}
+
 const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "workspace/$workspaceId",
   component: WorkspaceView,
   validateSearch: (search: Record<string, unknown>): WorkspaceSearch => ({
-    file: typeof search.file === "string" ? search.file : undefined,
     files: search.files === true || search.files === "true" ? true : undefined,
   }),
 });

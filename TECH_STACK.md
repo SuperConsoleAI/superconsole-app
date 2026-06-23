@@ -9,6 +9,7 @@ Every dependency and why it's here. App target: <30MB installed, Mac first (Wind
 | Tauri 2 (`tauri`, `tauri-build`) | Rust-native shell, ~10x smaller than Electron. Window config in `tauri.conf.json` uses macOS `titleBarStyle: Overlay`. |
 | `tauri-plugin-dialog` | Native folder picker for Add Workspace. |
 | `tauri-plugin-opener` | Open external links (Documentation). |
+| `tauri-plugin-webview` | Embedded webview management used by the Browser tab for native web rendering bypassing iframe restrictions. |
 | `tauri-plugin-updater` | Auto-update scaffolding. Inert until `pubkey` + endpoint are set in tauri.conf.json (needs `TAURI_SIGNING_PRIVATE_KEY` + `createUpdaterArtifacts` at release time). |
 
 ## Rust crates (src-tauri/Cargo.toml)
@@ -39,6 +40,7 @@ Every dependency and why it's here. App target: <30MB installed, Mac first (Wind
 | `tw-animate-css` | Animation utilities shadcn v4 components expect (`animate-in` etc.). |
 | `@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-webgl` | Terminal rendering for PTY sessions (WebGL renderer, falls back to default if unavailable). |
 | `react-markdown` + `remark-gfm` | Markdown rendering in Inbox + file editor preview. |
+| `@uiw/react-codemirror` | Syntax-highlighted code editor for the FileEditor tab. |
 | `lucide-react` | Icon set (CLI brand icons are local SVGs in `src/assets/icons/preset-icons/`). |
 | `@fontsource-variable/{archivo,lora,jetbrains-mono}` | Bundled variable fonts (offline app, no Google Fonts CDN). |
 | JetBrains Mono Nerd Font (static, `src/assets/fonts/`) | Terminal font, bundled `@font-face` (static, not variable — variable fonts mis-measure xterm cell width). Provides Nerd Font icon glyphs for CLI logos/box-art. |

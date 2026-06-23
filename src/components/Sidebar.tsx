@@ -4,14 +4,15 @@ import {
   Bot,
   Check,
   ChevronsUpDown,
-  FolderOpen,
   History,
   Inbox,
   ListTodo,
   LogOut,
+  Moon,
   Plus,
+  FolderClosed,
   Settings,
-  Terminal,
+  Sun,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,8 +40,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useTheme } from "@/components/theme-provider";
 import { type Organization, type Workspace } from "@/lib/api";
-import { AccountMenu } from "@/components/AccountMenu";
 import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 
@@ -87,6 +88,7 @@ export function SidebarRail({
   onAgents,
   onSettings,
 }: SidebarRailProps) {
+  const { theme, setTheme } = useTheme();
   const railButton = (active: boolean) =>
     cn(
       "relative flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
@@ -98,7 +100,13 @@ export function SidebarRail({
       <Tooltip>
         <TooltipTrigger asChild>
           <button className={railButton(false)} onClick={onExpand}>
-            <Terminal className="h-4 w-4 text-primary" />
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10">
+              <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-label="SuperConsole" className="h-7 w-7">
+                <rect width="32" height="32" rx="8" fill="var(--primary)" />
+                <path d="M10 12l5 4-5 4" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M16 20h7" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" />
+              </svg>
+            </span>
           </button>
         </TooltipTrigger>
         <TooltipContent side="right">{orgName} — expand sidebar</TooltipContent>
@@ -159,7 +167,9 @@ export function SidebarRail({
           <Tooltip key={ws.id}>
             <TooltipTrigger asChild>
               <button className={railButton(activeId === ws.id)} onClick={() => onSelect(ws.id)}>
-                <FolderOpen className="h-4 w-4" />
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm bg-muted text-[10px] font-semibold uppercase text-muted-foreground ring-[1px] ring-border">
+                  {ws.name[0]}
+                </span>
                 {liveSessions.has(ws.id) && (
                   <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-emerald-500" />
                 )}
@@ -173,10 +183,21 @@ export function SidebarRail({
       <Tooltip>
         <TooltipTrigger asChild>
           <button className={railButton(false)} onClick={onAdd}>
-            <Plus className="h-4 w-4" />
+            <FolderClosed className="h-4 w-4" />
           </button>
         </TooltipTrigger>
         <TooltipContent side="right">New workspace</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            className={railButton(false)}
+            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Toggle theme</TooltipContent>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger asChild>
@@ -186,7 +207,6 @@ export function SidebarRail({
         </TooltipTrigger>
         <TooltipContent side="right">Settings</TooltipContent>
       </Tooltip>
-      <AccountMenu collapsed />
     </aside>
   );
 }
@@ -258,6 +278,7 @@ export function Sidebar({
   onAgents,
   onSettings,
 }: SidebarProps) {
+  const { theme, setTheme } = useTheme();
   const [orgDialogOpen, setOrgDialogOpen] = useState(false);
   const [orgName, setOrgName] = useState("");
   const activeOrg = organizations.find((o) => o.id === activeOrgId);
@@ -493,17 +514,38 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
-      <div className="flex flex-col gap-2 border-t border-sidebar-border p-3">
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="flex-1 justify-center" onClick={onAdd}>
-            <Plus className="h-4 w-4" />
-            New workspace
+      <div
+        className="group flex h-[44px] shrink-0 cursor-pointer items-center justify-between border-t border-sidebar-border px-3 transition-colors hover:bg-accent/50"
+        onClick={onAdd}
+      >
+        <div className="flex items-center gap-2 text-muted-foreground transition-colors group-hover:text-foreground">
+          <FolderClosed className="h-4 w-4" />
+          <span className="text-sm font-medium">New Workspace</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={(e) => {
+              e.stopPropagation();
+              setTheme(theme === "dark" ? "light" : "dark");
+            }}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onSettings}>
-            <Settings className="h-4 w-4 text-muted-foreground" />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSettings();
+            }}
+          >
+            <Settings className="h-4 w-4" />
           </Button>
         </div>
-        <AccountMenu />
       </div>
 
       <Dialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen}>

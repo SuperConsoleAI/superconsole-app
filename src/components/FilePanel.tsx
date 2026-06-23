@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Search,
   ChevronDown,
   ChevronRight,
   File,
   FilePlus,
   Folder,
   FolderPlus,
+  ListCollapse,
   RefreshCw,
   Trash2,
 } from "lucide-react";
@@ -14,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { FileSearchDialog } from "@/components/FileSearchDialog";
 
 interface FilePanelProps {
   workspaceId: number;
@@ -25,6 +28,7 @@ interface TreeNodeProps extends FilePanelProps {
   entry: FileEntry;
   depth: number;
   refreshKey: number;
+  collapseKey: number;
   onDelete: (relPath: string) => void;
 }
 
@@ -32,9 +36,16 @@ function TreeNode({ entry, depth, refreshKey, onDelete, ...rest }: TreeNodeProps
   const [open, setOpen] = useState(false);
   const [children, setChildren] = useState<FileEntry[] | null>(null);
 
+  // Auto-collapse when collapseKey changes
+  useEffect(() => {
+    if (rest.collapseKey > 0) {
+      setOpen(false);
+    }
+  }, [rest.collapseKey]);
+
   useEffect(() => {
     if (open) {
-      api.listDir(rest.workspaceId, entry.rel_path).then(setChildren).catch(() => {});
+      api.listDir(rest.workspaceId, entry.rel_path).then(setChildren).catch(() => { });
     }
   }, [open, refreshKey, entry.rel_path, rest.workspaceId]);
 
@@ -103,6 +114,30 @@ export function FilePanel({ workspaceId, onOpenFile, openedFile }: FilePanelProp
   const [refreshKey, setRefreshKey] = useState(0);
   const [creating, setCreating] = useState<"file" | "folder" | null>(null);
   const [newName, setNewName] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [width, setWidth] = useState(256);
+  const [isResizing, setIsResizing] = useState(false);
+  const [collapseKey, setCollapseKey] = useState(0);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--file-panel-width", `${width}px`);
+  }, [width]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      // The FilePanel is on the right, so we calculate width from the right edge
+      const newWidth = document.body.clientWidth - e.clientX;
+      setWidth(Math.max(200, Math.min(newWidth, 600)));
+    };
+    const handleMouseUp = () => setIsResizing(false);
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing]);
 
   const refresh = useCallback(() => {
     api.listDir(workspaceId, "").then(setRoots).catch(() => setRoots([]));
@@ -136,35 +171,67 @@ export function FilePanel({ workspaceId, onOpenFile, openedFile }: FilePanelProp
   };
 
   return (
-    <div className="flex h-full w-64 shrink-0 flex-col border-l bg-sidebar">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b px-3">
+    <div
+      className="relative flex h-full min-h-0 shrink-0 flex-col border-l bg-sidebar"
+      style={{ width }}
+    >
+      <div
+        className="absolute bottom-0 left-0 top-0 z-10 w-1 cursor-col-resize hover:bg-primary/50"
+        onMouseDown={() => setIsResizing(true)}
+      />
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b px-3">
         <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Files
         </span>
-        <div className="ml-auto flex items-center">
+        <div className="ml-auto flex items-center gap-2">
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6"
+            className="h-4 w-4 p-0"
             onClick={() => setCreating("file")}
             title="New file"
           >
-            <FilePlus className="h-3.5 w-3.5" />
+            <FilePlus className="h-2 w-2 text-muted-foreground" />
           </Button>
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6"
+            className="h-4 w-4 p-0"
             onClick={() => setCreating("folder")}
             title="New folder"
           >
-            <FolderPlus className="h-3.5 w-3.5" />
+            <FolderPlus className="h-2 w-2 text-muted-foreground" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={refresh} title="Refresh">
-            <RefreshCw className="h-3.5 w-3.5" />
+          <Button variant="ghost" size="icon" className="h-4 w-4 p-0" onClick={refresh} title="Refresh">
+            <RefreshCw className="h-2 w-2 text-muted-foreground" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-4 w-4 p-0"
+            onClick={() => setCollapseKey((k) => k + 1)}
+            title="Collapse all"
+          >
+            <ListCollapse className="h-2 w-2 text-muted-foreground" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-4 w-4 p-0"
+            onClick={() => setSearchOpen(true)}
+            title="Search files"
+          >
+            <Search className="h-2 w-2 text-muted-foreground" />
           </Button>
         </div>
       </div>
+
+      <FileSearchDialog
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        workspaceId={workspaceId}
+        onSelect={onOpenFile}
+      />
 
       {creating && (
         <div className="border-b p-2">
@@ -185,7 +252,7 @@ export function FilePanel({ workspaceId, onOpenFile, openedFile }: FilePanelProp
         </div>
       )}
 
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         <div className="p-1.5">
           {roots.map((entry) => (
             <TreeNode
@@ -193,6 +260,7 @@ export function FilePanel({ workspaceId, onOpenFile, openedFile }: FilePanelProp
               entry={entry}
               depth={0}
               refreshKey={refreshKey}
+              collapseKey={collapseKey}
               workspaceId={workspaceId}
               onOpenFile={onOpenFile}
               openedFile={openedFile}

@@ -98,6 +98,10 @@ export interface SessionTab {
   id: string;
   cli: string;
   label: string;
+  relPath?: string;
+  preview?: boolean;
+  dirty?: boolean;
+  closeRequested?: boolean;
   resumeId?: string;
   initialInput?: string;
 }
@@ -265,6 +269,7 @@ export const CLI_PRESETS = [
   { id: "droid", label: "Droid" },
   { id: "antigravity", label: "Antigravity" },
   { id: "codex", label: "Codex" },
+  { id: "browser", label: "Browser" },
 ] as const;
 
 export interface ChatSession {

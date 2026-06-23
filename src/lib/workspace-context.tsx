@@ -56,6 +56,8 @@ interface WorkspaceContextValue {
     sessionId: string,
     label: string,
   ) => void;
+  openFileTab: (workspaceId: number, relPath: string) => void;
+  setTabState: (workspaceId: number, tabId: string, state: Partial<SessionTab>) => void;
   closeTab: (workspaceId: number, tabId: string) => void;
   activateTab: (workspaceId: number, tabId: string) => void;
   addWorkspace: (name: string, path: string, cli: string) => Promise<Workspace>;
@@ -107,51 +109,41 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const openTab = useCallback((workspaceId: number, cli: string) => {
+    const isChat = cli === "chat";
+    const tabId = isChat ? `${workspaceId}:chat` : `${workspaceId}:${cli}-${Date.now()}`;
+
     setTabsByWs((prev) => {
       const tabs = prev[workspaceId] ?? [];
-      if (cli === "chat") {
-        const pickerId = `${workspaceId}:chat`;
-        const existing = tabs.find((t) => t.id === pickerId);
-        if (existing) {
-          setActiveTabByWs((a) => ({ ...a, [workspaceId]: existing.id }));
+      if (isChat) {
+        if (tabs.some((t) => t.id === tabId)) {
           return prev;
         }
         const tab: SessionTab = {
-          id: pickerId,
+          id: tabId,
           cli: "chat",
           label: "Chats",
         };
-        setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
         return { ...prev, [workspaceId]: [...tabs, tab] };
       }
+      const cliCount = tabs.filter((t) => t.cli === cli).length;
+      const n = cliCount + 1;
+      const baseLabel = cli === "shell" ? "Terminal" : cliLabel(cli);
+      const tab: SessionTab = {
+        id: tabId,
+        cli,
+        label: n === 1 ? baseLabel : `${baseLabel} ${n}`,
+      };
+      
       if (cli !== "shell") {
-        const existing = tabs.find((t) => t.cli === cli);
-        if (existing) {
-          setActiveTabByWs((a) => ({ ...a, [workspaceId]: existing.id }));
-          return prev;
-        }
-        const tab: SessionTab = {
-          id: `${workspaceId}:${cli}`,
-          cli,
-          label: cliLabel(cli),
-        };
-        setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
         api.updateWorkspaceCli(workspaceId, cli).catch(() => {});
         setWorkspaces((ws) =>
           ws.map((w) => (w.id === workspaceId ? { ...w, cli } : w)),
         );
-        return { ...prev, [workspaceId]: [...tabs, tab] };
       }
-      const shellCount = tabs.filter((t) => t.cli === "shell").length;
-      const n = shellCount + 1;
-      const tab: SessionTab = {
-        id: `${workspaceId}:shell-${Date.now()}`,
-        cli: "shell",
-        label: n === 1 ? "Terminal" : `Terminal ${n}`,
-      };
-      setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
+      
       return { ...prev, [workspaceId]: [...tabs, tab] };
     });
+    setActiveTabByWs((a) => ({ ...a, [workspaceId]: tabId }));
   }, []);
 
   const openResumeTab = useCallback(
@@ -160,7 +152,6 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       setTabsByWs((prev) => {
         const tabs = prev[workspaceId] ?? [];
         if (tabs.some((t) => t.id === id)) {
-          setActiveTabByWs((a) => ({ ...a, [workspaceId]: id }));
           return prev;
         }
         const tab: SessionTab = {
@@ -169,14 +160,13 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
           label: `${cliLabel(cli)} (resumed)`,
           resumeId,
         };
-        setActiveTabByWs((a) => ({ ...a, [workspaceId]: id }));
         return { ...prev, [workspaceId]: [...tabs, tab] };
       });
+      setActiveTabByWs((a) => ({ ...a, [workspaceId]: id }));
     },
     [],
   );
 
-  // The picker tab is the plain `{ws}:chat` tab handled by openTab.
   const openChatPicker = useCallback(
     (workspaceId: number) => {
       setOpenedIds((ids) => (ids.includes(workspaceId) ? ids : [...ids, workspaceId]));
@@ -191,12 +181,11 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       setTabsByWs((prev) => {
         const tabs = prev[workspaceId] ?? [];
         if (tabs.some((t) => t.id === tab.id)) {
-          setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
           return prev;
         }
-        setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
         return { ...prev, [workspaceId]: [...tabs, tab] };
       });
+      setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
     },
     [],
   );
@@ -257,6 +246,53 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     },
     [],
   );
+
+  const openFileTab = useCallback((workspaceId: number, relPath: string) => {
+    setOpenedIds((ids) => (ids.includes(workspaceId) ? ids : [...ids, workspaceId]));
+    const tabId = `${workspaceId}:file:${relPath}`;
+
+    setTabsByWs((prev) => {
+      const tabs = prev[workspaceId] ?? [];
+      const existingIdx = tabs.findIndex((t) => t.cli === "file" && t.relPath === relPath);
+      
+      if (existingIdx !== -1) {
+        return prev;
+      }
+      
+      const previewIdx = tabs.findIndex((t) => t.cli === "file" && t.preview && !t.dirty);
+      const newTab: SessionTab = {
+        id: tabId,
+        cli: "file",
+        label: relPath.split("/").pop() || relPath,
+        relPath,
+        preview: true,
+        dirty: false,
+      };
+
+      if (previewIdx !== -1) {
+        // Replace existing preview tab
+        const next = [...tabs];
+        next[previewIdx] = newTab;
+        return { ...prev, [workspaceId]: next };
+      }
+
+      // Append new preview tab
+      return { ...prev, [workspaceId]: [...tabs, newTab] };
+    });
+    
+    setActiveTabByWs((a) => ({ ...a, [workspaceId]: tabId }));
+  }, []);
+
+  const setTabState = useCallback((workspaceId: number, tabId: string, state: Partial<SessionTab>) => {
+    setTabsByWs((prev) => {
+      const tabs = prev[workspaceId];
+      if (!tabs) return prev;
+      return {
+        ...prev,
+        [workspaceId]: tabs.map((t) => (t.id === tabId ? { ...t, ...state } : t)),
+      };
+    });
+  }, []);
 
   const openWorkspace = useCallback(
     (id: number, defaultCli: string, runMode?: string) => {
@@ -406,6 +442,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         newChatDraft,
         setChatTabLabel,
         bindChatDraftToSession,
+        openFileTab,
+        setTabState,
         closeTab,
         activateTab,
         addWorkspace,
