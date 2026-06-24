@@ -14,12 +14,14 @@ import {
   PanelRight,
   Play,
   ScrollText,
+  SquareSlash,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { JobsDialog } from "@/components/JobsDialog";
 import { AgentsDialog } from "@/components/AgentsDialog";
 import { SkillsDialog } from "@/components/SkillsDialog";
+import { CommandDialog } from "@/components/CommandDialog";
 import { MemoryDialog } from "@/components/MemoryDialog";
 import { WikiDialog } from "@/components/WikiDialog";
 import { ContextDialog } from "@/components/ContextDialog";
@@ -53,6 +55,7 @@ export function TopBar({
   const [jobsOpen, setJobsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [commandsOpen, setCommandsOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [wikiOpen, setWikiOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
@@ -153,9 +156,14 @@ export function TopBar({
                   <Play className="mr-2 h-4 w-4" />
                   <span>Run script</span>
                 </DropdownMenuItem>
+                
                 <DropdownMenuItem onClick={() => setSkillsOpen(true)}>
                   <ScrollText className="mr-2 h-4 w-4" />
                   <span>Skills</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setCommandsOpen(true)}>
+                  <SquareSlash className="mr-2 h-4 w-4" />
+                  <span>Commands</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setMemoryOpen(true)}>
                   <Brain className="mr-2 h-4 w-4" />
@@ -210,10 +218,16 @@ export function TopBar({
             open={agentsOpen}
             onOpenChange={setAgentsOpen}
           />
+          
           <SkillsDialog
             workspaceId={workspace.id}
             open={skillsOpen}
             onOpenChange={setSkillsOpen}
+          />
+          <CommandDialog
+            workspaceId={workspace.id}
+            open={commandsOpen}
+            onOpenChange={setCommandsOpen}
           />
           <MemoryDialog
             workspaceId={workspace.id}

@@ -1,3 +1,4 @@
+import { PluginIcon } from "./PluginIcon";
 import { useEffect, useState } from "react";
 import {
   Bell,
@@ -45,6 +46,7 @@ import {
   type SlashCommand,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -60,6 +62,7 @@ import {
   OrgSkillsSection,
   ProjectSkillsSection,
 } from "@/components/SkillsSettings";
+import { LibrarySection } from "@/components/libraryx";
 import { useAuth } from "@/lib/auth-context";
 import { useWorkspaces } from "@/lib/workspace-context";
 import { cn } from "@/lib/utils";
@@ -85,6 +88,7 @@ const NAV: Record<TopTab, string[]> = {
     "Connectors",
     "Security",
     "Notifications",
+    "Library",
   ],
   org: ["General", "Team", "Models", "Skills", "Integrations", "Connectors", "Billing"],
   project: [
@@ -115,6 +119,7 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   Messaging: MessageSquare,
   Security: Shield,
   Notifications: Bell,
+  Library: BookOpen,
   Team: Users,
   Billing: CreditCard,
   Automations: Workflow,
@@ -341,6 +346,8 @@ function Content({
         return <SecuritySection />;
       case "Notifications":
         return <NotificationsSection />;
+      case "Library":
+        return auth ? <LibrarySection /> : <SignInPrompt label="manage library" />;
     }
   }
 
@@ -1960,7 +1967,7 @@ function MessagingSection({ projectId }: { projectId: string }) {
   );
 }
 
-function ConnectorManager({
+export function ConnectorManager({
   scope,
   scopeId,
   category,
@@ -1978,18 +1985,17 @@ function ConnectorManager({
       d.category === category &&
       (!filterService || d.id === filterService),
   );
-  const inCategory = (svc: string) =>
-    CONNECTOR_REGISTRY.find((d) => d.id === svc)?.category === category;
+
   const [list, setList] = useState<ConnectorView[]>([]);
-  const [service, setService] = useState<string>(available[0]?.id ?? "");
+  const [editingService, setEditingService] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [detectHint, setDetectHint] = useState<string | null>(null);
 
-  const def = CONNECTOR_REGISTRY.find((d) => d.id === service);
-  const current = list.find((c) => c.service === service);
-  const isTelegram = service === "telegram";
+  const def = CONNECTOR_REGISTRY.find((d) => d.id === editingService);
+  const current = list.find((c) => c.service === editingService);
+  const isTelegram = editingService === "telegram";
   const isProjectScope = scope === "project";
 
   const load = async () => {
@@ -2006,10 +2012,10 @@ function ConnectorManager({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, scopeId]);
 
-  // Prefill non-secret fields from the existing connector; secrets stay blank.
+  // Prefill non-secret fields from the existing connector
   useEffect(() => {
     if (!def) return;
-    const existing = list.find((c) => c.service === service);
+    const existing = list.find((c) => c.service === editingService);
     const next: Record<string, string> = {};
     for (const f of def.fields) {
       const ev = existing?.fields.find((x) => x.key === f.key);
@@ -2017,36 +2023,30 @@ function ConnectorManager({
     }
     setValues(next);
     setDetectHint(null);
-  }, [service, list, def]);
+  }, [editingService, list, def]);
 
   const save = async () => {
+    if (!editingService) return;
     setError(null);
     try {
-      await api.setConnector(scope, scopeId, service, values);
+      await api.setConnector(scope, scopeId, editingService, values);
       await load();
+      setEditingService(null);
     } catch (e) {
       setError(String(e));
     }
   };
 
-  // Determine whether the form has enough data to save.
-  // Required fields per service/scope:
-  //   telegram @ org     → bot_token
-  //   telegram @ project → chat_id
-  //   everything else    → any non-empty field
   const canSave = (() => {
     if (!def) return false;
-    if (service === "telegram") {
+    if (editingService === "telegram") {
       if (scope === "org") {
-        // bot_token required; may already be set (fieldSet) or freshly typed
         const botFieldSet = current?.fields.find((x) => x.key === "bot_token")?.has_value;
         return !!(values["bot_token"]?.trim() || botFieldSet);
       }
-      // project scope — chat_id required
       const chatFieldSet = current?.fields.find((x) => x.key === "chat_id")?.has_value;
       return !!(values["chat_id"]?.trim() || chatFieldSet);
     }
-    // Generic: any field filled
     const anyTyped = Object.values(values).some((v) => v.trim().length > 0);
     const anySet = current?.fields.some((f) => f.has_value) ?? false;
     return anyTyped || anySet;
@@ -2085,144 +2085,134 @@ function ConnectorManager({
     }
   };
 
-  const labelFor = (svc: string) =>
-    CONNECTOR_REGISTRY.find((d) => d.id === svc)?.label ?? svc;
-
-  const shown = list.filter((c) => inCategory(c.service));
-
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        {category === "integrations"
-          ? "Integrations connect agents to your dev and productivity tools."
-          : "Connectors give agents scoped access to external services and APIs."}{" "}
-        Credentials are encrypted and injected as environment variables at
-        session start; project overrides org, which overrides account.
-      </p>
-
-      {shown.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          {shown.map((c) => (
-            <div
-              key={c.service}
-              className="flex items-center justify-between rounded-lg border bg-card px-3 py-2"
-            >
-              <div className="min-w-0">
-                <span className="block text-[13px] font-medium">
-                  {labelFor(c.service)}
-                </span>
-                <span className="block truncate text-[11px] text-muted-foreground">
-                  {c.status ?? "connected"}
-                  {c.fields
-                    .filter((f) => !f.secret && f.value)
-                    .map((f) => ` · ${f.value}`)
-                    .join("")}
-                </span>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs text-muted-foreground"
-                  onClick={() => setService(c.service)}
-                >
-                  Edit
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs text-destructive"
-                  onClick={() => remove(c.service)}
-                >
-                  Remove
-                </Button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="flex flex-col gap-2 rounded-lg border bg-card p-3">
-        {!filterService && (
-          <select
-            value={service}
-            onChange={(e) => setService(e.target.value)}
-            className="h-8 rounded-md border bg-background px-2 text-[13px]"
-          >
-            {available.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-        )}
-
-        {def?.fields.map((f) => {
-          const fieldSet = current?.fields.find((x) => x.key === f.key)?.has_value;
-          // Telegram project-scope: bot_token hint when blank
-          const showBotHint =
-            isTelegram && isProjectScope && f.key === "bot_token" && !values["bot_token"];
-          // chat_id gets a [Detect] button at project scope
-          const showDetect = isTelegram && isProjectScope && f.key === "chat_id";
-
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        {available.map((c) => {
+          const configured = list.find((l) => l.service === c.id);
           return (
-            <div key={f.key} className="flex flex-col gap-1">
-              {showDetect ? (
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={values[f.key] ?? ""}
-                    onChange={(e) =>
-                      setValues((v) => ({ ...v, [f.key]: e.target.value }))
-                    }
-                    type="text"
-                    placeholder={f.placeholder ?? f.label}
-                    className="h-8 flex-1 font-mono text-xs"
-                  />
+            <div
+              key={c.id}
+              className="flex items-center justify-between rounded-xl border bg-card p-4 shadow-sm"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <PluginIcon pluginId={c.id} size={32} className="h-10 w-10 p-1 bg-transparent" />
+                <div className="min-w-0">
+                  <span className="block text-sm font-medium">{c.label}</span>
+                  {configured ? (
+                    <span className="block truncate text-xs text-muted-foreground">
+                      Connected
+                    </span>
+                  ) : (
+                    <span className="block truncate text-xs text-muted-foreground">
+                      Not connected
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {configured ? (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-8 text-xs text-muted-foreground"
+                      onClick={() => setEditingService(c.id)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-8 text-xs text-destructive"
+                      onClick={() => remove(c.id)}
+                    >
+                      Remove
+                    </Button>
+                  </>
+                ) : (
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-8 shrink-0 text-xs"
-                    disabled={detecting}
-                    onClick={detectChat}
+                    className="h-8 text-xs"
+                    onClick={() => setEditingService(c.id)}
                   >
-                    {detecting ? "Listening…" : "Detect →"}
+                    Connect
                   </Button>
-                </div>
-              ) : (
-                <Input
-                  value={values[f.key] ?? ""}
-                  onChange={(e) =>
-                    setValues((v) => ({ ...v, [f.key]: e.target.value }))
-                  }
-                  type={f.secret ? "password" : "text"}
-                  placeholder={
-                    f.secret && fieldSet
-                      ? `${f.label} •••• set (leave blank to keep)`
-                      : (f.placeholder ?? f.label)
-                  }
-                  className="h-8 font-mono text-xs"
-                />
-              )}
-              {showBotHint && (
-                <p className="text-[11px] text-muted-foreground">
-                  Leave blank to use the org-level Telegram bot (Option A).
-                  Fill in to give this project its own bot (Option B).
-                </p>
-              )}
+                )}
+              </div>
             </div>
           );
         })}
-
-        {detectHint && (
-          <p className="text-[11px] text-primary">{detectHint}</p>
-        )}
-
-        <div>
-          <SaveButton onSave={save} disabled={!canSave} />
-        </div>
       </div>
 
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      <Dialog open={!!editingService} onOpenChange={(o) => { if (!o) setEditingService(null); }}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>{def?.label} Configuration</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 pt-2">
+            {def?.fields.map((f) => {
+              const fieldSet = current?.fields.find((x) => x.key === f.key)?.has_value;
+              const showBotHint = isTelegram && isProjectScope && f.key === "bot_token" && !values["bot_token"];
+              const showDetect = isTelegram && isProjectScope && f.key === "chat_id";
+
+              return (
+                <div key={f.key} className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium">{f.label}</span>
+                  {showDetect ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={values[f.key] ?? ""}
+                        onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                        type="text"
+                        placeholder={f.placeholder ?? f.label}
+                        className="h-8 flex-1 font-mono text-xs"
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 shrink-0 text-xs"
+                        disabled={detecting}
+                        onClick={detectChat}
+                      >
+                        {detecting ? "Listening…" : "Detect →"}
+                      </Button>
+                    </div>
+                  ) : (
+                    <Input
+                      value={values[f.key] ?? ""}
+                      onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                      type={f.secret ? "password" : "text"}
+                      placeholder={
+                        f.secret && fieldSet
+                          ? `•••• set (leave blank to keep)`
+                          : (f.placeholder ?? f.label)
+                      }
+                      className="h-8 font-mono text-xs"
+                    />
+                  )}
+                  {showBotHint && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Leave blank to use the org-level Telegram bot. Fill in to give this project its own bot.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+
+            {detectHint && <p className="text-[11px] text-primary">{detectHint}</p>}
+            {error && <p className="text-[11px] text-destructive">{error}</p>}
+
+            <div className="mt-2 flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setEditingService(null)}>
+                Cancel
+              </Button>
+              <SaveButton onSave={save} disabled={!canSave} />
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

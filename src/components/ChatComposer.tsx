@@ -22,7 +22,7 @@ import {
   Plus,
   ScrollText,
   Square,
-  TerminalSquare,
+  SquareSlash,
   Wrench,
   X,
   Zap,
@@ -681,7 +681,7 @@ export function ChatComposer({
               {/* Commands */}
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
-                  <TerminalSquare className="h-4 w-4" />
+                  <SquareSlash className="h-4 w-4" />
                   Commands
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">

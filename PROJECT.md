@@ -7,7 +7,7 @@ SuperConsole is a Tauri 2 desktop application combining a Rust backend with a Re
 - **Data Persistence**: A bundled SQLite database (`db.rs`) handles workspaces, organizations, scheduled jobs, inbox items, settings, and session history.
 - **Sessions & Execution**: Terminal sessions use `portable-pty` (`pty.rs`), streaming output via Tauri events (`pty-output`). 
 - **Triggers**: A central `scheduler.rs` 30-second tick loop executes cron jobs headlessly. Additionally, a local HTTP server and Telegram bot (`remote.rs`) handle remote triggers. All executions route through a single funnel (`scheduler::exec_in_workspace`).
-- **Cloud layer**: WorkOS auth (`auth.rs`, loopback `127.0.0.1:4666`) signs the user in and upserts identity/orgs to a Turso DB (`cloud.rs`). `sync_manager.rs` pulls config into local `*_cache` tables; LLM keys (`llm.rs`) and connectors (`connectors.rs`) are AES-256-GCM encrypted (`crypto.rs`) and injected into sessions from cache, resolving project → org → account/local → `.env` → skip. Native chat (`chat.rs`) streams provider tokens via events (Anthropic/OpenAI-compatible/Gemini/OpenRouter, cancellable, with reasoning effort and per-turn usage/cost), built from on-demand context files (`context.rs`) and tools (`mcp.rs`, incl. a `web_search` tool over the Tavily connector). Team membership lives in `team.rs`.
+- **Cloud layer**: WorkOS auth (`auth.rs`, loopback `127.0.0.1:4666`) signs the user in and upserts identity/orgs to a Turso DB (`cloud.rs`). `sync_manager.rs` pulls config into local `*_cache` tables; LLM keys (`llm.rs`) and connectors (`connectors.rs`) are AES-256-GCM encrypted (`crypto.rs`) and injected into sessions from cache, resolving project → org → account/local → `.env` → skip. Catalog tables (`plugins`, `connector_catalog`, `mcp_catalog`, `commands_catalog`, `hooks_catalog`) are also synced globally from Turso into local cache tables on startup and every 30 minutes. Native chat (`chat.rs`) streams provider tokens via events. Team membership lives in `team.rs`.
 
 ## 2. Tech Stack Highlights
 - **Backend (Rust)**: Tauri 2, `portable-pty` for terminals, `rusqlite` for local DB, `tokio` for async loops, `tiny_http` for local server, `reqwest` for Telegram API.
@@ -17,16 +17,20 @@ SuperConsole is a Tauri 2 desktop application combining a Rust backend with a Re
 ## 3. Core Codebase Structure
 - **Backend (`src-tauri/src/`)**: 
   - `lib.rs`: Tauri command wrappers and app setup.
-  - `db.rs`: SQLite operations and schema migrations.
-  - `pty.rs`: Pseudo-terminal session manager and environment parser.
+  - `db.rs`: SQLite operations and schema migrations (incl. `plugins_cache`, `workspace_plugins`, `connector_catalog_cache`, `mcp_catalog_cache`, `commands_catalog_cache`, `hooks_catalog_cache`).
+  - `pty.rs`: Pseudo-terminal session manager and environment parser. Fires `session-start`/`session-end` hooks.
+  - `hooks.rs`: Lifecycle hook executor (`session-start`, `session-end`, `before-prompt`, `before-mcp`, `before-shell`). Non-blocking, 10 s timeout, reads scripts from `.superconsole/hooks/`.
+  - `plugins.rs`: Plugin marketplace backend — `list_plugins_catalog`, `search_plugins_catalog`, `install_plugin`, `install_plugin_from_url` (GitHub manifest detection), `uninstall_plugin`, `submit_plugin_to_cloud`.
   - `files.rs`: Sandboxed workspace operations.
-  - `scheduler.rs`: Cron parser and tick loops.
+  - `scheduler.rs`: Cron parser and tick loops. Fires `before-shell` hook.
   - `remote.rs`: Telegram long-polling and HTTP webhook handlers.
 - **Frontend (`src/`)**: 
-  - `router.tsx`: App layout hierarchy (Sidebar, TopBar, TabStrip) keeping terminals alive across navigations.
-  - `lib/api.ts`: Typed mappings to backend Rust commands.
+  - `router.tsx`: App layout hierarchy (Sidebar, TopBar, TabStrip) keeping terminals alive across navigations. Routes include `/customize?ws=<id>`.
+  - `lib/api.ts`: Typed mappings to backend Rust commands, incl. all plugin/hook/catalog API.
   - `lib/workspace-context.tsx`: Global domain state context.
   - `index.css`: Single source of truth for the Tailwind v4 design system.
+  - `components/CustomizePage.tsx`: Plugin marketplace (search, category, 2-column grid, install/uninstall animation, GitHub URL install, Publish dialog) + Hooks editor (per-hook-type script editor with active-state indicators).
+  - `components/PluginIcon.tsx`: Brand logo mapping (svgl-react) with light/dark theme switching.
 
 ## 4. Key Design Principles
 - **State Management**: SQLite is the absolute source of truth. React Context (`WorkspaceProvider`) holds domain state, router holds navigation state, and view-local state stays in components.

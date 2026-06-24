@@ -553,6 +553,14 @@ fn ok_text(v: impl Serialize) -> Result<Value, String> {
 
 pub async fn execute(db: &Db, ctx: &ToolCtx, name: &str, args: Value) -> Result<Value, String> {
     let ws = ctx.ws_path.as_str();
+
+    // Before-MCP hook — non-blocking, 10s timeout.
+    // Exit code 1 from the hook aborts the tool (safety gate).
+    let tool_input_json = serde_json::to_string(&args).unwrap_or_default();
+    if !crate::hooks::run_before_mcp_hook(ws, name, &tool_input_json) {
+        return Err(format!("Tool '{}' blocked by before-mcp hook", name));
+    }
+
     match name {
         "sc_list_available_tools" => {
             let services = crate::connectors::connected_service_ids(

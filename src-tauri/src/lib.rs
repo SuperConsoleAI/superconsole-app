@@ -9,6 +9,7 @@ mod context;
 mod crypto;
 mod db;
 mod files;
+mod hooks;
 mod llm;
 mod memory;
 mod pty;
@@ -18,6 +19,7 @@ mod session_logs;
 mod skills;
 mod mcp;
 mod mcp_server;
+mod plugins;
 mod sync_manager;
 mod team;
 mod usage;
@@ -897,6 +899,45 @@ fn open_webview_devtools(app: AppHandle, label: String) -> Result<(), String> {
     }
 }
 
+// ── Hook command wrappers (Phase Plugins) ─────────────────────────────────────
+
+#[tauri::command]
+fn list_hooks_cmd(db: State<Db>, workspace_id: i64) -> Result<Vec<hooks::HookFile>, String> {
+    let ws = db.get_workspace(workspace_id)?;
+    Ok(hooks::list_hooks(&ws.path))
+}
+
+#[tauri::command]
+fn read_hook_cmd(
+    db: State<Db>,
+    workspace_id: i64,
+    hook_type: String,
+) -> Result<String, String> {
+    let ws = db.get_workspace(workspace_id)?;
+    hooks::read_hook(&ws.path, &hook_type)
+}
+
+#[tauri::command]
+fn write_hook_cmd(
+    db: State<Db>,
+    workspace_id: i64,
+    hook_type: String,
+    content: String,
+) -> Result<(), String> {
+    let ws = db.get_workspace(workspace_id)?;
+    hooks::write_hook(&ws.path, &hook_type, &content)
+}
+
+#[tauri::command]
+fn delete_hook_cmd(
+    db: State<Db>,
+    workspace_id: i64,
+    hook_type: String,
+) -> Result<(), String> {
+    let ws = db.get_workspace(workspace_id)?;
+    hooks::delete_hook(&ws.path, &hook_type)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Headless MCP stdio server: `superconsole mcp --session <token>`.
@@ -1094,6 +1135,27 @@ pub fn run() {
             skills::install_skill_from_github_url,
             skills::fetch_skill_catalog,
             skills::submit_to_skill_catalog,
+            // Phase Plugins — Hooks CRUD
+            list_hooks_cmd,
+            read_hook_cmd,
+            write_hook_cmd,
+            delete_hook_cmd,
+            // Phase Plugins — Plugin catalog + install
+            plugins::list_plugins_catalog,
+            plugins::search_plugins_catalog,
+            plugins::get_plugin,
+            plugins::install_plugin,
+            plugins::uninstall_plugin,
+            plugins::list_installed_plugins,
+            plugins::install_plugin_from_url,
+            plugins::list_connector_catalog,
+            plugins::list_mcp_catalog,
+            plugins::list_commands_catalog,
+            plugins::list_hooks_catalog_cmd,
+            plugins::submit_plugin_to_cloud,
+            plugins::submit_connector_to_cloud,
+            plugins::submit_mcp_to_cloud,
+            plugins::submit_command_to_cloud,
             eval_webview,
             open_webview_devtools,
         ])

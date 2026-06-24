@@ -458,3 +458,113 @@ const usageColumns = () => ({
 export const projectUsage = sqliteTable("project_usage", usageColumns());
 export const orgUsage = sqliteTable("org_usage", usageColumns());
 export const accountUsage = sqliteTable("account_usage", usageColumns());
+
+// ── Phase Plugins: catalog tables (global, not per-user) ──────────────────────
+
+export const connectorCatalog = sqliteTable("connector_catalog", {
+  id: text("id").primaryKey().notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  category: text("category").notNull(),
+  authType: text("auth_type").notNull(),
+  oauthUrl: text("oauth_url"),
+  apiKeyFields: text("api_key_fields").notNull().default("[]"),
+  docsUrl: text("docs_url"),
+  iconUrl: text("icon_url"),
+  scope: text("scope").notNull().default("project"),
+  installCount: integer("install_count").notNull().default(0),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const mcpCatalog = sqliteTable("mcp_catalog", {
+  id: text("id").primaryKey().notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  author: text("author").notNull(),
+  category: text("category").notNull(),
+  type: text("type").notNull().default("stdio"),
+  url: text("url"),
+  command: text("command"),
+  args: text("args").notNull().default("[]"),
+  env: text("env").notNull().default("{}"),
+  requiredEnvVars: text("required_env_vars").notNull().default("[]"),
+  githubUrl: text("github_url"),
+  iconUrl: text("icon_url"),
+  docsUrl: text("docs_url"),
+  installCount: integer("install_count").notNull().default(0),
+  createdAt: createdAt(),
+});
+
+export const commandsCatalog = sqliteTable("commands_catalog", {
+  id: text("id").primaryKey().notNull(),
+  name: text("name").notNull(),
+  slash: text("slash").notNull(),
+  description: text("description").notNull(),
+  author: text("author").notNull(),
+  category: text("category").notNull(),
+  githubUrl: text("github_url").notNull(),
+  content: text("content"),
+  iconUrl: text("icon_url"),
+  installCount: integer("install_count").notNull().default(0),
+  createdAt: createdAt(),
+});
+
+export const hooksCatalog = sqliteTable("hooks_catalog", {
+  id: text("id").primaryKey().notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  author: text("author").notNull(),
+  hookType: text("hook_type").notNull(),
+  githubUrl: text("github_url").notNull(),
+  content: text("content"),
+  iconUrl: text("icon_url"),
+  installCount: integer("install_count").notNull().default(0),
+  createdAt: createdAt(),
+});
+
+export const plugins = sqliteTable("plugins", {
+  id: text("id").primaryKey().notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  author: text("author").notNull(),
+  version: text("version").notNull().default("1.0.0"),
+  iconUrl: text("icon_url"),
+  docsUrl: text("docs_url"),
+  githubUrl: text("github_url"),
+  category: text("category").notNull(),
+  scope: text("scope").notNull().default("project"),
+  skillIds: text("skill_ids").notNull().default("[]"),
+  agentIds: text("agent_ids").notNull().default("[]"),
+  mcpIds: text("mcp_ids").notNull().default("[]"),
+  mcpUrl: text("mcp_url").notNull().default("[]"),
+  commandIds: text("command_ids").notNull().default("[]"),
+  hookIds: text("hook_ids").notNull().default("[]"),
+  connectorIds: text("connector_ids").notNull().default("[]"),
+  skillsUrl: text("skills_url").notNull().default("[]"),
+  commandsUrl: text("commands_url").notNull().default("[]"),
+  hooksUrl: text("hooks_url").notNull().default("[]"),
+  connectorAuth: text("connector_auth").notNull().default("[]"),
+  installCount: integer("install_count").notNull().default(0),
+  featured: integer("featured").notNull().default(0),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const installedPlugins = sqliteTable("installed_plugins", {
+  id: text("id").primaryKey().notNull(),
+  pluginId: text("plugin_id")
+    .notNull()
+    .references(() => plugins.id),
+  scope: text("scope").notNull(),
+  scopeId: text("scope_id").notNull(),
+  installedAt: text("installed_at")
+    .notNull()
+    .default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
+  installedBy: text("installed_by").notNull(),
+  version: text("version").notNull(),
+  skillsUrl: text("skills_url").notNull().default("[]"),
+  commandsUrl: text("commands_url").notNull().default("[]"),
+  hooksUrl: text("hooks_url").notNull().default("[]"),
+  mcpUrl: text("mcp_url").notNull().default("[]"),
+});

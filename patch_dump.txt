@@ -1,0 +1,260 @@
+const EMPTY_FORM = (): SubmitPluginInput => ({
+  id: "",
+  name: "",
+  description: "",
+  author: "",
+  version: "1.0.0",
+  category: "developer",
+  githubUrl: "",
+  iconUrl: "",
+  docsUrl: "",
+  skillIds: "[]",
+  mcpIds: "[]",
+  commandIds: "[]",
+  connectorAuth: "[]",
+  featured: false,
+});
+function PublishPluginDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [form, setForm] = useState<SubmitPluginInput>(EMPTY_FORM);
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const [skillsCat, setSkillsCat] = useState<any[]>([]);
+  const [mcpCat, setMcpCat] = useState<any[]>([]);
+  const [commandsCat, setCommandsCat] = useState<any[]>([]);
+  const [connectorsCat, setConnectorsCat] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    api.fetchSkillCatalog().then(setSkillsCat).catch(console.error);
+    api.listMcpCatalog().then(setMcpCat).catch(console.error);
+    api.listCommandsCatalog().then(setCommandsCat).catch(console.error);
+    api.listConnectorCatalog().then(setConnectorsCat).catch(console.error);
+  }, [open]);
+
+  const set = (k: keyof SubmitPluginInput, v: string | boolean) =>
+    setForm((f) => ({ ...f, [k]: v }));
+            {/* Scope removed, as it's added by the user during installation */}
+
+            {field("GitHub URL", "githubUrl", "https://github.com/owner/repo")}
+            {field("Icon URL", "iconUrl", "https://…/icon.svg")}
+            <div className="col-span-2">
+              {field("Docs URL", "docsUrl", "https://docs.example.com")}
+            </div>
+
+            {/* Skills */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-muted-foreground">Skills</label>
+              <select
+                multiple
+                value={JSON.parse(form.skillIds)}
+                onChange={(e) => {
+                  const opts = Array.from(e.target.selectedOptions, o => o.value);
+                  set("skillIds", JSON.stringify(opts));
+                }}
+                className="h-20 rounded-md border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-primary"
+              >
+                {skillsCat.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+
+            {/* Commands */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-muted-foreground">Commands</label>
+              <select
+                multiple
+                value={JSON.parse(form.commandIds)}
+                onChange={(e) => {
+                  const opts = Array.from(e.target.selectedOptions, o => o.value);
+                  set("commandIds", JSON.stringify(opts));
+                }}
+                className="h-20 rounded-md border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-primary"
+              >
+                {commandsCat.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+
+            {/* MCP IDs */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-muted-foreground">MCP Servers</label>
+              <select
+                multiple
+                value={JSON.parse(form.mcpIds)}
+                onChange={(e) => {
+                  const opts = Array.from(e.target.selectedOptions, o => o.value);
+                  set("mcpIds", JSON.stringify(opts));
+                }}
+                className="h-20 rounded-md border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-primary"
+              >
+                {mcpCat.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+
+            {/* Connector Auth */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-muted-foreground">Connectors</label>
+              <select
+                multiple
+                value={(() => {
+                  try {
+                    return JSON.parse(form.connectorAuth).map((a: any) => a.service);
+                  } catch {
+                    return [];
+                  }
+                })()}
+                onChange={(e) => {
+                  const selected = Array.from(e.target.selectedOptions, o => connectorsCat.find(c => c.id === o.value)).filter(Boolean);
+                  const auths = selected.map(c => ({
+                    service: c!.id,
+                    authType: c!.authType,
+                    keyFields: JSON.parse(c!.apiKeyFields || "[]"),
+                    oauthUrl: c!.oauthUrl,
+                  }));
+                  set("connectorAuth", JSON.stringify(auths));
+                }}
+                className="h-20 rounded-md border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-primary"
+              >
+                {connectorsCat.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuCheckboxItem,
+} from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
+// ─── Publish Plugin Dialog (dev/admin) ────────────────────────────────────────
+
+function MultiSelectDropdown({
+  label,
+  options,
+  selectedIds,
+  onChange,
+}: {
+  label: string;
+  options: { id: string; name: string }[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="text-[11px] font-medium text-muted-foreground">{label}</label>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm" className="h-7 w-full justify-between px-2.5 text-xs font-normal">
+            <span className="truncate">
+              {selectedIds.length > 0 ? `${selectedIds.length} selected` : "Select options..."}
+            </span>
+            <ChevronRight className="h-3.5 w-3.5 rotate-90 opacity-50 shrink-0" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent className="w-64" align="start">
+          <ScrollArea className="max-h-56">
+            {options.map((opt) => (
+              <DropdownMenuCheckboxItem
+                key={opt.id}
+                checked={selectedIds.includes(opt.id)}
+                onSelect={(e) => e.preventDefault()}
+                onCheckedChange={(c) => {
+                  if (c) onChange([...selectedIds, opt.id]);
+                  else onChange(selectedIds.filter(id => id !== opt.id));
+                }}
+              >
+                {opt.name}
+              </DropdownMenuCheckboxItem>
+            ))}
+            {options.length === 0 && (
+              <div className="p-2 text-xs text-muted-foreground text-center">No items found</div>
+            )}
+          </ScrollArea>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+const EMPTY_FORM = (): SubmitPluginInput => ({
+        {/* Form */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="grid grid-cols-2 gap-3 px-5 py-4">
+            {/* Skills */}
+            <MultiSelectDropdown
+              label="Skills"
+              options={skillsCat}
+              selectedIds={JSON.parse(form.skillIds)}
+              onChange={(ids) => set("skillIds", JSON.stringify(ids))}
+            />
+
+            {/* Commands */}
+            <MultiSelectDropdown
+              label="Commands"
+              options={commandsCat}
+              selectedIds={JSON.parse(form.commandIds)}
+              onChange={(ids) => set("commandIds", JSON.stringify(ids))}
+            />
+
+            {/* MCP IDs */}
+            <MultiSelectDropdown
+              label="MCP Servers"
+              options={mcpCat}
+              selectedIds={JSON.parse(form.mcpIds)}
+              onChange={(ids) => set("mcpIds", JSON.stringify(ids))}
+            />
+
+            {/* Connector Auth */}
+            <MultiSelectDropdown
+              label="Connectors"
+              options={connectorsCat}
+              selectedIds={(() => {
+                try {
+                  return JSON.parse(form.connectorAuth).map((a: any) => a.service);
+                } catch {
+                  return [];
+                }
+              })()}
+              onChange={(ids) => {
+                const selected = ids.map(id => connectorsCat.find(c => c.id === id)).filter(Boolean);
+                const auths = selected.map(c => ({
+                  service: c!.id,
+                  authType: c!.authType,
+                  keyFields: JSON.parse(c!.apiKeyFields || "[]"),
+                  oauthUrl: c!.oauthUrl,
+                }));
+                set("connectorAuth", JSON.stringify(auths));
+              }}
+            />
+
+            {/* Featured */}
+          </div>
+        </div>
+
+        {/* Footer */}
+// ─── Publish Plugin Dialog (dev/admin) ────────────────────────────────────────
+
+export function MultiSelectDropdown({
+  label,
+}
+
+export function PublishPluginDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [form, setForm] = useState<SubmitPluginInput>(EMPTY_FORM);
+            {/* Connector Auth */}
+            <MultiSelectDropdown
+              label="Connectors"
+              options={connectorsCat}
+              selectedIds={(() => {
+                try {
+                  return JSON.parse(form.connectorAuth).map((a: any) => a.connector_id);
+                } catch {
+                  return [];
+                }
+              })()}
+              onChange={(ids) => {
+                const auths = ids.map(id => ({
+                  connector_id: id,
+                  required: true,
+                }));
+                set("connectorAuth", JSON.stringify(auths));
+              }}
+            />

@@ -9,6 +9,7 @@ import {
   ListTodo,
   LogOut,
   Moon,
+  Puzzle,
   Plus,
   FolderClosed,
   Settings,
@@ -55,6 +56,7 @@ interface SidebarRailProps {
   sessionsActive: boolean;
   usageActive: boolean;
   agentsActive: boolean;
+  customizeActive: boolean;
   orgName: string;
   onExpand: () => void;
   onSelect: (id: number) => void;
@@ -64,6 +66,7 @@ interface SidebarRailProps {
   onSessions: () => void;
   onUsage: () => void;
   onAgents: () => void;
+  onCustomize: () => void;
   onSettings: () => void;
 }
 
@@ -77,6 +80,7 @@ export function SidebarRail({
   sessionsActive,
   usageActive,
   agentsActive,
+  customizeActive,
   orgName,
   onExpand,
   onSelect,
@@ -86,6 +90,7 @@ export function SidebarRail({
   onSessions,
   onUsage,
   onAgents,
+  onCustomize,
   onSettings,
 }: SidebarRailProps) {
   const { theme, setTheme } = useTheme();
@@ -160,6 +165,15 @@ export function SidebarRail({
         <TooltipContent side="right">Agents</TooltipContent>
       </Tooltip>
 
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button className={railButton(customizeActive)} onClick={onCustomize}>
+            <Puzzle className="h-4 w-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Customize</TooltipContent>
+      </Tooltip>
+
       <div className="my-1 h-px w-6 bg-sidebar-border" />
 
       <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-y-auto">
@@ -223,6 +237,7 @@ interface SidebarProps {
   sessionsActive: boolean;
   usageActive: boolean;
   agentsActive: boolean;
+  customizeActive?: boolean;
   onOrgChange: (id: number) => void;
   onNewOrg: (name: string) => Promise<void>;
   onSelect: (id: number) => void;
@@ -233,6 +248,7 @@ interface SidebarProps {
   onSessions: () => void;
   onUsage: () => void;
   onAgents: () => void;
+  onCustomize?: () => void;
   onSettings: () => void;
 }
 
@@ -266,6 +282,7 @@ export function Sidebar({
   sessionsActive,
   usageActive,
   agentsActive,
+  customizeActive,
   onOrgChange,
   onNewOrg,
   onSelect,
@@ -276,6 +293,7 @@ export function Sidebar({
   onSessions,
   onUsage,
   onAgents,
+  onCustomize,
   onSettings,
 }: SidebarProps) {
   const { theme, setTheme } = useTheme();
@@ -462,6 +480,24 @@ export function Sidebar({
           />
           <span className="text-[13px] font-medium">Agents</span>
         </div>
+
+        {onCustomize && (
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={onCustomize}
+            onKeyDown={(e) => e.key === "Enter" && onCustomize()}
+            className={cn(
+              "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
+              customizeActive ? "bg-accent" : "hover:bg-accent/50",
+            )}
+          >
+            <Puzzle
+              className={cn("h-4 w-4", customizeActive ? "text-primary" : "text-muted-foreground")}
+            />
+            <span className="text-[13px] font-medium">Customize</span>
+          </div>
+        )}
       </div>
 
       <div className="border-t border-sidebar-border" />

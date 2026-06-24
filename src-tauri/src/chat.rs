@@ -140,6 +140,18 @@ pub(crate) fn build_system_prompt(app: &AppHandle, workspace_id: i64) -> String 
         sections.push(wiki);
     }
 
+    // Before-prompt hook — non-blocking, stdout appended as extra context.
+    {
+        let mut hook_env = std::collections::HashMap::new();
+        let total_len: usize = sections.iter().map(|s| s.len()).sum();
+        hook_env.insert("SUPERCONSOLE_PROMPT_LENGTH".into(), total_len.to_string());
+        let hook_out = crate::hooks::run_hook(&path, crate::hooks::HookType::BeforePrompt, &hook_env);
+        let trimmed = hook_out.trim();
+        if !trimmed.is_empty() {
+            sections.push(format!("# Additional context (from before-prompt hook)\n\n{}", trimmed));
+        }
+    }
+
     sections.join("\n\n---\n\n")
 }
 

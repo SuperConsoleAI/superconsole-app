@@ -12,7 +12,7 @@ import {
   Pencil,
   Play,
   Plus,
-  TerminalSquare,
+  SquareSlash,
   Trash2,
 } from "lucide-react";
 import {
@@ -460,7 +460,7 @@ export function TasksView({
                   {isChat ? (
                     <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" strokeWidth={1.5} />
                   ) : (
-                    <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" strokeWidth={1.5} />
+                    <SquareSlash className="h-3.5 w-3.5 shrink-0 text-muted-foreground" strokeWidth={1.5} />
                   )}
 
                   {/* Provider / CLI icon */}

@@ -1210,4 +1210,230 @@ export const api = {
       "detect_telegram_chat",
     ),
   refreshTelegramBots: () => invoke<void>("refresh_telegram_bots"),
+
+  // ── Phase Plugins — Hooks ──────────────────────────────────────────────────
+  listHooks: (workspaceId: number) =>
+    invoke<HookFile[]>("list_hooks_cmd", { workspaceId }),
+  readHook: (workspaceId: number, hookType: string) =>
+    invoke<string>("read_hook_cmd", { workspaceId, hookType }),
+  writeHook: (workspaceId: number, hookType: string, content: string) =>
+    invoke<void>("write_hook_cmd", { workspaceId, hookType, content }),
+  deleteHook: (workspaceId: number, hookType: string) =>
+    invoke<void>("delete_hook_cmd", { workspaceId, hookType }),
+
+  // ── Phase Plugins — Plugin marketplace ────────────────────────────────────
+  listPluginsCatalog: (scope: string, scopeId: string, category?: string) =>
+    invoke<PluginListItem[]>("list_plugins_catalog", { scope, scopeId, category }),
+  searchPluginsCatalog: (scope: string, scopeId: string, query: string) =>
+    invoke<PluginListItem[]>("search_plugins_catalog", { scope, scopeId, query }),
+  getPlugin: (scope: string, scopeId: string, pluginId: string) =>
+    invoke<PluginListItem>("get_plugin", { scope, scopeId, pluginId }),
+  installPlugin: (scope: string, scopeId: string, pluginId: string) =>
+    invoke<string>("install_plugin", { scope, scopeId, pluginId }),
+  uninstallPlugin: (scope: string, scopeId: string, pluginId: string) =>
+    invoke<void>("uninstall_plugin", { scope, scopeId, pluginId }),
+  listInstalledPlugins: (scope: string, scopeId: string) =>
+    invoke<WorkspacePlugin[]>("list_installed_plugins", { scope, scopeId }),
+  installPluginFromUrl: (scope: string, scopeId: string, githubUrl: string) =>
+    invoke<string>("install_plugin_from_url", { scope, scopeId, githubUrl }),
+
+  // ── Phase Plugins — Catalog read ──────────────────────────────────────────
+  listConnectorCatalog: () =>
+    invoke<ConnectorCatalogEntry[]>("list_connector_catalog"),
+  listMcpCatalog: () =>
+    invoke<McpCatalogEntry[]>("list_mcp_catalog"),
+  listCommandsCatalog: () =>
+    invoke<CommandsCatalogEntry[]>("list_commands_catalog"),
+  listHooksCatalog: (hookType?: string) =>
+    invoke<HooksCatalogEntry[]>("list_hooks_catalog_cmd", { hookType }),
+
+  // ── Phase Plugins — Submit to cloud (dev/admin) ───────────────────────────
+  submitCommandToCloud: (input: SubmitCommandInput) =>
+    invoke("submit_command_to_cloud", { input }),
+  submitMcpToCloud: (input: SubmitMcpInput) =>
+    invoke("submit_mcp_to_cloud", { input }),
+  submitConnectorToCloud: (input: SubmitConnectorInput) =>
+    invoke("submit_connector_to_cloud", { input }),
+  submitPluginToCloud: (input: SubmitPluginInput) =>
+    invoke<void>("submit_plugin_to_cloud", { input }),
 };
+
+export interface SubmitPluginInput {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  version: string;
+  category: string;
+  githubUrl?: string;
+  iconUrl?: string;
+  docsUrl?: string;
+  skillIds: string;      // JSON array string
+  mcpIds: string;        // JSON array string
+  commandIds: string;    // JSON array string
+  skillsUrl?: string;
+  commandsUrl?: string;
+  hooksUrl?: string;
+  mcpUrl?: string;
+  connectorAuth: string; // JSON array string
+  featured: boolean;
+}
+
+// ── Phase Plugins — types ──────────────────────────────────────────────────────
+
+export interface HookFile {
+  hookType: string;
+  filename: string;
+  content: string;
+  exists: boolean;
+}
+
+export interface ConnectorAuth {
+  service: string;
+  authType: string;
+  keyFields: string[];
+  oauthUrl?: string | null;
+}
+
+export interface PluginListItem {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  version: string;
+  iconUrl?: string | null;
+  category: string;
+  featured: boolean;
+  installed: boolean;
+  skillCount: number;
+  mcpCount: number;
+  hookCount: number;
+  skillIds: string;
+  mcpIds: string;
+  commandIds: string;
+  skillsUrl?: string;
+  commandsUrl?: string;
+  hooksUrl?: string;
+  mcpUrl?: string;
+  githubUrl?: string | null;
+  docsUrl?: string | null;
+  connectorAuth: ConnectorAuth[];
+}
+
+export interface WorkspacePlugin {
+  id: string;
+  workspaceId: number;
+  pluginId: string;
+  installedAt: string;
+  version: string;
+}
+
+export interface ConnectorCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  authType: string;
+  oauthUrl?: string | null;
+  apiKeyFields: string;
+  docsUrl?: string | null;
+  iconUrl?: string | null;
+  scope: string;
+  syncedAt: string;
+}
+
+export interface McpCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  category: string;
+  githubUrl: string;
+  installCommand: string;
+  installArgs: string;
+  requiredEnvVars: string;
+  iconUrl?: string | null;
+  syncedAt: string;
+}
+
+export interface McpListItem {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  category: string;
+  type: string;
+  url: string | null;
+  command: string | null;
+  args: string;
+  env: string;
+  requiredEnvVars: string;
+  githubUrl: string | null;
+  iconUrl: string | null;
+  docsUrl: string | null;
+  installCount: number;
+}
+
+export interface CommandsCatalogEntry {
+  id: string;
+  name: string;
+  slash: string;
+  description: string;
+  author: string;
+  category: string;
+  githubUrl: string;
+  syncedAt: string;
+}
+
+export interface HooksCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  hookType: string;
+  githubUrl: string;
+  syncedAt: string;
+}
+
+
+export interface SubmitConnectorInput {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  authType: string;
+  oauthUrl?: string;
+  apiKeyFields: string; // JSON
+  docsUrl?: string;
+  iconUrl?: string;
+  scope: string;
+}
+
+export interface SubmitMcpInput {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  category: string;
+  type: string;
+  url?: string;
+  command?: string;
+  args?: string; // JSON
+  env?: string; // JSON
+  requiredEnvVars: string; // JSON
+  githubUrl?: string;
+  iconUrl?: string;
+  docsUrl?: string;
+}
+
+export interface SubmitCommandInput {
+  id: string;
+  name: string;
+  slash: string;
+  description: string;
+  author: string;
+  category: string;
+  githubUrl: string;
+  content?: string;
+  iconUrl?: string;
+}

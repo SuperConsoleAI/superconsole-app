@@ -310,11 +310,21 @@ pub fn start_session(
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
+    // SessionStart hook — best-effort, non-blocking.
+    {
+        let mut hook_env = std::collections::HashMap::new();
+        hook_env.insert("SUPERCONSOLE_SESSION_ID".into(), session_id.to_string());
+        hook_env.insert("SUPERCONSOLE_CLI".into(), cli.to_string());
+        hook_env.insert("SUPERCONSOLE_WORKSPACE_NAME".into(), workspace_path.split('/').last().unwrap_or("").to_string());
+        crate::hooks::run_hook(workspace_path, crate::hooks::HookType::SessionStart, &hook_env);
+    }
+
     let app_handle = app.clone();
     let sid = session_id.to_string();
     let providers: Vec<String> = key_providers.to_vec();
     let cli_name = cli.to_string();
     let ws_id = workspace_id;
+    let ws_path_for_hook = workspace_path.to_string();
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
         let mut auth_error_reported = false;
@@ -382,6 +392,15 @@ pub fn start_session(
                 };
                 crate::usage::record_usage(&app_handle, ev);
             }
+        }
+        // SessionEnd hook — best-effort, non-blocking.
+        {
+            let mut hook_env = std::collections::HashMap::new();
+            hook_env.insert("SUPERCONSOLE_SESSION_ID".into(), sid.clone());
+            hook_env.insert("SUPERCONSOLE_CLI".into(), cli_name.clone());
+            hook_env.insert("SUPERCONSOLE_WORKSPACE_NAME".into(),
+                ws_path_for_hook.split('/').last().unwrap_or("").to_string());
+            crate::hooks::run_hook(&ws_path_for_hook, crate::hooks::HookType::SessionEnd, &hook_env);
         }
         let _ = app_handle.emit("pty-exit", PtyExit { session_id: sid });
     });

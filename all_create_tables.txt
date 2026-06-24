@@ -1,0 +1,432 @@
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+            CREATE TABLE IF NOT EXISTS installed_plugins (
+                id TEXT PRIMARY KEY,
+                plugin_id TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                installed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                version TEXT NOT NULL DEFAULT '1.0.0'
+            );
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL UNIQUE,
+                cli TEXT NOT NULL DEFAULT 'claude',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                command TEXT NOT NULL,
+                schedule TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run TEXT,
+                next_run TEXT
+            );
+            CREATE TABLE IF NOT EXISTS session_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                cli TEXT NOT NULL,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                ended_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS cloud_identity (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                payload TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS inbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                job_id INTEGER,
+                title TEXT NOT NULL,
+                output TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'unread',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .map_err(|e| e.to_string())?;
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS organizations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO organizations (id, name)
+                SELECT 1, 'Personal'
+                WHERE NOT EXISTS (SELECT 1 FROM organizations);",
+        )
+        .map_err(|e| e.to_string())?;
+
+        let has_org_col = conn
+            .prepare("SELECT organization_id FROM workspaces LIMIT 1")
+            .is_ok();
+        if !has_org_col {
+            conn.execute_batch(
+                "ALTER TABLE workspaces ADD COLUMN organization_id INTEGER NOT NULL DEFAULT 1;",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+--
+        // start. scope is account|org|project, scope_id the matching cloud id.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS llm_keys_cache (
+                scope TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                credentials_encrypted TEXT,
+                base_url TEXT,
+                extra_env TEXT,
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (scope, scope_id, provider)
+            );
+            CREATE TABLE IF NOT EXISTS connectors_cache (
+                scope TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                service TEXT NOT NULL,
+                status TEXT,
+                credentials_encrypted TEXT,
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (scope, scope_id, service)
+            );
+            CREATE TABLE IF NOT EXISTS project_org_cache (
+                project_id TEXT PRIMARY KEY,
+                org_id TEXT NOT NULL,
+                synced_at TEXT NOT NULL
+            );
+            -- Native chat history, keyed by project_id (the workspace->project
+            -- ULID). Local only: never synced to Turso.
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                session_id TEXT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                provider TEXT,
+                model TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS chat_messages_project_idx
+                ON chat_messages(project_id);
+            CREATE INDEX IF NOT EXISTS chat_messages_session_idx
+                ON chat_messages(session_id);
+            -- Legacy per-project chat metadata (pre multi-session). Kept only as
+            -- a migration source; superseded by chat_sessions.
+            CREATE TABLE IF NOT EXISTS chat_threads (
+                project_id TEXT PRIMARY KEY,
+                name TEXT,
+                is_star INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            -- Multi-session chat: many sessions per project. Local only.
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                name TEXT,
+                is_star INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS chat_sessions_project_idx
+                ON chat_sessions(project_id);",
+        )
+        .map_err(|e| e.to_string())?;
+
+        // Multi-session chat migration. Pre-existing DBs have chat_messages
+        // without session_id; add it, then fold each project's messages into a
+        // single session, carrying over the legacy chat_threads name/star.
+        let has_session_col = conn
+            .prepare("SELECT session_id FROM chat_messages LIMIT 1")
+            .is_ok();
+        if !has_session_col {
+            conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN session_id TEXT;")
+--
+        // only) so cross-device skill listings never hit Turso on the hot path.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS project_skills (
+                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
+                file_path TEXT NOT NULL DEFAULT '',
+                scope TEXT NOT NULL DEFAULT 'project',
+                active INTEGER NOT NULL DEFAULT 1,
+                auto INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT 'superconsole',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (workspace_id, name)
+            );
+            CREATE TABLE IF NOT EXISTS skill_index_cache (
+                project_id TEXT NOT NULL,
+                skill_name TEXT NOT NULL,
+                tags TEXT,
+                scope TEXT NOT NULL DEFAULT 'project',
+                active INTEGER NOT NULL DEFAULT 1,
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, skill_name)
+            );
+            -- Local mirror of Turso org_skill_index: org-level references (by
+            -- name) to machine-global library skills. Metadata only.
+            CREATE TABLE IF NOT EXISTS org_skill_cache (
+                org_id TEXT NOT NULL,
+                skill_name TEXT NOT NULL,
+                tags TEXT,
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (org_id, skill_name)
+            );",
+        )
+        .map_err(|e| e.to_string())?;
+
+        // Phase 19: memory. Content lives in workspace files
+        // (.superconsole/memory/*.md); `memory_entries` is a local index
+        // (metadata + one-line summary) keyed by workspace. `memory_index_cache`
+        // mirrors the Turso `project_memory_index` for cross-device restore;
+        // `org_memory_cache` mirrors `org_memory_index` (shared facts, content
+        // included since org memory has no workspace file).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS memory_entries (
+                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                category TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
+                file_path TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (workspace_id, category, slug)
+            );
+            CREATE TABLE IF NOT EXISTS memory_index_cache (
+                project_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                tags TEXT,
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, category, slug)
+            );
+            CREATE TABLE IF NOT EXISTS org_memory_cache (
+                org_id TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                tags TEXT,
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (org_id, slug)
+            );",
+        )
+        .map_err(|e| e.to_string())?;
+
+        // Phase 20: wiki. Content lives in workspace files
+        // (.superconsole/wiki/*.md); `wiki_pages` is a local metadata index.
+        // `wiki_index_cache` mirrors the Turso `wiki_index` which, unlike skills
+        // and memory, stores full content (wiki is structured + predictable
+        // size) so teammates and fresh devices get it without pulling git.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS wiki_pages (
+                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
+                file_path TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (workspace_id, slug)
+            );
+            CREATE TABLE IF NOT EXISTS wiki_index_cache (
+                project_id TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                tags TEXT,
+                content TEXT NOT NULL DEFAULT '',
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, slug)
+            );",
+        )
+        .map_err(|e| e.to_string())?;
+
+        // Phase 21: usage monitoring.
+        // `usage_events` is the raw, local-only ledger (one row per measured
+        // session/turn). It NEVER leaves the device and is never cleared by
+        // cloud-cache wipes. `user_id` records who generated the event so the
+        // by_member breakdown can be populated. `synced` marks whether the
+        // event's delta has been pushed to the Turso shared totals.
+        //
+        // The three `*_usage` tables share one canonical schema so a single
+--
+        // shared (cross-machine/member) totals; display always reads them.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS usage_events (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                org_id TEXT,
+                user_id TEXT,
+                session_id TEXT,
+                model TEXT,
+                provider TEXT,
+                cli TEXT,
+                tokens_prompt INTEGER NOT NULL DEFAULT 0,
+                tokens_prompt_cached INTEGER NOT NULL DEFAULT 0,
+                tokens_completion INTEGER NOT NULL DEFAULT 0,
+                tokens_reasoning INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0,
+                cache_hit_rate REAL NOT NULL DEFAULT 0,
+                estimated INTEGER NOT NULL DEFAULT 0,
+                synced INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                ended_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS usage_events_project_idx ON usage_events(project_id);
+            CREATE INDEX IF NOT EXISTS usage_events_synced_idx ON usage_events(synced);
+            CREATE TABLE IF NOT EXISTS project_usage (
+                id TEXT PRIMARY KEY,
+                tokens_prompt_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_prompt_cached_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_completion_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_reasoning_lifetime INTEGER NOT NULL DEFAULT 0,
+                cost_lifetime_usd REAL NOT NULL DEFAULT 0,
+                sessions_lifetime INTEGER NOT NULL DEFAULT 0,
+                cache_hits_lifetime INTEGER NOT NULL DEFAULT 0,
+                analytics_lifetime TEXT NOT NULL DEFAULT '{}',
+                usage_24h TEXT NOT NULL DEFAULT '[]',
+                usage_7d TEXT NOT NULL DEFAULT '[]',
+                usage_30d TEXT NOT NULL DEFAULT '[]',
+                usage_12m TEXT NOT NULL DEFAULT '[]',
+                by_model TEXT NOT NULL DEFAULT '{}',
+                by_provider TEXT NOT NULL DEFAULT '{}',
+                by_cli TEXT NOT NULL DEFAULT '{}',
+                by_member TEXT NOT NULL DEFAULT '{}',
+                by_project TEXT NOT NULL DEFAULT '{}',
+                by_org TEXT NOT NULL DEFAULT '{}',
+                heatmap_365d TEXT NOT NULL DEFAULT '{}',
+--
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS org_usage (
+                id TEXT PRIMARY KEY,
+                tokens_prompt_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_prompt_cached_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_completion_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_reasoning_lifetime INTEGER NOT NULL DEFAULT 0,
+                cost_lifetime_usd REAL NOT NULL DEFAULT 0,
+                sessions_lifetime INTEGER NOT NULL DEFAULT 0,
+                cache_hits_lifetime INTEGER NOT NULL DEFAULT 0,
+                analytics_lifetime TEXT NOT NULL DEFAULT '{}',
+                usage_24h TEXT NOT NULL DEFAULT '[]',
+                usage_7d TEXT NOT NULL DEFAULT '[]',
+                usage_30d TEXT NOT NULL DEFAULT '[]',
+                usage_12m TEXT NOT NULL DEFAULT '[]',
+                by_model TEXT NOT NULL DEFAULT '{}',
+                by_provider TEXT NOT NULL DEFAULT '{}',
+                by_cli TEXT NOT NULL DEFAULT '{}',
+                by_member TEXT NOT NULL DEFAULT '{}',
+                by_project TEXT NOT NULL DEFAULT '{}',
+                by_org TEXT NOT NULL DEFAULT '{}',
+                heatmap_365d TEXT NOT NULL DEFAULT '{}',
+--
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS account_usage (
+                id TEXT PRIMARY KEY,
+                tokens_prompt_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_prompt_cached_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_completion_lifetime INTEGER NOT NULL DEFAULT 0,
+                tokens_reasoning_lifetime INTEGER NOT NULL DEFAULT 0,
+                cost_lifetime_usd REAL NOT NULL DEFAULT 0,
+                sessions_lifetime INTEGER NOT NULL DEFAULT 0,
+                cache_hits_lifetime INTEGER NOT NULL DEFAULT 0,
+                analytics_lifetime TEXT NOT NULL DEFAULT '{}',
+                usage_24h TEXT NOT NULL DEFAULT '[]',
+                usage_7d TEXT NOT NULL DEFAULT '[]',
+                usage_30d TEXT NOT NULL DEFAULT '[]',
+                usage_12m TEXT NOT NULL DEFAULT '[]',
+                by_model TEXT NOT NULL DEFAULT '{}',
+                by_provider TEXT NOT NULL DEFAULT '{}',
+                by_cli TEXT NOT NULL DEFAULT '{}',
+                by_member TEXT NOT NULL DEFAULT '{}',
+                by_project TEXT NOT NULL DEFAULT '{}',
+                by_org TEXT NOT NULL DEFAULT '{}',
+                heatmap_365d TEXT NOT NULL DEFAULT '{}',
+--
+        // matching row id in the Turso `project_agents`; NULL until cloud sync.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agents (
+                id TEXT PRIMARY KEY,
+                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                schedule TEXT NOT NULL DEFAULT '',
+                default_run_mode TEXT NOT NULL DEFAULT 'cli',
+                default_cli TEXT NOT NULL DEFAULT 'claude',
+                default_provider TEXT NOT NULL DEFAULT 'anthropic',
+                default_model TEXT NOT NULL DEFAULT '',
+                skills TEXT NOT NULL DEFAULT '',
+                connectors TEXT NOT NULL DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                agent_id TEXT,
+                last_run TEXT,
+                next_run TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(workspace_id, name)
+            );",
+        )
+--
+        // metadata (project_session_logs) — content/file_path never leaves the device.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS session_logs (
+                id TEXT PRIMARY KEY,
+                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                file_path TEXT NOT NULL,
+                agent_id TEXT,
+                session_id TEXT,
+                date TEXT NOT NULL,
+                agent_name TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                cost_usd REAL NOT NULL DEFAULT 0,
+                tokens INTEGER NOT NULL DEFAULT 0,
+                summary TEXT NOT NULL DEFAULT '',
+                cloud_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS session_logs_ws_idx
+                ON session_logs(workspace_id);
+            CREATE INDEX IF NOT EXISTS session_logs_agent_idx
+                ON session_logs(agent_id);",
+        )
+        .map_err(|e| e.to_string())?;
+--
+        // Content (SKILL.md) is never stored here; fetched from GitHub URL on install.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS skill_catalog_cache (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '',
+                github_url TEXT NOT NULL,
+                readme TEXT NOT NULL DEFAULT '',
+                author TEXT NOT NULL DEFAULT '',
+                stars INTEGER NOT NULL DEFAULT 0,
+                synced_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS skill_catalog_name_unq
+                ON skill_catalog_cache(name);",
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(Db(Mutex::new(conn)))
+    }
+
+    fn workspace_from_row(r: &rusqlite::Row) -> rusqlite::Result<Workspace> {

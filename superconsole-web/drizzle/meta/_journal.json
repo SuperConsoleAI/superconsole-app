@@ -85,6 +85,20 @@
       "when": 1782300000000,
       "tag": "0011_agent_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1782400000000,
+      "tag": "0012_catalogs",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1782330204473,
+      "tag": "0013_closed_maggott",
+      "breakpoints": true
     }
   ]
 }

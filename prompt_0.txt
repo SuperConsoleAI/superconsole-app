@@ -1,0 +1,24 @@
+<USER_REQUEST>
+read @[/Users/2.o/superconsole/README.md] 
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-24T18:18:52+05:30.
+
+The user's current state is as follows:
+Active Document: /Users/2.o/superconsole/README.md (LANGUAGE_MARKDOWN)
+Cursor is on line: 1
+Other open documents:
+- /Users/2.o/superconsole/src-tauri/src/chat.rs (LANGUAGE_RUST)
+- /Users/2.o/superconsole/src-tauri/src/sync_manager.rs (LANGUAGE_RUST)
+- /Users/2.o/superconsole/src/components/CustomizePage.tsx (LANGUAGE_TSX)
+- /Users/2.o/superconsole/src-tauri/src/plugins.rs (LANGUAGE_RUST)
+- /Users/2.o/superconsole/superconsole-web/scripts/push-catalog-tables.mjs (LANGUAGE_JAVASCRIPT)
+
+The user has mentioned some items in the form @[ITEM]. Here is extra information about the items that were mentioned by the user, in the order that they appear:
+
+@[/Users/2.o/superconsole/README.md] is a [File]:
+/Users/2.o/superconsole/README.md
+</ADDITIONAL_METADATA>
+<USER_SETTINGS_CHANGE>
+The user changed setting `Model Selection` from None to Gemini 3.1 Pro (Low). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.
+</USER_SETTINGS_CHANGE>

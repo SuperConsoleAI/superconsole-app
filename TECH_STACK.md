@@ -42,6 +42,7 @@ Every dependency and why it's here. App target: <30MB installed, Mac first (Wind
 | `react-markdown` + `remark-gfm` | Markdown rendering in Inbox + file editor preview. |
 | `@uiw/react-codemirror` | Syntax-highlighted code editor for the FileEditor tab. |
 | `lucide-react` | Icon set (CLI brand icons are local SVGs in `src/assets/icons/preset-icons/`). |
+| `@ridemountainpig/svgl-react` | Brand SVG logos for the plugin marketplace (`PluginIcon.tsx`). Light/dark variants for monochrome logos (GitHub); multi-colour logos (Figma, Slack, Google, Stripe…) used as-is. |
 | `@fontsource-variable/{archivo,lora,jetbrains-mono}` | Bundled variable fonts (offline app, no Google Fonts CDN). |
 | JetBrains Mono Nerd Font (static, `src/assets/fonts/`) | Terminal font, bundled `@font-face` (static, not variable — variable fonts mis-measure xterm cell width). Provides Nerd Font icon glyphs for CLI logos/box-art. |
 | `@tauri-apps/api` + plugin guests (`plugin-dialog`, `plugin-opener`, `plugin-updater`) | IPC + plugin JS bindings. |
@@ -67,4 +68,5 @@ Every dependency and why it's here. App target: <30MB installed, Mac first (Wind
 ## Cloud + web portal
 
 - Desktop cloud deps are listed above (keyring, ulid, dotenvy, aes-gcm/hkdf/sha2/base64, reqwest). Identity is WorkOS; cloud DB is Turso (libSQL) reached over HTTP from the desktop via `cloud.rs`.
+- Turso schema includes global catalog tables (`plugins`, `connector_catalog`, `mcp_catalog`, `commands_catalog`, `hooks_catalog`, `installed_plugins`) defined in `superconsole-web/src/db/schema.ts`. These are pushed via `node superconsole-web/scripts/push-catalog-tables.mjs` (direct Turso HTTP) rather than `drizzle-kit push` (interactive). `sync_manager::sync_catalogs` pulls them into local SQLite cache on every sync.
 - The web portal (`superconsole-web/`) is a separate stack: TanStack Start + React 19 on Cloudflare Workers, Drizzle ORM over `@libsql/client/web`, `@workos-inc/node`, wrangler. It must stay Workers-compatible (Web APIs only, no Node built-ins/native binaries). See `superconsole-web/TECH_STACK` notes inside its `PROJECT.md`.

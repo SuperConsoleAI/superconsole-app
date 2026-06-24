@@ -172,6 +172,8 @@ async fn run_and_record(
             .state::<Db>()
             .get_setting("account_env_vars")
             .unwrap_or_default();
+        let ws_path_for_hook = ws_path.clone();
+        let command_for_hook = command.to_string();
         let output = tauri::async_runtime::spawn_blocking(move || {
             let mut cmd = Command::new(&program);
             cmd.args(&args).current_dir(&ws_path);
@@ -187,6 +189,14 @@ async fn run_and_record(
             }
             for (k, v) in crate::pty::extra_env_files(&ws_path, &env_files) {
                 cmd.env(k, v);
+            }
+            // Before-shell hook — non-blocking, 10s timeout.
+            {
+                let mut hook_env = std::collections::HashMap::new();
+                hook_env.insert("SUPERCONSOLE_COMMAND".into(), command_for_hook.clone());
+                hook_env.insert("SUPERCONSOLE_WORKSPACE_NAME".into(),
+                    ws_path_for_hook.split('/').last().unwrap_or("").to_string());
+                crate::hooks::run_hook(&ws_path_for_hook, crate::hooks::HookType::BeforeShell, &hook_env);
             }
             cmd.output()
         })

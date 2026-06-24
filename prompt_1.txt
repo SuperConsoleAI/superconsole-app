@@ -1,0 +1,41 @@
+<USER_REQUEST>
+@[/Users/2.o/.gemini/antigravity-ide/brain/ddb62bd2-3527-4a1b-b501-3da6b9c880d3/task.md] = done
+
+read 1-42 and 1206-1230 @[/Users/2.o/superconsole/PLUGINS_HOOKS_CATALOGS.md]  = already done
+
+next
+
+@[/Users/2.o/superconsole/src/components/CustomizePage.tsx] 
+
+form = Publish Plugin to Turso =
+why you added Scope = i'm adding to turso DB as catlog
+its user who choose where to add show in installed_plugins.scope
+
+id = i add or it auto generate?
+
+you need to give dropdown to select skill/connectors/mcp/coomands from their respected catalog tables
+
+
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-24T18:22:04+05:30.
+
+The user's current state is as follows:
+Active Document: /Users/2.o/superconsole/PLUGINS_HOOKS_CATALOGS.md (LANGUAGE_MARKDOWN)
+Cursor is on line: 1
+Other open documents:
+- /Users/2.o/superconsole/PROJECT.md (LANGUAGE_MARKDOWN)
+- /Users/2.o/superconsole/src-tauri/src/mcp.rs (LANGUAGE_RUST)
+- /Users/2.o/superconsole/src/lib/api.ts (LANGUAGE_TYPESCRIPT)
+- /Users/2.o/superconsole/src-tauri/src/sync_manager.rs (LANGUAGE_RUST)
+- /Users/2.o/superconsole/PLUGINS_HOOKS_CATALOGS.md (LANGUAGE_MARKDOWN)
+
+The user has mentioned some items in the form @[ITEM]. Here is extra information about the items that were mentioned by the user, in the order that they appear:
+
+@[/Users/2.o/.gemini/antigravity-ide/brain/ddb62bd2-3527-4a1b-b501-3da6b9c880d3/task.md] is a [File]:
+/Users/2.o/.gemini/antigravity-ide/brain/ddb62bd2-3527-4a1b-b501-3da6b9c880d3/task.md
+@[/Users/2.o/superconsole/PLUGINS_HOOKS_CATALOGS.md] is a [File]:
+/Users/2.o/superconsole/PLUGINS_HOOKS_CATALOGS.md
+@[/Users/2.o/superconsole/src/components/CustomizePage.tsx] is a [File]:
+/Users/2.o/superconsole/src/components/CustomizePage.tsx
+</ADDITIONAL_METADATA>

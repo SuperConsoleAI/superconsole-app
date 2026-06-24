@@ -36,6 +36,7 @@ import { LoginScreen } from "@/components/LoginScreen";
 import { WorkspaceProvider, useWorkspaces } from "@/lib/workspace-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { Anchor as AnchorIcon } from "lucide-react";
+import { CustomizePage } from "@/components/CustomizePage";
 
 interface WorkspaceSearch {
   file?: string;
@@ -96,6 +97,7 @@ function Shell() {
   const sessionsActive = !!matchRoute({ to: "/sessions" });
   const usageActive = !!matchRoute({ to: "/usage" });
   const agentsActive = !!matchRoute({ to: "/agents" });
+  const customizeActive = !!matchRoute({ to: "/customize" });
   const settingsActive = !!matchRoute({ to: "/settings" });
 
   const activeId = params.workspaceId ? Number(params.workspaceId) : null;
@@ -198,6 +200,8 @@ function Shell() {
             onSessions={() => navigate({ to: "/sessions" })}
             onUsage={() => navigate({ to: "/usage" })}
             onAgents={() => navigate({ to: "/agents" })}
+            customizeActive={customizeActive}
+            onCustomize={() => navigate({ to: "/customize", search: activeId ? { ws: activeId } : {} })}
             onSettings={() => navigate({ to: "/settings" })}
           />
         ) : (
@@ -211,6 +215,7 @@ function Shell() {
             sessionsActive={sessionsActive}
             usageActive={usageActive}
             agentsActive={agentsActive}
+            customizeActive={customizeActive}
             orgName={organizations.find((o) => o.id === activeOrgId)?.name ?? "Personal"}
             onExpand={() => setSidebarOpen(true)}
             onSelect={(id) => goToWorkspace(id)}
@@ -220,6 +225,7 @@ function Shell() {
             onSessions={() => navigate({ to: "/sessions" })}
             onUsage={() => navigate({ to: "/usage" })}
             onAgents={() => navigate({ to: "/agents" })}
+            onCustomize={() => navigate({ to: "/customize", search: activeId ? { ws: activeId } : {} })}
             onSettings={() => navigate({ to: "/settings" })}
           />
         )}
@@ -657,6 +663,30 @@ const settingsRoute = createRoute({
   }),
 });
 
+interface CustomizeSearch {
+  ws?: number;
+}
+
+function CustomizeRoute() {
+  const { ws } = customizeRoute.useSearch();
+  return (
+    <div className="absolute inset-0 bg-background">
+      <CustomizePage initialWorkspaceId={ws} />
+    </div>
+  );
+}
+
+const customizeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "customize",
+  component: CustomizeRoute,
+  validateSearch: (search: Record<string, unknown>): CustomizeSearch => ({
+    ws: typeof search.ws === "number" ? search.ws
+      : typeof search.ws === "string" ? Number(search.ws) || undefined
+      : undefined,
+  }),
+});
+
 function WorkspaceView() {
   return <div className="absolute inset-0" />;
 }
@@ -677,6 +707,7 @@ const routeTree = rootRoute.addChildren([
   sessionsRoute,
   usageRoute,
   agentsRoute,
+  customizeRoute,
   settingsRoute,
   workspaceRoute,
 ]);
