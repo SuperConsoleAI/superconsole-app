@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { BookOpen, Bot, ClipboardList, Paperclip, Plug, Plus, RefreshCw, ScrollText, TextCursorInput, SquareSlash } from "lucide-react";
+import { BookOpen, Bot, ClipboardList, Paperclip, Plug, Plus, RefreshCw, ScrollText, TextCursorInput, TerminalSquare } from "lucide-react";
 import { useRouter } from "@tanstack/react-router";
 import {
   api,
@@ -672,7 +672,7 @@ export function TerminalPane({
                   <DropdownMenuSubTrigger
                     className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
                   >
-                    <SquareSlash className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                    <TerminalSquare className="h-3.5 w-3.5 shrink-0 opacity-50" />
                     <span className="text-[#8aa05f]">Commands</span>
                     <span className="ml-auto text-[10px] text-[#5e5b54]">{commands.length}</span>
                   </DropdownMenuSubTrigger>

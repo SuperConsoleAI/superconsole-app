@@ -16,7 +16,7 @@ import {
   Plus,
   ScrollText,
   Search,
-  SquareSlash,
+  TerminalSquare,
   Trash2,
   Wrench,
 } from "lucide-react";
@@ -244,7 +244,7 @@ function AgentListRow({
         {isChat ? (
           <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" strokeWidth={1.5} />
         ) : (
-          <SquareSlash className="h-3.5 w-3.5 shrink-0 text-muted-foreground" strokeWidth={1.5} />
+          <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" strokeWidth={1.5} />
         )}
       </div>
 

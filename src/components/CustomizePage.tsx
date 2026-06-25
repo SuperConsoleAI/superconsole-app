@@ -221,20 +221,23 @@ function PluginRow({
   onInstall,
   onUninstall,
   installing,
+  scope,
 }: {
   plugin: PluginListItem & { workspaceName?: string };
   wsName: string;
   onInstall: () => void;
   onUninstall: () => void;
   installing: boolean;
+  scope: { type: string; id: string };
 }) {
   const [expanded, setExpanded] = useState(false);
   const [installStep, setInstallStep] = useState<InstallStep>({ kind: "idle" });
+  const [authValue, setAuthValue] = useState("");
 
   useEffect(() => {
     if (!installing) {
       if (installStep.kind === "installing") {
-        const needsAuth = plugin.connectorAuth.length > 0 && !plugin.installed;
+        const needsAuth = plugin.connectorAuth.length > 0;
         if (needsAuth) {
           setInstallStep({ kind: "auth", service: plugin.connectorAuth[0].service, authType: plugin.connectorAuth[0].authType });
         } else {
@@ -370,9 +373,28 @@ function PluginRow({
                   Connect with {installStep.service} →
                 </Button>
               ) : (
-                <div className="flex gap-2">
-                  <input type="password" placeholder="API Key" className="h-7 flex-1 rounded-md border bg-background px-2 text-xs outline-none" />
-                  <Button size="sm" className="h-7 text-xs" onClick={() => { setInstallStep({ kind: "done" }); setTimeout(() => setInstallStep({ kind: "idle" }), 3000); }}>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="password"
+                    placeholder="API Key"
+                    value={authValue}
+                    onChange={(e) => setAuthValue(e.target.value)}
+                    className="h-7 flex-1 rounded-md border bg-background px-2 text-xs outline-none"
+                  />
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs"
+                    disabled={!authValue.trim()}
+                    onClick={async () => {
+                      try {
+                        await api.setConnector(scope.type as any, scope.id, installStep.service, { api_key: authValue });
+                      } catch (e) {
+                        console.error("Failed to save connector", e);
+                      }
+                      setInstallStep({ kind: "done" });
+                      setTimeout(() => setInstallStep({ kind: "idle" }), 3000);
+                    }}
+                  >
                     Save &amp; Finish
                   </Button>
                 </div>
@@ -749,6 +771,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
                     key={p.id}
                     plugin={p}
                     wsName={scope ? wsName(scope.id) : ""}
+                    scope={scope}
                     onInstall={() => handleInstall(p.id)}
                     onUninstall={() => handleUninstall(p.id)}
                     installing={installing === p.id}
