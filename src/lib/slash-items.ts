@@ -5,7 +5,7 @@ export interface SlashItem {
   label: string;       // Display label (same as value for most)
   description: string; // Secondary text shown in dropdown
   group: string;       // Group header
-  source: "command" | "skill" | "context" | "wiki" | "agent" | "memory" | "connector" | "session";
+  source: "command" | "skill" | "context" | "wiki" | "agent" | "memory" | "connector" | "session" | "rule";
 }
 
 /** Ordered group names — defines the fixed anchor link order. */
@@ -14,6 +14,7 @@ export const SLASH_GROUPS = [
   "Connectors",
   "Agents",
   "Commands",
+  "Rules",
   "Context",
   "Memory",
   "Wiki",
@@ -27,7 +28,7 @@ export type SlashGroup = (typeof SLASH_GROUPS)[number];
  * Returns items ordered: Skills → Connectors → Agents → Commands → Context → Memory → Wiki → Sessions.
  */
 export async function loadSlashItems(workspaceId: number): Promise<SlashItem[]> {
-  const [commands, skills, contextFiles, wikiPages, agents, connectors, sessionLogs] =
+  const [commands, skills, contextFiles, wikiPages, agents, connectors, sessionLogs, rules] =
     await Promise.allSettled([
       api.listCommands(workspaceId),
       api.listSkills(workspaceId),
@@ -36,6 +37,7 @@ export async function loadSlashItems(workspaceId: number): Promise<SlashItem[]> 
       api.listAgents(workspaceId),
       api.listConnectors("project", String(workspaceId)),
       api.listSessionLogFiles(workspaceId),
+      api.listRules(workspaceId),
     ]);
 
   const items: SlashItem[] = [];
@@ -88,6 +90,19 @@ export async function loadSlashItems(workspaceId: number): Promise<SlashItem[]> 
         description: c.description || c.name,
         group: "Commands",
         source: "command",
+      });
+    }
+  }
+
+  // Rules
+  if (rules.status === "fulfilled") {
+    for (const r of rules.value) {
+      items.push({
+        value: `/rule:${r.slug}`,
+        label: `/rule:${r.slug}`,
+        description: r.name || r.description || "Rule",
+        group: "Rules",
+        source: "rule",
       });
     }
   }

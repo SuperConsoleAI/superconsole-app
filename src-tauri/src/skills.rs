@@ -33,6 +33,7 @@ pub struct Skill {
     pub file_path: String,
     /// "superconsole" | "claude_command" | "agents_md" — where it was found.
     pub source: String,
+    pub author: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +42,7 @@ pub struct LibrarySkill {
     pub description: String,
     pub tags: Vec<String>,
     pub category: String,
+    pub author: String,
     pub body: String,
 }
 
@@ -220,7 +222,7 @@ fn scan_dir(ws_path: &str) -> Vec<Skill> {
                 auto: fm.auto,
                 active: true,
                 file_path: format!("{}/{}/SKILL.md", SKILLS_DIR, name),
-                source: "superconsole".into(),
+                source: "superconsole".into(), author: String::new(),
             });
             continue;
         }
@@ -246,7 +248,7 @@ fn scan_dir(ws_path: &str) -> Vec<Skill> {
             auto: fm.auto,
             active: true,
             file_path: format!("{}/{}.md", SKILLS_DIR, name),
-            source: "superconsole".into(),
+            source: "superconsole".into(), author: String::new(),
         });
     }
     out
@@ -274,7 +276,7 @@ fn scan_detected(ws_path: &str) -> Vec<Skill> {
                     auto: false,
                     active: false,
                     file_path: format!(".claude/commands/{}.md", name),
-                    source: "claude_command".into(),
+                    source: "claude_command".into(), author: String::new(),
                 });
             }
         }
@@ -289,7 +291,7 @@ fn scan_detected(ws_path: &str) -> Vec<Skill> {
             auto: false,
             active: false,
             file_path: "AGENTS.md".into(),
-            source: "agents_md".into(),
+            source: "agents_md".into(), author: String::new(),
         });
     }
     out
@@ -330,7 +332,8 @@ fn scan_global_as_library(app: &AppHandle) -> Vec<LibrarySkill> {
                 .find("\n---")
                 .and_then(|i| content[i+4..].find("\n").map(|j| content[i+4+j..].trim().to_string()))
                 .unwrap_or_default();
-            out.push(LibrarySkill { name: name.to_string(), description: fm.description, tags: fm.tags, category: fm.scope.clone(), body });
+            out.push(LibrarySkill { name: name.to_string(), description: fm.description, tags: fm.tags, category: fm.scope.clone(), body, author: String::new() });
+
             continue;
         }
         // Flat layout fallback
@@ -343,7 +346,8 @@ fn scan_global_as_library(app: &AppHandle) -> Vec<LibrarySkill> {
             .find("\n---")
             .and_then(|i| content[i+4..].find("\n").map(|j| content[i+4+j..].trim().to_string()))
             .unwrap_or_default();
-        out.push(LibrarySkill { name: name.to_string(), description: fm.description, tags: fm.tags, category: fm.scope.clone(), body });
+        out.push(LibrarySkill { name: name.to_string(), description: fm.description, tags: fm.tags, category: fm.scope.clone(), body, author: String::new() });
+
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
@@ -370,21 +374,21 @@ pub fn list_skills(app: AppHandle, workspace_id: i64) -> Result<Vec<Skill>, Stri
     // 1. Workspace files (highest precedence). Persist an index row so the
     //    active flag survives and syncs; overlay the stored active flag.
     for mut s in scan_dir(&ws_path) {
-        s.active = match index.iter().find(|r| r.name == s.name) {
-            Some(row) => row.active,
-            None => {
-                db.upsert_skill_index(
-                    workspace_id, &s.name, &s.description, &s.tags.join(","), &s.file_path,
-                    "project", s.auto, s.version, "superconsole", true,
-                )?;
-                true
-            }
-        };
+        if let Some(row) = index.iter().find(|r| r.name == s.name) {
+            s.active = row.active;
+            s.author = row.author.clone();
+        } else {
+            let _ = db.upsert_skill_index(
+                workspace_id, &s.name, &s.description, &s.tags.join(","), &s.file_path,
+                "project", s.auto, s.version, "superconsole", true, "",
+            );
+            s.active = true;
+        }
         out.push(s);
     }
 
     // 2. + 3. References (skip names already provided by a workspace file).
-    let mut push_ref = |name: String, active: bool, tags_csv: String| {
+    let mut push_ref = |name: String, active: bool, tags_csv: String, author: String| {
         if out.iter().any(|s| s.name == name) {
             return;
         }
@@ -405,19 +409,19 @@ pub fn list_skills(app: AppHandle, workspace_id: i64) -> Result<Vec<Skill>, Stri
             auto: g.map(|s| s.auto).unwrap_or(false),
             active,
             file_path: format!("skills/{}.md", name),
-            source: if g.is_some() { "global".into() } else { "cloud".into() },
+            source: if g.is_some() { "global".into() } else { "cloud".into() }, author,
             name,
         });
     };
 
     for r in &index {
         if r.scope == "project" {
-            push_ref(r.name.clone(), r.active, r.tags.clone());
+            push_ref(r.name.clone(), r.active, r.tags.clone(), r.author.clone());
         }
     }
     if let Some(pid) = &project_id {
         for c in db.get_cached_skills(pid) {
-            push_ref(c.skill_name, c.active, c.tags);
+            push_ref(c.skill_name, c.active, c.tags, String::new());
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -507,7 +511,7 @@ pub async fn set_skill_active(
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    push_skill_to_cloud(&app, project_id.as_deref(), &slug, &tag_vec, "project", active).await;
+    push_skill_to_cloud(&app, project_id.as_deref(), &slug, &tag_vec, "project", active, None, "").await;
     Ok(())
 }
 
@@ -540,9 +544,9 @@ pub async fn create_skill(
     let file_path = format!("{}/{}/SKILL.md", SKILLS_DIR, slug);
     app.state::<Db>().upsert_skill_index(
         workspace_id, &slug, &description, &tags.join(","), &file_path,
-        "project", false, 1, "superconsole", true,
+        "project", false, 1, "superconsole", true, "",
     )?;
-    push_skill_to_cloud(&app, project_id.as_deref(), &slug, &tags, "project", true).await;
+    push_skill_to_cloud(&app, project_id.as_deref(), &slug, &tags, "project", true, None, "").await;
     Ok(Skill {
         name: slug.clone(),
         description,
@@ -552,7 +556,7 @@ pub async fn create_skill(
         auto: false,
         active: true,
         file_path,
-        source: "superconsole".into(),
+        source: "superconsole".into(), author: String::new(),
     })
 }
 
@@ -577,7 +581,7 @@ pub async fn update_skill(
     let active = app.state::<Db>().get_skill_active(workspace_id, &slug).unwrap_or(true);
     let skill = index_skill(&app, workspace_id, &slug, &fm.description, &fm.tags, "project", fm.auto, fm.version)?;
     app.state::<Db>().set_skill_active(workspace_id, &slug, active)?;
-    push_skill_to_cloud(&app, project_id.as_deref(), &slug, &fm.tags, "project", active).await;
+    push_skill_to_cloud(&app, project_id.as_deref(), &slug, &fm.tags, "project", active, None, "").await;
     Ok(Skill { active, ..skill })
 }
 
@@ -627,11 +631,19 @@ pub async fn materialize_skill_to_workspace(
     std::fs::write(skill_file_v2(&ws_path, &slug), &content).map_err(|e| e.to_string())?;
     let fm = parse_frontmatter(&content);
     let file_path = format!("{}/{}/SKILL.md", SKILLS_DIR, slug);
+    let (author, catalog_id) = {
+        let lib = library();
+        if let Some(entry) = lib.iter().find(|l| l.name == slug) {
+            (entry.author.clone(), None::<String>)
+        } else {
+            (String::new(), None::<String>)
+        }
+    };
     app.state::<Db>().upsert_skill_index(
         workspace_id, &slug, &fm.description, &fm.tags.join(","), &file_path,
-        "project", fm.auto, fm.version, "superconsole", true,
+        "project", fm.auto, fm.version, "superconsole", true, &author,
     )?;
-    push_skill_to_cloud(&app, project_id.as_deref(), &slug, &fm.tags, "project", true).await;
+    push_skill_to_cloud(&app, project_id.as_deref(), &slug, &fm.tags, "project", true, catalog_id.as_deref(), &author).await;
     Ok(Skill {
         name: slug.clone(),
         description: fm.description,
@@ -641,7 +653,7 @@ pub async fn materialize_skill_to_workspace(
         auto: fm.auto,
         active: true,
         file_path,
-        source: "superconsole".into(),
+        source: "superconsole".into(), author: author.clone(),
     })
 }
 
@@ -669,7 +681,7 @@ fn scan_global(app: &AppHandle) -> Vec<Skill> {
                 auto: fm.auto,
                 active: true,
                 file_path: format!("skills/{}/SKILL.md", name),
-                source: "global".into(),
+                source: "global".into(), author: String::new(),
             });
             continue;
         }
@@ -688,7 +700,7 @@ fn scan_global(app: &AppHandle) -> Vec<Skill> {
             auto: fm.auto,
             active: true,
             file_path: format!("skills/{}.md", name),
-            source: "global".into(),
+            source: "global".into(), author: String::new(),
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -734,7 +746,7 @@ pub fn create_global_skill(
         auto: false,
         active: true,
         file_path: format!("skills/{}/SKILL.md", slug),
-        source: "global".into(),
+        source: "global".into(), author: String::new(),
     })
 }
 
@@ -795,7 +807,7 @@ pub async fn import_global_skill_from_url(
         auto: fm.auto,
         active: true,
         file_path: format!("skills/{}.md", slug),
-        source: "global".into(),
+        source: "global".into(), author: String::new(),
     })
 }
 
@@ -808,6 +820,8 @@ pub struct OrgSkillView {
     pub name: String,
     pub tags: Vec<String>,
     pub in_library: bool,
+    pub skill_catalog_id: Option<String>,
+    pub author: String,
 }
 
 #[tauri::command]
@@ -821,6 +835,8 @@ pub fn list_org_skills(app: AppHandle, org_id: String) -> Result<Vec<OrgSkillVie
             in_library: lib.iter().any(|n| n == &c.skill_name),
             tags: c.tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             name: c.skill_name,
+            skill_catalog_id: c.skill_catalog_id,
+            author: c.author,
         })
         .collect())
 }
@@ -889,7 +905,7 @@ fn index_skill(
     let file_path = format!("{}/{}.md", SKILLS_DIR, slug);
     app.state::<Db>().upsert_skill_index(
         workspace_id, slug, description, &tags.join(","), &file_path, scope, auto, version,
-        "superconsole", true,
+        "superconsole", true, "",
     )?;
     Ok(Skill {
         name: slug.to_string(),
@@ -900,7 +916,7 @@ fn index_skill(
         auto,
         active: true,
         file_path,
-        source: "superconsole".into(),
+        source: "superconsole".into(), author: String::new(),
     })
 }
 
@@ -982,6 +998,7 @@ pub async fn ensure_skill_index_table(
         "CREATE TABLE IF NOT EXISTS project_skill_index (\
             id TEXT PRIMARY KEY NOT NULL, project_id TEXT NOT NULL, skill_name TEXT NOT NULL, \
             tags TEXT, scope TEXT NOT NULL DEFAULT 'project', active INTEGER NOT NULL DEFAULT 1, \
+            skill_catalog_id TEXT, author TEXT NOT NULL DEFAULT '', \
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
         vec![],
     )
@@ -994,18 +1011,24 @@ pub async fn ensure_skill_index_table(
         vec![],
     )
     .await?;
+    let _ = cloud::turso_execute(client, cfg, "ALTER TABLE project_skill_index ADD COLUMN skill_catalog_id TEXT", vec![]).await;
+    let _ = cloud::turso_execute(client, cfg, "ALTER TABLE project_skill_index ADD COLUMN author TEXT NOT NULL DEFAULT ''", vec![]).await;
+    let _ = cloud::turso_execute(client, cfg, "ALTER TABLE project_skill_index ADD COLUMN skill_catalog_id TEXT", vec![]).await;
+    let _ = cloud::turso_execute(client, cfg, "ALTER TABLE project_skill_index ADD COLUMN author TEXT NOT NULL DEFAULT ''", vec![]).await;
     Ok(())
 }
 
 // Mirrors connectors.rs: write to Turso, then sync_on_update to refresh the
 // local cache. No-op (offline-safe) when the workspace has no cloud project.
-async fn push_skill_to_cloud(
+pub async fn push_skill_to_cloud(
     app: &AppHandle,
     project_id: Option<&str>,
     skill_name: &str,
     tags: &[String],
     scope: &str,
     active: bool,
+    skill_catalog_id: Option<&str>,
+    author: &str,
 ) {
     let Some(project_id) = project_id else { return };
     let Ok(cfg) = cloud::turso_config() else { return };
@@ -1017,10 +1040,10 @@ async fn push_skill_to_cloud(
     let result = cloud::turso_execute(
         &client,
         &cfg,
-        "INSERT INTO project_skill_index (id, project_id, skill_name, tags, scope, active, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?) \
+        "INSERT INTO project_skill_index (id, project_id, skill_name, tags, scope, active, skill_catalog_id, author, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(project_id, skill_name) DO UPDATE SET \
-           tags = excluded.tags, scope = excluded.scope, active = excluded.active, \
+           tags = excluded.tags, scope = excluded.scope, active = excluded.active, skill_catalog_id = excluded.skill_catalog_id, author = excluded.author, \
            updated_at = excluded.updated_at",
         vec![
             Some(Ulid::new().to_string()),
@@ -1029,6 +1052,8 @@ async fn push_skill_to_cloud(
             Some(tags.join(",")),
             Some(scope.to_string()),
             Some(if active { "1".into() } else { "0".into() }),
+            skill_catalog_id.map(|s| s.to_string()),
+            Some(author.to_string()),
             Some(ts),
         ],
     )
@@ -1101,7 +1126,7 @@ pub async fn ensure_org_skill_table(
         cfg,
         "CREATE TABLE IF NOT EXISTS org_skill_index (\
             id TEXT PRIMARY KEY NOT NULL, org_id TEXT NOT NULL, skill_name TEXT NOT NULL, \
-            tags TEXT, updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+            tags TEXT, skill_catalog_id TEXT, author TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
         vec![],
     )
     .await?;
@@ -1113,6 +1138,10 @@ pub async fn ensure_org_skill_table(
         vec![],
     )
     .await?;
+    let _ = cloud::turso_execute(client, cfg, "ALTER TABLE org_skill_index ADD COLUMN skill_catalog_id TEXT", vec![]).await;
+    let _ = cloud::turso_execute(client, cfg, "ALTER TABLE org_skill_index ADD COLUMN author TEXT NOT NULL DEFAULT ''", vec![]).await;
+    let _ = cloud::turso_execute(client, cfg, "ALTER TABLE org_skill_index ADD COLUMN skill_catalog_id TEXT", vec![]).await;
+    let _ = cloud::turso_execute(client, cfg, "ALTER TABLE org_skill_index ADD COLUMN author TEXT NOT NULL DEFAULT ''", vec![]).await;
     Ok(())
 }
 
@@ -1166,14 +1195,14 @@ pub async fn fetch_cloud_org_skills(
     client: &reqwest::Client,
     cfg: &cloud::TursoConfig,
     org_id: &str,
-) -> Vec<(String, String)> {
+) -> Vec<(String, String, Option<String>, String)> {
     if ensure_org_skill_table(client, cfg).await.is_err() {
         return Vec::new();
     }
     let Ok(result) = cloud::turso_execute(
         client,
         cfg,
-        "SELECT skill_name, tags FROM org_skill_index WHERE org_id = ?",
+        "SELECT skill_name, tags, skill_catalog_id, author FROM org_skill_index WHERE org_id = ?",
         vec![Some(org_id.to_string())],
     )
     .await
@@ -1182,7 +1211,7 @@ pub async fn fetch_cloud_org_skills(
     };
     rows(&result)
         .iter()
-        .map(|row| (cell_text(row, 0), cell_opt(row, 1).unwrap_or_default()))
+        .map(|row| (cell_text(row, 0), cell_opt(row, 1).unwrap_or_default(), cell_opt(row, 2), cell_text(row, 3)))
         .collect()
 }
 
@@ -1195,6 +1224,7 @@ fn lib(name: &str, description: &str, category: &str, tags: &[&str], body: &str)
         category: category.into(),
         tags: tags.iter().map(|s| s.to_string()).collect(),
         body: body.trim().to_string(),
+        author: String::new(),
     }
 }
 
@@ -1374,7 +1404,7 @@ pub async fn install_skill_from_github_url(
             std::fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
             std::fs::write(&dest_file, &content).map_err(|e| e.to_string())?;
             let skill = index_skill(&app, ws_id, &slug, &fm.description, &fm.tags, "project", fm.auto, fm.version)?;
-            push_skill_to_cloud(&app, project_id.as_deref(), &slug, &fm.tags, "project", true).await;
+            push_skill_to_cloud(&app, project_id.as_deref(), &slug, &fm.tags, "project", true, None, "").await;
             Ok(skill)
         }
         _ => {
@@ -1395,7 +1425,7 @@ pub async fn install_skill_from_github_url(
                 auto: fm.auto,
                 active: true,
                 file_path: format!("skills/{}/SKILL.md", slug),
-                source: "global".into(),
+                source: "global".into(), author: String::new(),
             })
         }
     }

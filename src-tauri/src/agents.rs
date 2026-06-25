@@ -220,6 +220,7 @@ pub struct CatalogAgentInput {
     pub git_ref: String,
     pub base_path: String,
     pub files: Vec<String>,
+    pub author: String,
 }
 
 fn parse_json_list(s: &str) -> Vec<String> {
@@ -325,13 +326,13 @@ async fn upsert_catalog_row(
         client,
         cfg,
         "INSERT INTO agent_catalog \
-            (id, name, description, category, image_url, skills, connectors, tags, repo, git_ref, base_path, files, version) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1) \
+            (id, name, description, category, image_url, skills, connectors, tags, repo, git_ref, base_path, files, author, version) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1) \
          ON CONFLICT(name) DO UPDATE SET \
             description = excluded.description, category = excluded.category, \
             image_url = excluded.image_url, skills = excluded.skills, \
             connectors = excluded.connectors, tags = excluded.tags, repo = excluded.repo, \
-            git_ref = excluded.git_ref, base_path = excluded.base_path, files = excluded.files, \
+            git_ref = excluded.git_ref, base_path = excluded.base_path, files = excluded.files, author = excluded.author, \
             version = agent_catalog.version + 1, \
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
         vec![
@@ -347,6 +348,7 @@ async fn upsert_catalog_row(
             Some(git_ref),
             Some(input.base_path),
             Some(json(&input.files)),
+            Some(input.author.clone()),
         ],
     )
     .await?;
@@ -708,8 +710,7 @@ pub async fn detect_repo_agents(
                 };
                 let mut skills = skill_display_names(&display_skills);
                 skills.truncate(20); // store at most 20 skill names in the catalog
-                CatalogAgentInput {
-                    name: sanitize_agent_name(&agent_name),
+                CatalogAgentInput { name: sanitize_agent_name(&agent_name),
                     description: clean_description(&m.description),
                     category: m.category,
                     image_url: if m.image.is_empty() {
@@ -724,6 +725,7 @@ pub async fn detect_repo_agents(
                     git_ref: git_ref.clone(),
                     base_path: m.base_path,
                     files,
+                    author: String::new(),
                 }
             })
             .collect()
@@ -737,8 +739,7 @@ pub async fn detect_repo_agents(
         files.truncate(10);
         let mut skills = skill_display_names(&skill_name_paths);
         skills.truncate(20);
-        vec![CatalogAgentInput {
-            name: sanitize_agent_name(&repo_name),
+        vec![CatalogAgentInput { name: sanitize_agent_name(&repo_name),
             description: String::new(),
             category: String::new(),
             image_url: owner_avatar.clone(),
@@ -748,8 +749,7 @@ pub async fn detect_repo_agents(
             repo: repo.clone(),
             git_ref: git_ref.clone(),
             base_path: String::new(),
-            files,
-        }]
+            files, author: String::new() }]
     };
 
     Ok(inputs)
@@ -786,8 +786,7 @@ pub async fn install_catalog_agent(ws_path: &str, id: &str) -> Result<(), String
         .into_iter()
         .next()
         .ok_or_else(|| format!("agent '{}' not found in catalog", id))?;
-    let input = CatalogAgentInput {
-        name: cloud::cell_text(&row, 0),
+    let input = CatalogAgentInput { name: cloud::cell_text(&row, 0),
         description: cloud::cell_text(&row, 1),
         category: String::new(),
         image_url: String::new(),
@@ -797,8 +796,7 @@ pub async fn install_catalog_agent(ws_path: &str, id: &str) -> Result<(), String
         repo: cloud::cell_text(&row, 4),
         git_ref: cloud::cell_text(&row, 5),
         base_path: cloud::cell_text(&row, 6),
-        files: parse_json_list(&cloud::cell_text(&row, 7)),
-    };
+        files: parse_json_list(&cloud::cell_text(&row, 7)), author: String::new() };
     install_input(ws_path, &input).await
 }
 
@@ -1127,7 +1125,7 @@ pub async fn ensure_agent_index_table(
             default_model TEXT NOT NULL DEFAULT '', \
             skills TEXT NOT NULL DEFAULT '', \
             connectors TEXT NOT NULL DEFAULT '', \
-            is_active INTEGER NOT NULL DEFAULT 1, \
+            is_active INTEGER NOT NULL DEFAULT 1, agent_catalog_id TEXT, author TEXT NOT NULL DEFAULT '', \
             last_run TEXT, \
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
         vec![],
@@ -1161,6 +1159,8 @@ pub async fn push_agent_to_cloud(
     skills: &str,
     connectors: &str,
     is_active: bool,
+    agent_catalog_id: Option<&str>,
+    author: &str,
     last_run: Option<&str>,
 ) {
     let Some(project_id) = project_id else { return };
@@ -1176,8 +1176,8 @@ pub async fn push_agent_to_cloud(
         "INSERT INTO project_agents \
             (id, project_id, name, description, schedule, default_run_mode, \
              default_cli, default_provider, default_model, skills, connectors, \
-             is_active, last_run, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             is_active, agent_catalog_id, author, last_run, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(project_id, name) DO UPDATE SET \
             description      = excluded.description, \
             schedule         = excluded.schedule, \
@@ -1187,6 +1187,8 @@ pub async fn push_agent_to_cloud(
             default_model    = excluded.default_model, \
             skills           = excluded.skills, \
             connectors       = excluded.connectors, \
+            agent_catalog_id = excluded.agent_catalog_id, \
+            author           = excluded.author, \
             is_active        = excluded.is_active, \
             last_run         = COALESCE(excluded.last_run, project_agents.last_run), \
             updated_at       = excluded.updated_at",
@@ -1203,6 +1205,8 @@ pub async fn push_agent_to_cloud(
             Some(skills.to_string()),
             Some(connectors.to_string()),
             Some(if is_active { "1" } else { "0" }.to_string()),
+            agent_catalog_id.map(|s| s.to_string()),
+            Some(author.to_string()),
             last_run.map(|s| s.to_string()),
             Some(ts),
         ],

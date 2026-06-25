@@ -80,6 +80,13 @@ function Shell() {
   const search = useSearch({ strict: false }) as WorkspaceSearch;
   const [unread, setUnread] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [customizeTab, setCustomizeTab] = useState("plugins");
+
+  useEffect(() => {
+    const onTab = (e: any) => setCustomizeTab(e.detail);
+    window.addEventListener("customize-tab", onTab);
+    return () => window.removeEventListener("customize-tab", onTab);
+  }, []);
 
   useEffect(() => {
     const refresh = () => api.inboxUnreadCount().then(setUnread).catch(() => {});
@@ -107,6 +114,19 @@ function Shell() {
   const filesOpen = search.files ?? false;
   const activeTab = activeTabs.find((t) => t.id === activeTabId);
   const openedFile = activeTab?.cli === "file" ? activeTab.relPath ?? null : null;
+
+  let titleSuffix: string | undefined = undefined;
+  if (activeWorkspace) {
+    if (activeTab) {
+      if (activeTab.cli === "file" && activeTab.relPath) {
+        titleSuffix = activeTab.relPath.split('/').pop();
+      } else if (activeTab.cli) {
+        titleSuffix = activeTab.cli.charAt(0).toUpperCase() + activeTab.cli.slice(1);
+      }
+    }
+  } else if (customizeActive) {
+    titleSuffix = customizeTab.charAt(0).toUpperCase() + customizeTab.slice(1);
+  }
 
   useEffect(() => {
     if (activeId !== null) {
@@ -161,7 +181,9 @@ function Shell() {
   return (
     <div className="flex h-screen w-screen flex-col bg-background text-foreground">
       <TopBar
-        workspace={settingsActive ? null : activeWorkspace}
+        workspace={settingsActive ? null : (activeWorkspace ?? workspaces.find(w => w.id === Number((search as any).ws)) ?? null)}
+        isProjectPage={!!activeWorkspace}
+        titleSuffix={titleSuffix}
         filesOpen={filesOpen}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((o) => !o)}

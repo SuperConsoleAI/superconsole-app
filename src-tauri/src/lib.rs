@@ -24,6 +24,7 @@ mod sync_manager;
 mod team;
 mod usage;
 mod wiki;
+mod rules;
 
 use auth::AuthState;
 
@@ -574,6 +575,8 @@ async fn upsert_agent_metadata(
             &connectors,
             is_active,
             None,
+            None,
+            "",
         )?;
         let pid = db.get_workspace_project_id(workspace_id);
         (row, pid)
@@ -593,6 +596,8 @@ async fn upsert_agent_metadata(
         &skills,
         &connectors,
         is_active,
+        row.agent_catalog_id.as_deref(),
+        &row.author,
         row.last_run.as_deref(),
     )
     .await;
@@ -994,6 +999,10 @@ pub fn run() {
             read_file,
             write_file,
             create_entry,
+            rules::tauri_list_rules,
+            rules::tauri_read_rule,
+            rules::tauri_write_rule,
+            rules::tauri_delete_rule,
             delete_entry,
             list_cli_sessions,
             read_cli_session,

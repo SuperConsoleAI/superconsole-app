@@ -1,22 +1,27 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import {
-  ChevronRight,
+  Blocks,
+  Plug,
   Loader2,
-  Puzzle,
   Webhook,
+  List,
   ScrollText,
   SquareSlash,
   Search,
   Plus,
   Trash2,
+  ArrowRight,
   CheckCircle2,
   Circle,
   Check,
   UserCog,
   Building2,
   FolderClosed,
+  Info,
 } from "lucide-react";
 import { GitHubLight, GitHubDark } from "@ridemountainpig/svgl-react";
+import { ModelContextProtocol } from "./McpIcon";
 import { api, type HookFile, type PluginListItem } from "../lib/api";
 import { useWorkspaces } from "../lib/workspace-context";
 import { Button } from "@/components/ui/button";
@@ -24,10 +29,10 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { PluginIcon } from "./PluginIcon";
 import { SkillsView } from "./SkillsDialog";
+import { RulesView, RuleEditorDialog } from "./RulesDialog";
 import { CommandsView, CommandEditorDialog } from "./CommandDialog";
 
 import { ConnectorManager } from "./SettingsPage";
-import { Plug } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -221,6 +226,7 @@ function PluginRow({
   onInstall,
   onUninstall,
   installing,
+  uninstalling,
   scope,
 }: {
   plugin: PluginListItem & { workspaceName?: string };
@@ -228,6 +234,7 @@ function PluginRow({
   onInstall: () => void;
   onUninstall: () => void;
   installing: boolean;
+  uninstalling: boolean;
   scope: { type: string; id: string };
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -295,24 +302,27 @@ function PluginRow({
             {plugin.featured && (
               <Badge className="shrink-0 bg-amber-500/15 text-[10px] text-amber-600 hover:bg-amber-500/20">Featured</Badge>
             )}
-            {plugin.installed && (
-              <Badge className="shrink-0 bg-primary/10 text-[10px] text-primary hover:bg-primary/15">✓ Installed</Badge>
-            )}
+
           </div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-            {plugin.skillCount > 0 && <span className="text-[10px] text-muted-foreground">📚 {plugin.skillCount} skill{plugin.skillCount > 1 ? "s" : ""}</span>}
-            {plugin.mcpCount > 0 && <span className="text-[10px] text-muted-foreground">🔌 {plugin.mcpCount} MCP</span>}
-            {plugin.hookCount > 0 && <span className="text-[10px] text-muted-foreground">🪝 {plugin.hookCount} hook{plugin.hookCount > 1 ? "s" : ""}</span>}
-            {plugin.connectorAuth.length > 0 && <span className="text-[10px] text-amber-600">🔑 {plugin.connectorAuth.map((a) => a.service).join(", ")}</span>}
+                    <div className="mt-1 flex flex-wrap items-center gap-2.5">
+            {plugin.skillCount > 0 && <span className="flex items-center gap-1 text-[10px] text-muted-foreground" title="Skills"><ScrollText className="h-3.5 w-3.5" /> {plugin.skillCount}</span>}
+            {plugin.mcpCount > 0 && <span className="flex items-center gap-1 text-[10px] text-muted-foreground" title="MCP Servers"><ModelContextProtocol className="h-3.5 w-3.5" /> {plugin.mcpCount}</span>}
+            {(plugin.commandIds ? JSON.parse(plugin.commandIds).length : 0) > 0 && <span className="flex items-center gap-1 text-[10px] text-muted-foreground" title="Commands"><SquareSlash className="h-3.5 w-3.5" /> {JSON.parse(plugin.commandIds).length}</span>}
+            {plugin.hookCount > 0 && <span className="flex items-center gap-1 text-[10px] text-muted-foreground" title="Hooks"><Webhook className="h-3.5 w-3.5" /> {plugin.hookCount}</span>}
+            {(plugin.connectorIds ? JSON.parse(plugin.connectorIds).length : 0) > 0 && <span className="flex items-center gap-1 text-[10px] text-amber-600" title="Connectors"><Blocks className="h-3.5 w-3.5" /> {JSON.parse(plugin.connectorIds).length}</span>}
           </div>
         </div>
 
         {/* Right actions */}
         <div className="ml-auto flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
           {plugin.installed ? (
-            <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-muted-foreground" onClick={onUninstall}>
-              <Trash2 className="mr-1 h-3 w-3" strokeWidth={1.5} />
-              Uninstall
+            <Button variant="secondary" size="sm" className="h-7 px-2 text-xs text-muted-foreground" disabled={uninstalling} onClick={onUninstall}>
+              {uninstalling ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <Trash2 className="mr-1 h-2.5 w-2.5" strokeWidth={1.5} />
+              )}
+              {uninstalling ? "Uninstalling…" : "Uninstall"}
             </Button>
           ) : (
             <Button size="sm" className="h-7 gap-1 px-2.5 text-xs ring-1" disabled={installing} onClick={onInstall}>
@@ -320,12 +330,7 @@ function PluginRow({
               {installing ? "Installing…" : "Install"}
             </Button>
           )}
-          <button
-            className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent"
-            onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
-          >
-            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", showExpanded && "rotate-90")} strokeWidth={1.5} />
-          </button>
+
         </div>
       </div>
 
@@ -334,15 +339,14 @@ function PluginRow({
         <div className="border-t px-4 py-3">
           {installStep.kind === "idle" && (
             <div className="space-y-1.5 text-xs text-muted-foreground">
-              <p className="font-medium text-foreground">Includes</p>
-              {plugin.skillCount > 0 && <p>✓ {plugin.skillCount} Skill{plugin.skillCount > 1 ? "s" : ""}</p>}
-              {plugin.mcpCount > 0 && <p>✓ {plugin.mcpCount} MCP Server{plugin.mcpCount > 1 ? "s" : ""}</p>}
-              {plugin.hookCount > 0 && <p>✓ {plugin.hookCount} Lifecycle Hook{plugin.hookCount > 1 ? "s" : ""}</p>}
-              {plugin.connectorAuth.map((a) => (
-                <p key={a.service} className="text-amber-600">
-                  🔑 {a.service} — {a.authType === "oauth" ? "OAuth required" : "API key required"}
-                </p>
-              ))}
+              <p className="font-medium text-foreground mb-1">Includes</p>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {plugin.skillCount > 0 && <Badge variant="outline" className="font-normal gap-1 text-[10px]"><ScrollText className="h-3 w-3" /> {plugin.skillCount} Skill{plugin.skillCount > 1 ? "s" : ""}</Badge>}
+                {plugin.mcpCount > 0 && <Badge variant="outline" className="font-normal gap-1 text-[10px]"><ModelContextProtocol className="h-3 w-3" /> {plugin.mcpCount} MCP Server{plugin.mcpCount > 1 ? "s" : ""}</Badge>}
+                {(plugin.commandIds ? JSON.parse(plugin.commandIds).length : 0) > 0 && <Badge variant="outline" className="font-normal gap-1 text-[10px]"><SquareSlash className="h-3 w-3" /> {JSON.parse(plugin.commandIds).length} Command{(JSON.parse(plugin.commandIds).length > 1) ? "s" : ""}</Badge>}
+                {plugin.hookCount > 0 && <Badge variant="outline" className="font-normal gap-1 text-[10px]"><Webhook className="h-3 w-3" /> {plugin.hookCount} Hook{plugin.hookCount > 1 ? "s" : ""}</Badge>}
+                {(plugin.connectorIds ? JSON.parse(plugin.connectorIds).length : 0) > 0 && <Badge variant="outline" className="font-normal gap-1 text-[10px] border-amber-500/30 text-amber-600 dark:text-amber-400"><Blocks className="h-3 w-3" /> {JSON.parse(plugin.connectorIds).length} Connector{(JSON.parse(plugin.connectorIds).length > 1) ? "s" : ""}</Badge>}
+              </div>
               {plugin.installed && plugin.connectorAuth.length > 0 && (
                 <p className="mt-2 rounded-md bg-amber-500/10 px-2.5 py-1.5 text-amber-700">
                   Configure credentials in Settings → Connectors.
@@ -419,9 +423,14 @@ function PluginRow({
 // ─── Main CustomizePage ────────────────────────────────────────────────────────
 
 export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: number }) {
+  const navigate = useNavigate();
   const { workspaces, organizations } = useWorkspaces();
 
-  const [tab, setTab] = useState<"plugins" | "hooks" | "skills" | "commands" | "connectors">("plugins");
+  const [tab, setTab] = useState<"plugins" | "hooks" | "skills" | "commands" | "connectors" | "mcp" | "rules">("plugins");
+  
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("customize-tab", { detail: tab }));
+  }, [tab]);
 
   const [scope, setScope] = useState<{ type: "account" | "org" | "project", id: string }>({
     type: initialWorkspaceId ? "project" : "account",
@@ -444,13 +453,14 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
   const [pluginsError, setPluginsError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All");
-  const [installing, setInstalling] = useState<string | null>(null);
+    const [installing, setInstalling] = useState<string | null>(null);
+  const [uninstalling, setUninstalling] = useState<string | null>(null);
   const [githubUrl, setGithubUrl] = useState("");
   const [urlInstalling, setUrlInstalling] = useState(false);
   const [urlResult, setUrlResult] = useState<string | null>(null);
 
-  const loadPlugins = useCallback(async (q: string, cat: string, scp: { type: string, id: string }) => {
-    setPluginsLoading(true);
+  const loadPlugins = useCallback(async (q: string, cat: string, scp: { type: string, id: string }, silent = false) => {
+    if (!silent) setPluginsLoading(true);
     setPluginsError(null);
     try {
       const data = q.trim()
@@ -461,24 +471,26 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
       setPluginsError(e?.toString() || "Failed to load plugins");
       setPlugins([]);
     } finally {
-      setPluginsLoading(false);
+      if (!silent) setPluginsLoading(false);
     }
   }, []);
 
-  useEffect(() => { if (tab === "plugins") loadPlugins(query, category, scope); }, [tab, scope, query, category]);
+  useEffect(() => { if (tab === "plugins" || tab === "mcp") loadPlugins(tab === "mcp" ? "" : query, tab === "mcp" ? "All" : category, scope); }, [tab, scope, query, category]);
 
   const handleInstall = async (pluginId: string) => {
     if (!scope.id) return;
     setInstalling(pluginId);
-    try { await api.installPlugin(scope.type, scope.id, pluginId); await loadPlugins(query, category, scope); }
+    try { await api.installPlugin(scope.type, scope.id, pluginId); await loadPlugins(query, category, scope, true); }
     catch (e: any) { setPluginsError(e?.toString() || "Install failed"); }
     finally { setInstalling(null); }
   };
 
   const handleUninstall = async (pluginId: string) => {
     if (!scope || !confirm("Uninstall this plugin? Files are kept on disk.")) return;
-    try { await api.uninstallPlugin(scope.type, scope.id, pluginId); await loadPlugins(query, category, scope); }
+    setUninstalling(pluginId);
+    try { await api.uninstallPlugin(scope.type, scope.id, pluginId); await loadPlugins(query, category, scope, true); }
     catch (e: any) { setPluginsError(e?.toString() || "Uninstall failed"); }
+    finally { setUninstalling(null); }
   };
 
   const handleInstallFromUrl = async () => {
@@ -497,6 +509,13 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
   const [hooksLoading, setHooksLoading] = useState(false);
   const [editingHook, setEditingHook] = useState<string | null>(null);
   const [addCommandOpen, setAddCommandOpen] = useState<any>(null);
+  const [addRuleOpen, setAddRuleOpen] = useState<any>(null);
+  const [showPointer, setShowPointer] = useState(true);
+
+  useEffect(() => {
+    const t = setTimeout(() => setShowPointer(false), 5000);
+    return () => clearTimeout(t);
+  }, []);
 
   const loadHooks = useCallback(async (scopeType: string, scopeId: string) => {
     if (scopeType !== "project" || !scopeId || scopeId === "account") { setHooks([]); return; }
@@ -515,7 +534,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
   return (
     <div className="flex h-full flex-col">
       {/* ── Top bar (same as TasksView) ──────────────────────────────────────── */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card/60 px-5">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card/60 px-5 relative">
         {/* Tab toggle pill */}
         <div className="flex gap-0.5 rounded-lg border bg-background p-0.5">
           <button
@@ -526,7 +545,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
             )}
           >
             <span className="flex items-center gap-1.5">
-              <Puzzle className="h-3.5 w-3.5" strokeWidth={1} />
+              <Plug className="h-3.5 w-3.5" strokeWidth={1} />
               Plugins
             </span>
           </button>
@@ -576,19 +595,55 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
             )}
           >
             <span className="flex items-center gap-1.5">
-              <Plug className="h-3.5 w-3.5" strokeWidth={1} />
+              <Blocks className="h-3.5 w-3.5" strokeWidth={1} />
               Connectors
+            </span>
+          </button>
+          
+          <button
+            onClick={() => setTab("rules")}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              tab === "rules" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
+            )}
+          >
+            <span className="flex items-center gap-1.5">
+              <List className="h-3.5 w-3.5" strokeWidth={1} />
+              Rules
+            </span>
+          </button>
+          <button
+            onClick={() => setTab("mcp")}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              tab === "mcp" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
+            )}
+          >
+            <span className="flex items-center gap-1.5">
+              <ModelContextProtocol className="h-3.5 w-3.5" />
+              MCP
             </span>
           </button>
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
-          
-          {tab === "commands" && scope?.type === "project" && (
+                <div className="ml-auto flex items-center gap-2">
+{tab === "commands" && scope?.type === "project" && (
             <Button size="sm" className="h-7 gap-1" onClick={() => setAddCommandOpen({ name: "", slash: "", description: "", content: "", isNew: true })}>
               <Plus className="h-3.5 w-3.5" />
               Add command
             </Button>
+          )}
+          {tab === "rules" && scope?.type === "project" && (
+            <Button size="sm" className="h-7 gap-1" onClick={() => setAddRuleOpen({ slug: "", name: "", description: "", content: "", alwaysApply: true, isNew: true })}>
+              <Plus className="h-3.5 w-3.5" />
+              Add rule
+            </Button>
+          )}
+          {showPointer && (
+            <div className="flex items-center gap-1.5 text-xs text-primary animate-pulse mr-1">
+              <span className="font-medium">Select a project</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </div>
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -612,7 +667,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuItem onClick={() => setScope({ type: "account", id: "account" })} className="justify-between font-medium">
+              <DropdownMenuItem onClick={() => { setScope({ type: "account", id: "account" }); navigate({ to: "/customize", search: { ws: undefined }, replace: true }); }} className="justify-between font-medium">
                 <span className="flex items-center gap-2">
                   <UserCog className="h-4 w-4 text-muted-foreground" />
                   Account (machine)
@@ -628,7 +683,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
                       Organization
                     </div>
                     <DropdownMenuItem
-                      onClick={() => setScope({ type: "org", id: String(o.id) })}
+                      onClick={() => { setScope({ type: "org", id: String(o.id) }); navigate({ to: "/customize", search: { ws: undefined }, replace: true }); }}
                       className="justify-between font-medium"
                     >
                       <span className="flex items-center gap-2">
@@ -646,7 +701,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
                         {orgWorkspaces.map((w) => (
                           <DropdownMenuItem
                             key={w.id}
-                            onClick={() => setScope({ type: "project", id: String(w.id) })}
+                            onClick={() => { setScope({ type: "project", id: String(w.id) }); navigate({ to: "/customize", search: { ws: w.id }, replace: true }); }}
                             className="pl-4 justify-between"
                           >
                             <span className="flex items-center gap-2">
@@ -667,9 +722,24 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
         </div>
       </div>
 
+      {/* ── Rules tab ────────────────────────────────────────────────────────── */}
+      {tab === "rules" && (
+        <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+          {scope && scope.type === "project" ? (
+             <RulesView workspaceId={Number(scope.id)} />
+          ) : (
+             <div className="flex flex-col items-center justify-center py-16 text-center px-5">
+               <ScrollText className="h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
+               <p className="mt-3 text-sm text-muted-foreground">Select a project to manage rules.</p>
+             </div>
+          )}
+        </div>
+      )}
+
       {/* ── Plugins tab ──────────────────────────────────────────────────────── */}
       {tab === "plugins" && (
-        <ScrollArea className="min-h-0 flex-1">
+        <div className="flex flex-col min-h-0 flex-1">
+          <ScrollArea className="min-h-0 flex-1">
           <div className="flex flex-col gap-3 px-5 py-4">
             {/* Search + category row */}
             <div className="flex items-center gap-2">
@@ -690,7 +760,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
             </div>
 
             {/* Category pills */}
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5 mb-3">
               {PLUGIN_CATEGORIES.map((cat) => (
                 <button
                   key={cat}
@@ -707,30 +777,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
               ))}
             </div>
 
-            {/* Install from URL */}
-            <div className="rounded-lg border bg-card px-4 py-3">
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <GitHubLight className="absolute left-2.5 top-1.5 h-4 w-4 text-muted-foreground dark:hidden" />
-                  <GitHubDark className="absolute left-2.5 top-1.5 h-4 w-4 text-muted-foreground hidden dark:block" />
-                  <input
-                    type="text"
-                    placeholder="https://github.com/owner/plugin-repo"
-                    value={githubUrl}
-                    onChange={(e) => setGithubUrl(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleInstallFromUrl()}
-                    className="h-7 w-full rounded-md border bg-background pl-8 pr-2.5 text-xs outline-none focus:ring-1 focus:ring-primary"
-                  />
-                </div>
-                <Button size="sm" className="h-7 px-3 text-xs" disabled={urlInstalling || !githubUrl.trim()} onClick={handleInstallFromUrl}>
-                  {urlInstalling ? "Installing…" : "Install"}
-                </Button>
-              </div>
-              <p className="mt-2 text-[11px] text-muted-foreground">
-                Paste a GitHub repo URL with a <code className="rounded bg-muted px-1 py-0.5">superconsole.json</code> manifest.
-              </p>
-              {urlResult && <p className="mt-1.5 text-[11px] text-primary">✓ {urlResult}</p>}
-            </div>
+
 
             {/* Error */}
             {pluginsError && (
@@ -740,7 +787,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
             {/* No workspace */}
             {!scope && (
               <div className="rounded-xl border border-dashed py-16 text-center">
-                <Puzzle className="mx-auto h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
+                <ModelContextProtocol className="mx-auto h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
                 <p className="mt-3 text-sm text-muted-foreground">Select a project to browse and install plugins.</p>
               </div>
             )}
@@ -756,7 +803,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
             {/* Empty */}
             {!pluginsLoading && scope && plugins.length === 0 && !pluginsError && (
               <div className="rounded-xl border border-dashed py-16 text-center">
-                <Puzzle className="mx-auto h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
+                <ModelContextProtocol className="mx-auto h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
                 <p className="mt-3 text-sm text-muted-foreground">
                   {query ? "No plugins match your search." : "No plugins in catalog yet — install from a GitHub URL above."}
                 </p>
@@ -775,12 +822,49 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
                     onInstall={() => handleInstall(p.id)}
                     onUninstall={() => handleUninstall(p.id)}
                     installing={installing === p.id}
+                    uninstalling={uninstalling === p.id}
                   />
                 ))}
               </div>
             )}
           </div>
         </ScrollArea>
+          {/* Install from URL Fixed Bottom Bar */}
+          <div className="flex items-center shrink-0 border-t bg-card px-5" style={{ height: 44 }}>
+            <div className="flex w-full items-center gap-3">
+              <div className="relative flex-1">
+                <GitHubLight className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground dark:hidden" />
+                <GitHubDark className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground hidden dark:block" />
+                <input
+                  type="text"
+                  placeholder="Paste a GitHub repo URL with a superconsole.json manifest."
+                  value={githubUrl}
+                  onChange={(e) => setGithubUrl(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleInstallFromUrl()}
+                  className="h-8 w-full rounded-md border bg-background pl-8 pr-20 text-xs outline-none focus:ring-1 focus:ring-primary"
+                />
+                <Button 
+                  size="sm" 
+                  className="absolute right-0 top-0 bottom-0 h-full rounded-l-none rounded-r-md px-3 text-[10px]" 
+                  disabled={urlInstalling || !githubUrl.trim()} 
+                  onClick={handleInstallFromUrl}
+                >
+                  {urlInstalling ? "Installing…" : "Install"}
+                </Button>
+              </div>
+              <a
+                href="https://github.com/SuperConsoleAI/plugins/blob/main/manifest/superconsole.json"
+                target="_blank"
+                rel="noreferrer"
+                title="View manifest example"
+                className="text-muted-foreground hover:text-primary transition-colors"
+              >
+                <Info className="h-4 w-4" />
+              </a>
+              {urlResult && <span className="text-[10px] text-primary truncate max-w-[150px]">✓ {urlResult}</span>}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Hooks tab ────────────────────────────────────────────────────────── */}
@@ -817,7 +901,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
       )}
 
       {tab === "skills" && (
-        <ScrollArea className="min-h-0 flex-1">
+        <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
           {scope && scope.type === "project" ? (
              <SkillsView workspaceId={Number(scope.id)} />
           ) : (
@@ -826,7 +910,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
                <p className="mt-3 text-sm text-muted-foreground">Select a project to manage skills.</p>
              </div>
           )}
-        </ScrollArea>
+        </div>
       )}
       
       {tab === "commands" && (
@@ -857,6 +941,40 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
         </ScrollArea>
       )}
 
+
+      {/* ── MCP tab ──────────────────────────────────────────────────────────── */}
+      {tab === "mcp" && (
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex flex-col gap-2 px-5 py-4">
+            <div className="rounded-xl border bg-card overflow-hidden">
+              {pluginsLoading ? (
+                <div className="flex justify-center p-8"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
+              ) : plugins.filter(p => p.installed && (p.mcpCount > 0 || (p.mcpUrl && p.mcpUrl !== '[]') || (p.mcpIds && p.mcpIds !== '[]'))).length === 0 ? (
+                <div className="p-8 text-center text-sm text-muted-foreground">No MCP servers installed.</div>
+              ) : (
+                <div className="flex flex-col divide-y divide-border">
+                  {plugins.filter(p => p.installed && (p.mcpCount > 0 || (p.mcpUrl && p.mcpUrl !== '[]') || (p.mcpIds && p.mcpIds !== '[]'))).map((p) => (
+                    <div key={p.id} className="flex items-center gap-3 p-3">
+                      <div className="flex h-8 w-8 items-center justify-center">
+                        {p.iconUrl ? <img src={p.iconUrl} alt={p.name} className="h-6 w-6" /> : <ModelContextProtocol className="h-5 w-5 text-muted-foreground" />}
+                      </div>
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-medium">{p.name}</span>
+                          <img src={`https://github.com/${p.author}.png?size=32`} className="w-3.5 h-3.5 rounded-full" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                        </div>
+                        <span className="text-xs text-muted-foreground">{p.author}</span>
+                      </div>
+                      <Check className="ml-auto h-4 w-4 text-muted-foreground/50" />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </ScrollArea>
+      )}
+
       {/* ── Hook editor modal ─────────────────────────────────────────────────── */}
       {editingHook && scope && (
         <HookEditor
@@ -870,11 +988,18 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
 
       {/* ── Command editor modal ──────────────────────────────────────────────── */}
       {scope && scope.type === "project" && (
-        <CommandEditorDialog 
-          workspaceId={Number(scope.id)} 
-          editing={addCommandOpen} 
-          setEditing={setAddCommandOpen} 
-        />
+        <>
+          <CommandEditorDialog 
+            workspaceId={Number(scope.id)} 
+            editing={addCommandOpen} 
+            setEditing={setAddCommandOpen} 
+          />
+          <RuleEditorDialog 
+            workspaceId={Number(scope.id)} 
+            editing={addRuleOpen} 
+            setEditing={setAddRuleOpen} 
+          />
+        </>
       )}
     </div>
   );

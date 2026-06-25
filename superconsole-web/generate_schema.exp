@@ -1,0 +1,25 @@
+#!/usr/bin/expect -f
+set timeout 15
+spawn npm run db:generate
+
+expect {
+    -re "Is .* column .* created or renamed from another column" {
+        send "\r"
+        exp_continue
+    }
+    -re "Is .* table .* created or renamed from another table" {
+        send "\r"
+        exp_continue
+    }
+    -re "Are you sure you want to drop .* column" {
+        send "y\r"
+        exp_continue
+    }
+    eof {
+        exit 0
+    }
+    timeout {
+        puts "Timed out"
+        exit 1
+    }
+}

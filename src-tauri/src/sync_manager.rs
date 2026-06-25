@@ -175,7 +175,7 @@ async fn sync_org_skills(
     let refs = crate::skills::fetch_cloud_org_skills(client, cfg, org_id).await;
     let skills: Vec<CachedOrgSkill> = refs
         .into_iter()
-        .map(|(skill_name, tags)| CachedOrgSkill { skill_name, tags })
+        .map(|(skill_name, tags, skill_catalog_id, author)| CachedOrgSkill { skill_name, tags, skill_catalog_id, author })
         .collect();
     let db = app.state::<Db>();
     let _ = db.replace_cached_org_skills(org_id, &skills, synced_at);

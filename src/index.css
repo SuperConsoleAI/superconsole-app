@@ -1,4 +1,3 @@
-@import "@fontsource-variable/archivo";
 @import "@fontsource-variable/lora";
 @import "@fontsource-variable/jetbrains-mono";
 @import "tailwindcss";
@@ -116,7 +115,7 @@
 }
 
 @theme {
-  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-serif: "Lora Variable", ui-serif, Georgia, serif;
   --font-mono: "JetBrainsMono Nerd Font", "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
 }

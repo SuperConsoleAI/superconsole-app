@@ -641,6 +641,8 @@ export interface Skill {
   active: boolean;
   file_path: string;
   source: string;
+  author?: string;
+  skill_catalog_id?: string;
 }
 
 export interface LibrarySkill {
@@ -648,6 +650,7 @@ export interface LibrarySkill {
   description: string;
   tags: string[];
   category: string;
+  author?: string;
   body: string;
 }
 
@@ -697,6 +700,8 @@ export interface MemoryEntry {
   tags: string[];
   summary: string;
   source: string;
+  author?: string;
+  skill_catalog_id?: string;
 }
 
 export interface OrgMemoryEntry {
@@ -722,6 +727,8 @@ export interface WikiPage {
   updated: string;
   body: string;
   source: string;
+  author?: string;
+  skill_catalog_id?: string;
 }
 
 export interface ContextFile {
@@ -738,6 +745,8 @@ export interface SlashCommand {
   description: string;
   file_path: string;
   source: string;
+  author?: string;
+  skill_catalog_id?: string;
 }
 
 export const SKILL_CATEGORIES = [
@@ -1256,6 +1265,12 @@ export const api = {
     invoke("submit_connector_to_cloud", { input }),
   submitPluginToCloud: (input: SubmitPluginInput) =>
     invoke<void>("submit_plugin_to_cloud", { input }),
+
+  // Rules
+  listRules: (workspaceId: number) => invoke<RuleFile[]>("tauri_list_rules", { workspaceId }),
+  readRule: (workspaceId: number, slug: string) => invoke<string>("tauri_read_rule", { workspaceId, slug }).then(content => ({ slug, name: slug, description: "", content, always_apply: true } as RuleFile)),
+  writeRule: (workspaceId: number, slug: string, content: string) => invoke<void>("tauri_write_rule", { workspaceId, slug, content }),
+  deleteRule: (workspaceId: number, slug: string) => invoke<void>("tauri_delete_rule", { workspaceId, slug }),
 };
 
 export interface SubmitPluginInput {
@@ -1269,11 +1284,17 @@ export interface SubmitPluginInput {
   iconUrl?: string;
   docsUrl?: string;
   skillIds: string;      // JSON array string
+  agentIds: string;      // JSON array string
   mcpIds: string;        // JSON array string
-  commandIds: string;    // JSON array string
+  commandIds: string;
+  hookIds: string;
+  ruleIds: string;
+  connectorIds: string;    // JSON array string
   skillsUrl?: string;
+  agentsUrl?: string;
   commandsUrl?: string;
   hooksUrl?: string;
+  rulesUrl?: string;
   mcpUrl?: string;
   connectorAuth: string; // JSON array string
   featured: boolean;
@@ -1311,6 +1332,7 @@ export interface PluginListItem {
   skillIds: string;
   mcpIds: string;
   commandIds: string;
+  connectorIds: string;
   skillsUrl?: string;
   commandsUrl?: string;
   hooksUrl?: string;
@@ -1437,3 +1459,13 @@ export interface SubmitCommandInput {
   content?: string;
   iconUrl?: string;
 }
+
+export interface RuleFile {
+  slug: string;
+  name: string;
+  description: string;
+  content: string;
+  always_apply: boolean;
+  author?: string;
+}
+

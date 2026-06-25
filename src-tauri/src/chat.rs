@@ -152,6 +152,16 @@ pub(crate) fn build_system_prompt(app: &AppHandle, workspace_id: i64) -> String 
         }
     }
 
+    let rules = crate::rules::list_rules(&path);
+    let active_rules: Vec<_> = rules.into_iter().filter(|r| r.always_apply).collect();
+    if !active_rules.is_empty() {
+        let mut rule_section = String::from("# Rules\n\n");
+        for rule in active_rules {
+            rule_section.push_str(&format!("### {}\n{}\n\n", rule.name, rule.content));
+        }
+        sections.push(rule_section);
+    }
+
     sections.join("\n\n---\n\n")
 }
 

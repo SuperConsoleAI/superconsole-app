@@ -67,11 +67,11 @@ export function CommandEditorDialog({
 
   return (
     <Dialog open={!!editing} onOpenChange={(o) => { if (!o) setEditing(null); }}>
-      <DialogContent className="flex max-h-[90vh] max-w-2xl flex-col overflow-hidden">
+      <DialogContent className="flex max-h-[90vh] max-w-2xl flex-col overflow-hidden p-4">
         {error && <p className="text-xs text-destructive">{error}</p>}
         {editing && (
-          <div className="flex flex-col gap-2 p-2">
-            <div className="flex items-center gap-2 border-b pb-3 mb-2 px-1">
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2 mb-1">
               <SquareSlash className="h-5 w-5 text-muted-foreground" />
               <h2 className="text-sm font-semibold">{editing.isNew ? "Add command" : "Edit command"}</h2>
             </div>

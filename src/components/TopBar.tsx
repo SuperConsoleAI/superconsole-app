@@ -8,7 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
-  FolderOpen,
+
   Library,
   PanelLeft,
   PanelRight,
@@ -36,6 +36,8 @@ import { type Workspace } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface TopBarProps {
+  isProjectPage?: boolean;
+  titleSuffix?: string;
   workspace: Workspace | null;
   filesOpen: boolean;
   sidebarOpen: boolean;
@@ -49,6 +51,8 @@ export function TopBar({
   sidebarOpen,
   onToggleFiles,
   onToggleSidebar,
+  isProjectPage,
+  titleSuffix,
 }: TopBarProps) {
   const router = useRouter();
   const { openScriptTab } = useWorkspaces();
@@ -120,9 +124,14 @@ export function TopBar({
       {workspace && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="ml-1 flex min-w-0 cursor-default items-center gap-1.5">
-              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" strokeWidth={1} />
-              <span className="truncate text-[13px] font-medium">{workspace.name}</span>
+            <div className={cn(
+              "flex min-w-0 cursor-default items-center gap-1.5 pointer-events-auto",
+              !sidebarOpen && "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2",
+              sidebarOpen && "ml-4"
+            )}>
+              <span className="truncate text-xs font-medium">
+                {workspace.name}{titleSuffix ? ` — ${titleSuffix}` : ""}
+              </span>
             </div>
           </TooltipTrigger>
           <TooltipContent>{workspace.path}</TooltipContent>
@@ -130,7 +139,7 @@ export function TopBar({
       )}
 
       <div className="ml-auto flex items-center gap-0.5">
-        {workspace && (
+        {workspace && isProjectPage && (
           <>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -156,7 +165,7 @@ export function TopBar({
                   <Play className="mr-2 h-4 w-4" />
                   <span>Run script</span>
                 </DropdownMenuItem>
-                
+
                 <DropdownMenuItem onClick={() => setSkillsOpen(true)}>
                   <ScrollText className="mr-2 h-4 w-4" />
                   <span>Skills</span>
@@ -218,7 +227,7 @@ export function TopBar({
             open={agentsOpen}
             onOpenChange={setAgentsOpen}
           />
-          
+
           <SkillsDialog
             workspaceId={workspace.id}
             open={skillsOpen}

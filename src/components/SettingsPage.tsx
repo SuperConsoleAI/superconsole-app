@@ -2086,37 +2086,42 @@ export function ConnectorManager({
   };
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+    <div className="flex flex-col">
+      <div className="grid grid-cols-[1fr_120px_120px_140px] gap-4 border-b px-4 py-2 text-xs font-semibold text-muted-foreground">
+        <div>Connector</div>
+        <div>Type</div>
+        <div>Status</div>
+        <div></div>
+      </div>
+      <div className="flex flex-col">
         {available.map((c) => {
           const configured = list.find((l) => l.service === c.id);
           return (
             <div
               key={c.id}
-              className="flex items-center justify-between rounded-xl border bg-card p-4 shadow-sm"
+              className="grid grid-cols-[1fr_120px_120px_140px] items-center gap-4 border-b px-4 py-3 hover:bg-muted/30 transition-colors"
             >
               <div className="flex items-center gap-3 min-w-0">
-                <PluginIcon pluginId={c.id} size={32} className="h-10 w-10 p-1 bg-transparent" />
-                <div className="min-w-0">
-                  <span className="block text-sm font-medium">{c.label}</span>
-                  {configured ? (
-                    <span className="block truncate text-xs text-muted-foreground">
-                      Connected
-                    </span>
-                  ) : (
-                    <span className="block truncate text-xs text-muted-foreground">
-                      Not connected
-                    </span>
-                  )}
-                </div>
+                <PluginIcon pluginId={c.id} size={20} fallbackIcon="blocks" className="h-6 w-6 p-0.5 bg-transparent" />
+                <span className="block text-sm font-medium truncate">{c.label}</span>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="text-xs text-muted-foreground">
+                API Key
+              </div>
+              <div className="text-xs">
+                {configured ? (
+                  <span className="text-emerald-600 dark:text-emerald-400 font-medium">Connected</span>
+                ) : (
+                  <span className="text-muted-foreground">Not connected</span>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center justify-end gap-1.5">
                 {configured ? (
                   <>
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-8 text-xs text-muted-foreground"
+                      className="h-7 px-2 text-xs text-muted-foreground"
                       onClick={() => setEditingService(c.id)}
                     >
                       Edit
@@ -2124,7 +2129,7 @@ export function ConnectorManager({
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-8 text-xs text-destructive"
+                      className="h-7 px-2 text-xs text-destructive"
                       onClick={() => remove(c.id)}
                     >
                       Remove
@@ -2134,7 +2139,7 @@ export function ConnectorManager({
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-8 text-xs"
+                    className="h-7 px-2.5 text-xs"
                     onClick={() => setEditingService(c.id)}
                   >
                     Connect

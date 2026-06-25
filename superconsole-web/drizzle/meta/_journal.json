@@ -99,6 +99,13 @@
       "when": 1782330204473,
       "tag": "0013_closed_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1782412977626,
+      "tag": "0014_omniscient_sentry",
+      "breakpoints": true
     }
   ]
 }

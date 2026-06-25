@@ -12,7 +12,7 @@
  * For monochrome logos with distinct Light/Dark variants (GitHub),
  * we render both and toggle via dark:hidden / hidden dark:block.
  */
-import { Blocks } from "lucide-react";
+import { Plug, Blocks } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import {
@@ -57,18 +57,35 @@ const DUAL_MAP: Record<string, { light: SvgComponent; dark: SvgComponent }> = {
   turso: { light: TursoLight, dark: TursoDark },
 };
 
+export function guessPluginIdFromSkillName(name: string): string | null {
+  const normalized = name.toLowerCase().replace(/-/g, "_");
+  const allKeys = [...Object.keys(SINGLE_MAP), ...Object.keys(DUAL_MAP), "buffer", "airtable"];
+  
+  // Sort by length descending to match longest prefix first
+  allKeys.sort((a, b) => b.length - a.length);
+
+  for (const key of allKeys) {
+    if (normalized === key || normalized.startsWith(key + "_")) {
+      return key;
+    }
+  }
+  return null;
+}
+
 export function PluginIcon({
   pluginId,
   iconUrl,
   className,
   size = 20,
+  fallbackIcon = "plug",
 }: {
   pluginId: string;
   iconUrl?: string | null;
   className?: string;
   size?: number;
+  fallbackIcon?: "plug" | "blocks";
 }) {
-  const id = pluginId.toLowerCase();
+  const id = pluginId.toLowerCase().replace(/-/g, "_");
 
   // 1. Explicit iconUrl from DB.
   if (iconUrl) {
@@ -130,11 +147,19 @@ export function PluginIcon({
       )}
       style={{ width: size, height: size }}
     >
-      <Blocks
-        style={{ width: size * 0.6, height: size * 0.6 }}
-        className="text-primary"
-        strokeWidth={1.5}
-      />
+      {fallbackIcon === "blocks" ? (
+        <Blocks
+          style={{ width: size * 0.6, height: size * 0.6 }}
+          className="text-primary"
+          strokeWidth={1.5}
+        />
+      ) : (
+        <Plug
+          style={{ width: size * 0.6, height: size * 0.6 }}
+          className="text-primary"
+          strokeWidth={1.5}
+        />
+      )}
     </div>
   );
 }

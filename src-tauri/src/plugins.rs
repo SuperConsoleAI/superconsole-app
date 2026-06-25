@@ -58,6 +58,7 @@ pub struct PluginListItem {
 
 /// Manifest embedded in a GitHub repo root for install-from-URL.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct PluginManifest {
     pub name: String,
     pub description: Option<String>,
@@ -65,8 +66,18 @@ struct PluginManifest {
     pub version: Option<String>,
     pub category: Option<String>,
     pub skills_url: Option<String>,
+    pub agents_url: Option<String>,
     pub commands_url: Option<String>,
     pub hooks_url: Option<String>,
+    pub rules_url: Option<String>,
+    pub mcp_url: Option<String>,
+    pub skill_ids: Option<String>,
+    pub agent_ids: Option<String>,
+    pub command_ids: Option<String>,
+    pub hook_ids: Option<String>,
+    pub rule_ids: Option<String>,
+    pub mcp_ids: Option<String>,
+    pub connector_ids: Option<String>,
     pub connector_auth: Option<Vec<ConnectorAuth>>,
 }
 
@@ -118,10 +129,13 @@ pub async fn list_plugins_catalog(
             command_ids: cell_text(row, 12),
             hook_ids: cell_text(row, 13),
             connector_ids: cell_text(row, 14),
+            rule_ids: "[]".into(),
             skills_url: cell_opt(row, 15),
             commands_url: cell_opt(row, 16),
             hooks_url: cell_opt(row, 17),
             mcp_url: cell_opt(row, 18),
+            agents_url: None,
+            rules_url: None,
             connector_auth: cell_text(row, 19),
             featured: cell_text(row, 20) == "1",
             synced_at: now.clone(),
@@ -132,10 +146,10 @@ pub async fn list_plugins_catalog(
     
     let all = db.list_plugins_cache(category.as_deref());
     let installed: std::collections::HashSet<String> = db
-        .list_installed_plugins(&scope, &scope_id)
-        .into_iter()
-        .map(|p| p.plugin_id)
-        .collect();
+            .list_installed_plugins(&scope, &scope_id)
+            .into_iter()
+            .map(|p| p.plugin_id)
+            .collect();
     Ok(all.into_iter().map(|e| to_list_item(e, &installed)).collect())
 }
 
@@ -149,10 +163,10 @@ pub fn search_plugins_catalog(
 ) -> Vec<PluginListItem> {
     let all = db.search_plugins_cache(&query);
     let installed: std::collections::HashSet<String> = db
-        .list_installed_plugins(&scope, &scope_id)
-        .into_iter()
-        .map(|p| p.plugin_id)
-        .collect();
+            .list_installed_plugins(&scope, &scope_id)
+            .into_iter()
+            .map(|p| p.plugin_id)
+            .collect();
     all.into_iter().map(|e| to_list_item(e, &installed)).collect()
 }
 
@@ -289,17 +303,20 @@ pub async fn install_plugin_from_url(
         mcp_ids: "[]".into(),
         command_ids: "[]".into(),
         hook_ids: "[]".into(),
+        rule_ids: "[]".into(),
         connector_ids: "[]".into(),
         skills_url: manifest.skills_url.or_else(|| {
             // Auto-detect: check if skills/ directory exists in raw base
             Some(format!("{}/skills", raw_base.trim_end_matches('/')))
         }),
+        agents_url: manifest.agents_url.clone(),
         commands_url: manifest.commands_url.or_else(|| {
             Some(format!("{}/commands", raw_base.trim_end_matches('/')))
         }),
         hooks_url: manifest.hooks_url.or_else(|| {
             Some(format!("{}/hooks", raw_base.trim_end_matches('/')))
         }),
+        rules_url: manifest.rules_url.clone(),
         mcp_url: Some("[]".to_string()),
         connector_auth: serde_json::to_string(&manifest.connector_auth.unwrap_or_default())
             .unwrap_or_else(|_| "[]".into()),
@@ -559,6 +576,7 @@ async fn do_install_plugin(
                             1,      // version
                             "plugin",
                             true,   // active
+                            &entry.author, // author
                         );
                     }
                 }
@@ -652,7 +670,7 @@ async fn do_install_plugin(
     }
 
     // ── 5. Record installation ───────────────────────────────────────────────
-    db.record_installed_plugin(scope, scope_id, &entry.id, &entry.version)?;
+    db.record_installed_plugin(scope, scope_id, &entry)?;
 
     Ok(())
 }
@@ -877,10 +895,16 @@ pub struct SubmitPluginInput {
     pub docs_url: Option<String>,
     pub mcp_ids: String,
     pub skill_ids: String,
+    pub agent_ids: String,
     pub command_ids: String,
+    pub hook_ids: String,
+    pub rule_ids: String,
+    pub connector_ids: String,
     pub skills_url: Option<String>,
+    pub agents_url: Option<String>,
     pub commands_url: Option<String>,
     pub hooks_url: Option<String>,
+    pub rules_url: Option<String>,
     pub mcp_url: Option<String>,
     pub connector_auth: String, // JSON array string
     pub featured: bool,
@@ -900,16 +924,16 @@ pub async fn submit_plugin_to_cloud(input: SubmitPluginInput) -> Result<(), Stri
     let connector_ids_arr: Vec<String> = parsed_auth.into_iter()
         .filter_map(|v| v.get("connector_id").and_then(|id| id.as_str()).map(|s| s.to_string()))
         .collect();
-    let connector_ids_json = serde_json::to_string(&connector_ids_arr).unwrap_or_else(|_| "[]".to_string());
+    let _connector_ids_json = serde_json::to_string(&connector_ids_arr).unwrap_or_else(|_| "[]".to_string());
 
     crate::cloud::turso_execute(
         &client,
         &cfg,
-        "INSERT INTO plugins \
+                 "INSERT INTO plugins \
          (id, name, description, author, version, icon_url, docs_url, github_url, \
           category, mcp_ids, connector_auth, featured, \
-          skill_ids, agent_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, '[]', ?, ?, ?, ?, ?) \
+          skill_ids, agent_ids, command_ids, hook_ids, rule_ids, connector_ids, skills_url, agents_url, commands_url, hooks_url, rules_url, mcp_url) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(id) DO UPDATE SET \
            name=excluded.name, description=excluded.description, \
            author=excluded.author, version=excluded.version, \
@@ -917,10 +941,10 @@ pub async fn submit_plugin_to_cloud(input: SubmitPluginInput) -> Result<(), Stri
            github_url=excluded.github_url, category=excluded.category, \
            mcp_ids=excluded.mcp_ids, \
            connector_auth=excluded.connector_auth, featured=excluded.featured, \
-           skill_ids=excluded.skill_ids, command_ids=excluded.command_ids, \
-           connector_ids=excluded.connector_ids, \
-           skills_url=excluded.skills_url, commands_url=excluded.commands_url, \
-           hooks_url=excluded.hooks_url, mcp_url=excluded.mcp_url, \
+           skill_ids=excluded.skill_ids, agent_ids=excluded.agent_ids, command_ids=excluded.command_ids, \
+           hook_ids=excluded.hook_ids, rule_ids=excluded.rule_ids, connector_ids=excluded.connector_ids, \
+           skills_url=excluded.skills_url, agents_url=excluded.agents_url, commands_url=excluded.commands_url, \
+           hooks_url=excluded.hooks_url, rules_url=excluded.rules_url, mcp_url=excluded.mcp_url, \
            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
         vec![
             Some(input.id),
@@ -936,11 +960,16 @@ pub async fn submit_plugin_to_cloud(input: SubmitPluginInput) -> Result<(), Stri
             Some(input.connector_auth),
             Some(featured_int.to_string()),
             Some(input.skill_ids),
+            Some(input.agent_ids),
             Some(input.command_ids),
-            Some(connector_ids_json),
+            Some(input.hook_ids),
+            Some(input.rule_ids),
+            Some(input.connector_ids),
             input.skills_url.or_else(|| Some("[]".to_string())),
+            input.agents_url.or_else(|| Some("[]".to_string())),
             input.commands_url.or_else(|| Some("[]".to_string())),
             input.hooks_url.or_else(|| Some("[]".to_string())),
+            input.rules_url.or_else(|| Some("[]".to_string())),
             input.mcp_url.or_else(|| Some("[]".to_string())),
         ],
     )

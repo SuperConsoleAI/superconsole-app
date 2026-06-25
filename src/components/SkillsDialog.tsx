@@ -5,8 +5,8 @@ import {
   FileDown,
   Pencil,
   Plus,
-  
   Trash2,
+  ScrollText,
 } from "lucide-react";
 import {
   api,
@@ -14,6 +14,7 @@ import {
   type LibrarySkill,
   type Skill,
 } from "@/lib/api";
+import { PluginIcon, guessPluginIdFromSkillName } from "./PluginIcon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,7 +23,7 @@ import {
   Dialog,
   DialogContent,
 } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
+
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
@@ -43,13 +44,13 @@ export function SkillsView({ workspaceId }: { workspaceId: number }) {
 
   const refresh = useCallback(() => {
     api.listSkills(workspaceId).then(setSkills).catch((e) => setError(String(e)));
-    api.scanDetectedSkills(workspaceId).then(setDetected).catch(() => {});
+    api.scanDetectedSkills(workspaceId).then(setDetected).catch(() => { });
   }, [workspaceId]);
 
   useEffect(() => {
     refresh();
     if (library.length === 0) {
-      api.listSkillLibrary().then(setLibrary).catch(() => {});
+      api.listSkillLibrary().then(setLibrary).catch(() => { });
     }
   }, [refresh, library.length]);
 
@@ -60,57 +61,57 @@ export function SkillsView({ workspaceId }: { workspaceId: number }) {
 
 
 
-        {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && <p className="text-xs text-destructive">{error}</p>}
 
-        <Tabs defaultValue="mine">
-          <TabsList>
-            <TabsTrigger value="mine">My Skills</TabsTrigger>
-                        <TabsTrigger value="library">Browse Library</TabsTrigger>
-            <TabsTrigger value="create">New / Import</TabsTrigger>
-          </TabsList>
+      <Tabs defaultValue="mine" className="flex flex-col flex-1 min-h-0">
+        <TabsList>
+          <TabsTrigger value="mine" className="data-[state=active]:bg-black/5 dark:data-[state=active]:bg-black/40">My Skills</TabsTrigger>
+          <TabsTrigger value="library" className="data-[state=active]:bg-black/5 dark:data-[state=active]:bg-black/40">Browse Library</TabsTrigger>
+          <TabsTrigger value="create" className="data-[state=active]:bg-black/5 dark:data-[state=active]:bg-black/40">New / Import</TabsTrigger>
+        </TabsList>
 
-          <TabsContent value="mine">
-            <MySkills
-              workspaceId={workspaceId}
-              skills={skills}
-              detected={detected}
-              busy={busy}
-              setBusy={setBusy}
-              setError={setError}
-              refresh={refresh}
-            />
-          </TabsContent>
+        <TabsContent value="mine" className="mt-3 flex-1 flex flex-col min-h-0">
+          <MySkills
+            workspaceId={workspaceId}
+            skills={skills}
+            detected={detected}
+            busy={busy}
+            setBusy={setBusy}
+            setError={setError}
+            refresh={refresh}
+          />
+        </TabsContent>
 
-          
-          <TabsContent value="library">
-            <LibraryBrowser
-              library={library}
-              installed={installed}
-              busy={busy}
-              onInstall={async (name) => {
-                setBusy(name);
-                try {
-                  await api.installLibrarySkillGlobal(name);
-                  await api.materializeSkillToWorkspace(workspaceId, name);
-                  refresh();
-                } catch (e) {
-                  setError(String(e));
-                } finally {
-                  setBusy(null);
-                }
-              }}
-            />
-          </TabsContent>
 
-          <TabsContent value="create">
-            <CreateImport
-              workspaceId={workspaceId}
-              setError={setError}
-              onDone={refresh}
-            />
-          </TabsContent>
-        </Tabs>
-      
+        <TabsContent value="library" className="mt-6 flex-1 flex flex-col min-h-0">
+          <LibraryBrowser
+            library={library}
+            installed={installed}
+            busy={busy}
+            onInstall={async (name) => {
+              setBusy(name);
+              try {
+                await api.installLibrarySkillGlobal(name);
+                await api.materializeSkillToWorkspace(workspaceId, name);
+                refresh();
+              } catch (e) {
+                setError(String(e));
+              } finally {
+                setBusy(null);
+              }
+            }}
+          />
+        </TabsContent>
+
+        <TabsContent value="create" className="mt-6 flex-1 flex flex-col min-h-0 overflow-y-auto">
+          <CreateImport
+            workspaceId={workspaceId}
+            setError={setError}
+            onDone={refresh}
+          />
+        </TabsContent>
+      </Tabs>
+
     </div>
   );
 }
@@ -195,147 +196,167 @@ function MySkills({
   }
 
   return (
-    <ScrollArea className="h-[420px]">
-      <div className="flex flex-col gap-1.5 pb-2 pr-2">
-        {skills.length === 0 && (
+    <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0">
+      <div className="flex flex-col pb-2 pr-2 min-w-0 w-full">
+        {skills.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
             No skills yet. Add one from the library or create your own.
           </p>
-        )}
-        {skills.map((s) => (
-          <div
-            key={s.name}
-            className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2"
-          >
-            <button
-              className={cn(
-                "h-4 w-7 shrink-0 rounded-full transition-colors",
-                s.active ? "bg-primary" : "bg-muted",
-              )}
-              title={s.active ? "Active — disable" : "Inactive — enable"}
-              onClick={() =>
-                api
-                  .setSkillActive(workspaceId, s.name, !s.active)
-                  .then(refresh)
-                  .catch((e) => setError(String(e)))
-              }
-            >
-              <span
-                className={cn(
-                  "block h-3 w-3 rounded-full bg-background transition-transform",
-                  s.active ? "translate-x-3.5" : "translate-x-0.5",
-                )}
-              />
-            </button>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="truncate text-sm font-medium">{s.name}</span>
-                <Badge
-                  variant={s.source === "superconsole" ? "secondary" : "outline"}
-                  className="text-[10px]"
-                >
-                  {s.source === "superconsole" ? "in repo" : "reference"}
-                </Badge>
-                {s.tags.slice(0, 2).map((t) => (
-                  <Badge key={t} variant="outline" className="text-[10px]">
-                    {t}
-                  </Badge>
-                ))}
-              </div>
-              {s.description && (
-                <p className="line-clamp-2 text-xs text-muted-foreground">{s.description}</p>
-              )}
-            </div>
-            {s.source === "superconsole" ? (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 shrink-0"
-                title="Edit"
-                onClick={() => openEditor(s)}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </Button>
-            ) : (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 shrink-0"
-                title="Materialize into repo (.superconsole/skills/)"
-                disabled={busy === s.name}
-                onClick={() => {
-                  setBusy(s.name);
-                  api
-                    .materializeSkillToWorkspace(workspaceId, s.name)
-                    .then(refresh)
-                    .catch((e) => setError(String(e)))
-                    .finally(() => setBusy(null));
-                }}
-              >
-                <FileDown className="h-3.5 w-3.5" />
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 shrink-0"
-              title={s.source === "superconsole" ? "Delete from repo" : "Detach reference"}
-              disabled={busy === s.name}
-              onClick={() =>
-                (s.source === "superconsole"
-                  ? api.deleteSkill(workspaceId, s.name)
-                  : api.detachSkillFromProject(workspaceId, s.name)
-                )
-                  .then(refresh)
-                  .catch((e) => setError(String(e)))
-              }
-            >
-              <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-            </Button>
-          </div>
-        ))}
-
-        {detected.length > 0 && (
-          <>
-            <p className="mt-3 text-xs font-semibold text-muted-foreground">
-              Detected in this repo
-            </p>
-            {detected.map((d) => (
+        ) : (
+          <div className="rounded-xl border bg-transparent overflow-hidden flex flex-col divide-y divide-border w-full max-w-full">
+            {skills.map((s) => (
               <div
-                key={d.file_path}
-                className="flex items-center gap-3 rounded-lg border border-dashed bg-muted/30 px-3 py-2"
+                key={s.name}
+                className="flex min-w-0 items-center gap-3 px-3 py-2"
               >
-                <div className="min-w-0 flex-1">
-                  <span className="truncate text-sm font-medium">{d.name}</span>
-                  <p className="truncate text-xs text-muted-foreground">{d.file_path}</p>
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center">
+                  <ScrollText className="h-5 w-5 text-muted-foreground" />
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 shrink-0"
-                  disabled={busy === d.name}
-                  onClick={async () => {
-                    setBusy(d.name);
-                    try {
-                      const content = await api.readWorkspaceSkill(workspaceId, d.file_path);
-                      await api.createSkill(workspaceId, d.name, d.description, d.tags, content);
-                      refresh();
-                    } catch (e) {
-                      setError(String(e));
-                    } finally {
-                      setBusy(null);
-                    }
-                  }}
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-sm font-medium">{s.name}</span>
+                    {(() => {
+                      const finalId = s.author || guessPluginIdFromSkillName(s.name);
+                      return finalId ? (
+                        <PluginIcon 
+                          pluginId={finalId} 
+                          size={14} 
+                          className="w-3.5 h-3.5 rounded-full shrink-0" 
+                        />
+                      ) : null;
+                    })()}
+                    <Badge
+                      variant="secondary"
+                      className="shrink-0 text-[10px] text-muted-foreground font-normal bg-muted/50"
+                    >
+                      {s.source === "superconsole" ? "in repo" : "reference"}
+                    </Badge>
+                    <div className="flex items-center gap-1.5 overflow-hidden">
+                      {s.tags.slice(0, 2).map((t) => (
+                        <Badge key={t} variant="secondary" className="truncate text-[10px] text-muted-foreground font-normal bg-muted/50">
+                          {t}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                  {s.description && (
+                    <p className="truncate text-xs text-muted-foreground mt-0.5">{s.description}</p>
+                  )}
+                </div>
+                <button
+                  className={cn(
+                    "h-4 w-7 shrink-0 rounded-full transition-colors",
+                    s.active ? "bg-primary" : "bg-muted",
+                  )}
+                  title={s.active ? "Active — disable" : "Inactive — enable"}
+                  onClick={() =>
+                    api
+                      .setSkillActive(workspaceId, s.name, !s.active)
+                      .then(refresh)
+                      .catch((e) => setError(String(e)))
+                  }
                 >
-                  <FileDown className="h-3.5 w-3.5" />
-                  Activate
+                  <span
+                    className={cn(
+                      "block h-3 w-3 rounded-full bg-background transition-transform",
+                      s.active ? "translate-x-3.5" : "translate-x-0.5",
+                    )}
+                  />
+                </button>
+                {s.source === "superconsole" ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0"
+                    title="Edit"
+                    onClick={() => openEditor(s)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0"
+                    title="Materialize into repo (.superconsole/skills/)"
+                    disabled={busy === s.name}
+                    onClick={() => {
+                      setBusy(s.name);
+                      api
+                        .materializeSkillToWorkspace(workspaceId, s.name)
+                        .then(refresh)
+                        .catch((e) => setError(String(e)))
+                        .finally(() => setBusy(null));
+                    }}
+                  >
+                    <FileDown className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0"
+                  title={s.source === "superconsole" ? "Delete from repo" : "Detach reference"}
+                  disabled={busy === s.name}
+                  onClick={() =>
+                    (s.source === "superconsole"
+                      ? api.deleteSkill(workspaceId, s.name)
+                      : api.detachSkillFromProject(workspaceId, s.name)
+                    )
+                      .then(refresh)
+                      .catch((e) => setError(String(e)))
+                  }
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
                 </Button>
               </div>
             ))}
+          </div>
+        )}
+
+        {detected.length > 0 && (
+          <>
+            <p className="mt-3 mb-1.5 text-xs font-semibold text-muted-foreground">
+              Detected in this repo
+            </p>
+            <div className="rounded-xl border border-dashed bg-transparent overflow-hidden flex flex-col divide-y divide-border/50">
+              {detected.map((d) => (
+                <div
+                  key={d.file_path}
+                  className="flex items-center gap-3 px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="truncate text-sm font-medium">{d.name}</span>
+                    <p className="truncate text-xs text-muted-foreground">{d.file_path}</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0"
+                    disabled={busy === d.name}
+                    onClick={async () => {
+                      setBusy(d.name);
+                      try {
+                        const content = await api.readWorkspaceSkill(workspaceId, d.file_path);
+                        await api.createSkill(workspaceId, d.name, d.description, d.tags, content);
+                        refresh();
+                      } catch (e) {
+                        setError(String(e));
+                      } finally {
+                        setBusy(null);
+                      }
+                    }}
+                  >
+                    <FileDown className="h-3.5 w-3.5" />
+                    Activate
+                  </Button>
+                </div>
+              ))}
+            </div>
           </>
         )}
       </div>
-    </ScrollArea>
+    </div>
   );
 }
 
@@ -385,23 +406,33 @@ function LibraryBrowser({
           </Button>
         ))}
       </div>
-      <ScrollArea className="max-h-80">
-        <div className="flex flex-col gap-1.5 pb-2 pr-2">
+      <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0 mt-2">
+        <div className="flex flex-col gap-1.5 pb-2 pr-2 min-w-0 w-full overflow-hidden">
           {filtered.map((l) => {
             const isInstalled = installed.has(l.name);
             return (
               <div
                 key={l.name}
-                className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2"
+                className="flex min-w-0 items-center gap-3 rounded-lg border bg-card px-3 py-2"
               >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <div className="flex min-w-0 items-center gap-2">
                     <span className="truncate text-sm font-medium">{l.name}</span>
-                    <Badge variant="outline" className="text-[10px]">
+                    {(() => {
+                      const finalId = l.author || guessPluginIdFromSkillName(l.name);
+                      return finalId ? (
+                        <PluginIcon 
+                          pluginId={finalId} 
+                          size={14} 
+                          className="w-3.5 h-3.5 rounded-full shrink-0" 
+                        />
+                      ) : null;
+                    })()}
+                    <Badge variant="outline" className="shrink-0 text-[10px]">
                       {l.category}
                     </Badge>
                   </div>
-                  <p className="line-clamp-2 text-xs text-muted-foreground">{l.description}</p>
+                  <p className="truncate text-xs text-muted-foreground mt-0.5">{l.description}</p>
                 </div>
                 <Button
                   variant={isInstalled ? "ghost" : "outline"}
@@ -417,7 +448,7 @@ function LibraryBrowser({
             );
           })}
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }

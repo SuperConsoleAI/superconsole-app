@@ -1,39 +1,13 @@
 const fs = require('fs');
 
-// 1. Fix CustomizePage.tsx
-let cp = fs.readFileSync('src/components/CustomizePage.tsx', 'utf8');
+// 1. Fix RulesDialog.tsx
+let rules = fs.readFileSync('src/components/RulesDialog.tsx', 'utf8');
+rules = rules.replace(/await api\.deleteRule\(slug\);/, 'await api.deleteRule(workspaceId, slug);');
+rules = rules.replace(/await api\.writeRule\(editing\.slug, editing\.content\);/, 'await api.writeRule(workspaceId, editing.slug, editing.content);');
+fs.writeFileSync('src/components/RulesDialog.tsx', rules);
 
-// Fix unused useMemo
-cp = cp.replace('import { useState, useEffect, useCallback, useMemo } from "react";', 'import { useState, useEffect, useCallback } from "react";');
+// 2. Fix api.ts
+let api = fs.readFileSync('src/lib/api.ts', 'utf8');
+api = api.replace(/readRule: \(workspaceId: number, slug: string\) => invoke<RuleFile>\("tauri_read_rule", \{ workspaceId, slug \}\)\.then\(content => \(\{ slug, name: slug, description: "", content, always_apply: true \}\)\),/, 'readRule: (workspaceId: number, slug: string) => invoke<string>("tauri_read_rule", { workspaceId, slug }).then(content => ({ slug, name: slug, description: "", content, always_apply: true } as RuleFile)),');
+fs.writeFileSync('src/lib/api.ts', api);
 
-// Fix loadHooks
-const oldLoadHooks = `  const loadHooks = useCallback(async (scopeType: string, scopeId: string) => {
-    if (!wsId) { setHooks([]); return; }
-    setHooksLoading(true);
-    try { setHooks(await api.listHooks(wsId)); }
-    catch { setHooks([]); }
-    finally { setHooksLoading(false); }
-  }, []);`;
-
-const newLoadHooks = `  const loadHooks = useCallback(async (scopeType: string, scopeId: string) => {
-    if (scopeType !== "project" || !scopeId || scopeId === "account") { setHooks([]); return; }
-    setHooksLoading(true);
-    try { setHooks(await api.listHooks(Number(scopeId))); }
-    catch { setHooks([]); }
-    finally { setHooksLoading(false); }
-  }, []);`;
-
-cp = cp.replace(oldLoadHooks, newLoadHooks);
-
-// Fix wsName(scope)
-cp = cp.replace('wsName={scope ? wsName(scope) : ""}', 'wsName={scope ? wsName(scope.id) : ""}');
-
-// Fix HookEditor workspaceId
-cp = cp.replace('workspaceId={scope}', 'workspaceId={Number(scope.id)}');
-
-fs.writeFileSync('src/components/CustomizePage.tsx', cp);
-
-// 2. Fix PublishPluginDialog.tsx
-let pp = fs.readFileSync('src/components/libraryx/PublishPluginDialog.tsx', 'utf8');
-pp = pp.replace('api.listPluginsCatalog(0).then', 'api.listPluginsCatalog("account", "account").then');
-fs.writeFileSync('src/components/libraryx/PublishPluginDialog.tsx', pp);

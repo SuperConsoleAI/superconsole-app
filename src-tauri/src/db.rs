@@ -123,6 +123,8 @@ pub struct AgentRow {
     pub agent_id: Option<String>, // Turso cloud ULID
     pub last_run: Option<String>,
     pub next_run: Option<String>,
+    pub agent_catalog_id: Option<String>,
+    pub author: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -248,6 +250,7 @@ pub struct SkillIndexRow {
     pub tags: String,
     pub scope: String,
     pub active: bool,
+    pub author: String,
 }
 
 /// A row mirrored from the Turso `project_skill_index` (metadata only).
@@ -265,6 +268,8 @@ pub struct CachedSkill {
 pub struct CachedOrgSkill {
     pub skill_name: String,
     pub tags: String,
+    pub skill_catalog_id: Option<String>,
+    pub author: String,
 }
 
 /// A row in the local memory index (metadata only; content lives in the
@@ -346,8 +351,17 @@ impl Db {
                 version TEXT NOT NULL DEFAULT '1.0.0',
                 skills_url TEXT NOT NULL DEFAULT '[]',
                 commands_url TEXT NOT NULL DEFAULT '[]',
+                agents_url TEXT NOT NULL DEFAULT '[]',
                 hooks_url TEXT NOT NULL DEFAULT '[]',
-                mcp_url TEXT NOT NULL DEFAULT '[]'
+                rules_url TEXT NOT NULL DEFAULT '[]',
+                mcp_url TEXT NOT NULL DEFAULT '[]',
+                skill_ids TEXT NOT NULL DEFAULT '[]',
+                agent_ids TEXT NOT NULL DEFAULT '[]',
+                mcp_ids TEXT NOT NULL DEFAULT '[]',
+                command_ids TEXT NOT NULL DEFAULT '[]',
+                hook_ids TEXT NOT NULL DEFAULT '[]',
+                rule_ids TEXT NOT NULL DEFAULT '[]',
+                connector_ids TEXT NOT NULL DEFAULT '[]'
             );
             CREATE INDEX IF NOT EXISTS installed_plugins_cache_scope_idx 
                 ON installed_plugins_cache(scope, scope_id);
@@ -431,11 +445,39 @@ impl Db {
             ("installed_by", "TEXT NOT NULL DEFAULT ''"),
             ("skills_url", "TEXT NOT NULL DEFAULT '[]'"),
             ("commands_url", "TEXT NOT NULL DEFAULT '[]'"),
+            ("agents_url", "TEXT NOT NULL DEFAULT '[]'"),
             ("hooks_url", "TEXT NOT NULL DEFAULT '[]'"),
+            ("rules_url", "TEXT NOT NULL DEFAULT '[]'"),
             ("mcp_url", "TEXT NOT NULL DEFAULT '[]'"),
+            ("skill_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("mcp_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("command_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("connector_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("agent_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("hook_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("rule_ids", "TEXT NOT NULL DEFAULT '[]'"),
         ] {
             if conn.prepare(&format!("SELECT {} FROM installed_plugins_cache LIMIT 1", col)).is_err() {
                 let _ = conn.execute_batch(&format!("ALTER TABLE installed_plugins_cache ADD COLUMN {} {};", col, decl));
+            }
+        }
+        
+        for (col, decl) in [
+            ("agent_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("hook_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("rule_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("agents_url", "TEXT NOT NULL DEFAULT '[]'"),
+            ("hooks_url", "TEXT NOT NULL DEFAULT '[]'"),
+            ("rules_url", "TEXT NOT NULL DEFAULT '[]'"),
+            ("skill_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("mcp_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("command_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("connector_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("connector_auth", "TEXT NOT NULL DEFAULT '[]'"),
+            ("featured", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if conn.prepare(&format!("SELECT {} FROM plugins_cache LIMIT 1", col)).is_err() {
+                let _ = conn.execute_batch(&format!("ALTER TABLE plugins_cache ADD COLUMN {} {};", col, decl));
             }
         }
         
@@ -454,6 +496,7 @@ impl Db {
                 scope TEXT NOT NULL DEFAULT 'project',
                 skill_ids TEXT NOT NULL DEFAULT '[]',
                 agent_ids TEXT NOT NULL DEFAULT '[]',
+                agents_url TEXT NOT NULL DEFAULT '[]',
                 mcp_ids TEXT NOT NULL DEFAULT '[]',
                 command_ids TEXT NOT NULL DEFAULT '[]',
                 hook_ids TEXT NOT NULL DEFAULT '[]',
@@ -461,7 +504,16 @@ impl Db {
                 skills_url TEXT NOT NULL DEFAULT '[]',
                 commands_url TEXT NOT NULL DEFAULT '[]',
                 hooks_url TEXT NOT NULL DEFAULT '[]',
+                rules_url TEXT NOT NULL DEFAULT '[]',
+                rule_ids TEXT NOT NULL DEFAULT '[]',
                 mcp_url TEXT NOT NULL DEFAULT '[]',
+                skill_ids TEXT NOT NULL DEFAULT '[]',
+                mcp_ids TEXT NOT NULL DEFAULT '[]',
+                command_ids TEXT NOT NULL DEFAULT '[]',
+                hook_ids TEXT NOT NULL DEFAULT '[]',
+                rule_ids TEXT NOT NULL DEFAULT '[]',
+                connector_ids TEXT NOT NULL DEFAULT '[]',
+                rules_url TEXT NOT NULL DEFAULT '[]',
                 connector_auth TEXT NOT NULL DEFAULT '[]',
                 featured INTEGER NOT NULL DEFAULT 0,
                 synced_at TEXT NOT NULL
@@ -479,6 +531,7 @@ impl Db {
                 env TEXT NOT NULL DEFAULT '{}',
                 required_env_vars TEXT NOT NULL DEFAULT '[]',
                 github_url TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL DEFAULT '',
                 icon_url TEXT NOT NULL DEFAULT '',
                 docs_url TEXT NOT NULL DEFAULT '',
                 install_count INTEGER NOT NULL DEFAULT 0
@@ -524,6 +577,7 @@ impl Db {
         // Alterations for plugins_cache
         for (col, decl) in [
             ("agent_ids", "TEXT NOT NULL DEFAULT '[]'"),
+            ("agents_url", "TEXT NOT NULL DEFAULT '[]'"),
             ("mcp_url", "TEXT NOT NULL DEFAULT '[]'"),
         ] {
             if conn.prepare(&format!("SELECT {} FROM plugins_cache LIMIT 1", col)).is_err() {
@@ -533,6 +587,10 @@ impl Db {
 
         // Project settings: default session, lifecycle scripts, repo/description.
         // All defaulted so existing rows keep current behaviour.
+        if conn.prepare("SELECT author FROM project_skills LIMIT 1").is_err() {
+            let _ = conn.execute_batch("ALTER TABLE project_skills ADD COLUMN author TEXT NOT NULL DEFAULT '';");
+        }
+
         for (col, decl) in [
             ("default_run_mode", "TEXT NOT NULL DEFAULT 'cli'"),
             ("default_cli", "TEXT NOT NULL DEFAULT 'claude'"),
@@ -706,6 +764,8 @@ impl Db {
                 auto INTEGER NOT NULL DEFAULT 0,
                 version INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'superconsole',
+                author TEXT NOT NULL DEFAULT '',
+                skill_catalog_id TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (workspace_id, name)
             );
@@ -725,6 +785,8 @@ impl Db {
                 skill_name TEXT NOT NULL,
                 tags TEXT,
                 synced_at TEXT NOT NULL,
+                skill_catalog_id TEXT,
+                author TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (org_id, skill_name)
             );",
         )
@@ -987,6 +1049,8 @@ impl Db {
                 connectors TEXT NOT NULL DEFAULT '',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 agent_id TEXT,
+                agent_catalog_id TEXT,
+                author TEXT NOT NULL DEFAULT '',
                 last_run TEXT,
                 next_run TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1966,17 +2030,19 @@ impl Db {
             connectors: r.get::<_, String>(10).unwrap_or_default(),
             is_active: r.get::<_, i64>(11)? != 0,
             agent_id: r.get(12)?,
-            last_run: r.get(13)?,
-            next_run: r.get(14)?,
-            created_at: r.get(15)?,
-            updated_at: r.get(16)?,
+            agent_catalog_id: r.get(13)?,
+            author: r.get(14)?,
+            last_run: r.get(15)?,
+            next_run: r.get(16)?,
+            created_at: r.get(17)?,
+            updated_at: r.get(18)?,
         })
     }
 
     const AGENT_SELECT: &'static str =
         "SELECT id, workspace_id, name, description, schedule, default_run_mode,
                 default_cli, default_provider, default_model, skills, connectors,
-                is_active, agent_id, last_run, next_run, created_at, updated_at
+                is_active, agent_id, agent_catalog_id, author, last_run, next_run, created_at, updated_at
          FROM agents";
 
     /// Upsert a local agent metadata row. `id` must be a pre-generated ULID.
@@ -1996,14 +2062,16 @@ impl Db {
         connectors: &str,
         is_active: bool,
         agent_id: Option<&str>,
+        agent_catalog_id: Option<&str>,
+        author: &str,
     ) -> Result<AgentRow, String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "INSERT INTO agents
                 (id, workspace_id, name, description, schedule, default_run_mode,
                  default_cli, default_provider, default_model, skills, connectors,
-                 is_active, agent_id, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))
+                 is_active, agent_id, agent_catalog_id, author, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'))
              ON CONFLICT(workspace_id, name) DO UPDATE SET
                 description      = excluded.description,
                 schedule         = excluded.schedule,
@@ -2015,11 +2083,14 @@ impl Db {
                 connectors       = excluded.connectors,
                 is_active        = excluded.is_active,
                 agent_id         = COALESCE(excluded.agent_id, agents.agent_id),
+                agent_catalog_id = COALESCE(excluded.agent_catalog_id, agents.agent_catalog_id),
+                author           = CASE WHEN excluded.author = '' THEN agents.author ELSE excluded.author END,
                 updated_at       = excluded.updated_at",
             rusqlite::params![
                 id, workspace_id, name, description, schedule,
                 default_run_mode, default_cli, default_provider, default_model,
                 skills, connectors, is_active as i64, agent_id,
+                agent_catalog_id, author,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -2658,7 +2729,7 @@ impl Db {
     pub fn list_skill_index(&self, workspace_id: i64) -> Vec<SkillIndexRow> {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT name, description, tags, scope, active FROM project_skills
+            "SELECT name, description, tags, scope, active, author FROM project_skills
              WHERE workspace_id = ?1 ORDER BY name",
         ) else {
             return Vec::new();
@@ -2670,6 +2741,7 @@ impl Db {
                 tags: r.get(2)?,
                 scope: r.get(3)?,
                 active: r.get::<_, i64>(4)? != 0,
+                author: r.get(5)?,
             })
         });
         match rows {
@@ -2691,17 +2763,18 @@ impl Db {
         version: u32,
         source: &str,
         active: bool,
+        author: &str,
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "INSERT INTO project_skills
-                (workspace_id, name, description, tags, file_path, scope, active, auto, version, source, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
+                (workspace_id, name, description, tags, file_path, scope, active, auto, version, source, author, skill_catalog_id, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))
              ON CONFLICT(workspace_id, name) DO UPDATE SET
                 description = excluded.description, tags = excluded.tags,
                 file_path = excluded.file_path, scope = excluded.scope,
                 auto = excluded.auto, version = excluded.version,
-                source = excluded.source, updated_at = excluded.updated_at",
+                source = excluded.source, author = CASE WHEN excluded.author = '' THEN project_skills.author ELSE excluded.author END, skill_catalog_id = COALESCE(excluded.skill_catalog_id, project_skills.skill_catalog_id), updated_at = excluded.updated_at",
             rusqlite::params![
                 workspace_id,
                 name,
@@ -2713,6 +2786,8 @@ impl Db {
                 auto as i64,
                 version,
                 source,
+                author,
+                None::<String>, /* TODO: pass skill_catalog_id from skills */
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -2742,12 +2817,19 @@ impl Db {
     }
 
     pub fn delete_skill_index(&self, workspace_id: i64, name: &str) -> Result<(), String> {
+        let pid = self.get_workspace_project_id(workspace_id);
         let conn = self.0.lock().unwrap();
         conn.execute(
             "DELETE FROM project_skills WHERE workspace_id = ?1 AND name = ?2",
             (workspace_id, name),
         )
         .map_err(|e| e.to_string())?;
+        if let Some(pid) = pid {
+                let _ = conn.execute(
+                    "DELETE FROM skill_index_cache WHERE project_id = ?1 AND skill_name = ?2",
+                    (pid, name),
+                );
+        }
         Ok(())
     }
 
@@ -2811,9 +2893,9 @@ impl Db {
             .map_err(|e| e.to_string())?;
         for s in skills {
             tx.execute(
-                "INSERT INTO org_skill_cache (org_id, skill_name, tags, synced_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![org_id, s.skill_name, s.tags, synced_at],
+                "INSERT INTO org_skill_cache (org_id, skill_name, tags, skill_catalog_id, author, synced_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![org_id, s.skill_name, s.tags, s.skill_catalog_id, s.author, synced_at],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -2823,7 +2905,7 @@ impl Db {
     pub fn get_cached_org_skills(&self, org_id: &str) -> Vec<CachedOrgSkill> {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT skill_name, tags FROM org_skill_cache WHERE org_id = ?1 ORDER BY skill_name",
+            "SELECT skill_name, tags, skill_catalog_id, author FROM org_skill_cache WHERE org_id = ?1 ORDER BY skill_name",
         ) else {
             return Vec::new();
         };
@@ -2831,6 +2913,8 @@ impl Db {
             Ok(CachedOrgSkill {
                 skill_name: r.get(0)?,
                 tags: r.get(1)?,
+                skill_catalog_id: r.get(2)?,
+                author: r.get(3)?,
             })
         });
         match rows {
@@ -3297,21 +3381,36 @@ impl Db {
         &self,
         scope: &str,
         scope_id: &str,
-        plugin_id: &str,
-        version: &str,
+        entry: &PluginCacheEntry,
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         let id = ulid::Ulid::new().to_string();
         
         let _ = conn.execute(
             "DELETE FROM installed_plugins_cache WHERE scope = ?1 AND scope_id = ?2 AND plugin_id = ?3",
-            rusqlite::params![scope, scope_id, plugin_id],
+            rusqlite::params![scope, scope_id, &entry.id],
         );
         
         conn.execute(
-            "INSERT INTO installed_plugins_cache (id, scope, scope_id, plugin_id, version)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![id, scope, scope_id, plugin_id, version],
+            "INSERT INTO installed_plugins_cache (
+                id, scope, scope_id, plugin_id, version,
+                skill_ids, agent_ids, mcp_ids, command_ids, hook_ids, rule_ids, connector_ids,
+                skills_url, agents_url, mcp_url, commands_url, hooks_url, rules_url
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5,
+                ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18
+            )",
+            rusqlite::params![
+                id, scope, scope_id, &entry.id, &entry.version,
+                &entry.skill_ids, &entry.agent_ids, &entry.mcp_ids, &entry.command_ids, &entry.hook_ids, &entry.rule_ids, &entry.connector_ids,
+                &entry.skills_url.clone().unwrap_or_else(|| "[]".into()), 
+                &entry.agents_url.clone().unwrap_or_else(|| "[]".into()), 
+                &entry.mcp_url.clone().unwrap_or_else(|| "[]".into()), 
+                &entry.commands_url.clone().unwrap_or_else(|| "[]".into()), 
+                &entry.hooks_url.clone().unwrap_or_else(|| "[]".into()),
+                &entry.rules_url
+            ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -3320,7 +3419,7 @@ impl Db {
     pub fn list_installed_plugins(&self, scope: &str, scope_id: &str) -> Vec<WorkspacePlugin> {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT id, scope, scope_id, plugin_id, installed_at
+            "SELECT id, scope, scope_id, plugin_id, installed_at, version, skill_ids, agent_ids, mcp_ids, command_ids, hook_ids, rule_ids, connector_ids
              FROM installed_plugins_cache WHERE scope = ?1 AND scope_id = ?2 ORDER BY installed_at DESC",
         ) else {
             return Vec::new();
@@ -3332,6 +3431,14 @@ impl Db {
                 scope_id: r.get(2)?,
                 plugin_id: r.get(3)?,
                 installed_at: r.get(4)?,
+                version: r.get(5)?,
+                skill_ids: r.get(6)?,
+                agent_ids: r.get(7)?,
+                mcp_ids: r.get(8)?,
+                command_ids: r.get(9)?,
+                hook_ids: r.get(10)?,
+                rule_ids: r.get(11)?,
+                connector_ids: r.get(12)?,
             })
         });
         match rows {
@@ -3364,17 +3471,17 @@ impl Db {
     pub fn upsert_plugin_cache(&self, e: &PluginCacheEntry) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO plugins_cache (id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)
+            "INSERT INTO plugins_cache (id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, rules_url, rule_ids, connector_auth, featured, synced_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
              ON CONFLICT(id) DO UPDATE SET
                name=excluded.name, description=excluded.description, author=excluded.author, version=excluded.version,
                icon_url=excluded.icon_url, docs_url=excluded.docs_url, github_url=excluded.github_url, category=excluded.category,
-               scope=excluded.scope, skill_ids=excluded.skill_ids, agent_ids=excluded.agent_ids, mcp_ids=excluded.mcp_ids,
+               scope=excluded.scope, skill_ids=excluded.skill_ids, agent_ids=excluded.agent_ids, agents_url=excluded.agents_url, mcp_ids=excluded.mcp_ids,
                command_ids=excluded.command_ids, hook_ids=excluded.hook_ids, connector_ids=excluded.connector_ids,
                skills_url=excluded.skills_url, commands_url=excluded.commands_url, hooks_url=excluded.hooks_url, mcp_url=excluded.mcp_url,
-               connector_auth=excluded.connector_auth, featured=excluded.featured, synced_at=excluded.synced_at",
+               rules_url=excluded.rules_url, rule_ids=excluded.rule_ids, connector_auth=excluded.connector_auth, featured=excluded.featured, synced_at=excluded.synced_at",
             rusqlite::params![
-                e.id, e.name, e.description, e.author, e.version, e.icon_url, e.docs_url, e.github_url, e.category, e.scope, e.skill_ids, e.agent_ids, e.mcp_ids, e.command_ids, e.hook_ids, e.connector_ids, e.skills_url, e.commands_url, e.hooks_url, e.mcp_url, e.connector_auth, e.featured as i64, e.synced_at
+                e.id, e.name, e.description, e.author, e.version, e.icon_url, e.docs_url, e.github_url, e.category, e.scope, e.skill_ids, e.agent_ids, e.agents_url, e.mcp_ids, e.command_ids, e.hook_ids, e.connector_ids, e.skills_url, e.commands_url, e.hooks_url, e.mcp_url, e.rules_url, e.rule_ids, e.connector_auth, e.featured as i64, e.synced_at
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -3384,9 +3491,9 @@ impl Db {
     pub fn list_plugins_cache(&self, category: Option<&str>) -> Vec<PluginCacheEntry> {
         let conn = self.0.lock().unwrap();
         let sql = if category.is_some() {
-            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at FROM plugins_cache WHERE category = ? ORDER BY name"
+            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins_cache WHERE category = ? ORDER BY name"
         } else {
-            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at FROM plugins_cache ORDER BY name"
+            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins_cache ORDER BY name"
         };
         let mut stmt = conn.prepare(sql).unwrap();
         let iter = if let Some(c) = category {
@@ -3400,7 +3507,7 @@ impl Db {
     pub fn get_plugin_cache(&self, id: &str) -> Option<PluginCacheEntry> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at FROM plugins_cache WHERE id = ?1",
+            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins_cache WHERE id = ?1",
             [id],
             Self::map_plugin_cache,
         ).ok()
@@ -3408,7 +3515,7 @@ impl Db {
 
     pub fn search_plugins_cache(&self, query: &str) -> Vec<PluginCacheEntry> {
         let conn = self.0.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at FROM plugins_cache WHERE name LIKE ?1 OR description LIKE ?1 ORDER BY name").unwrap();
+        let mut stmt = conn.prepare("SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins_cache WHERE name LIKE ?1 OR description LIKE ?1 ORDER BY name").unwrap();
         let q = format!("%{}%", query);
         stmt.query_map([&q], Self::map_plugin_cache).unwrap().filter_map(|r| r.ok()).collect()
     }
@@ -3427,17 +3534,20 @@ impl Db {
             scope: row.get(9)?,
             skill_ids: row.get(10)?,
             agent_ids: row.get(11)?,
-            mcp_ids: row.get(12)?,
-            command_ids: row.get(13)?,
-            hook_ids: row.get(14)?,
-            connector_ids: row.get(15)?,
-            skills_url: row.get(16)?,
-            commands_url: row.get(17)?,
-            hooks_url: row.get(18)?,
-            mcp_url: row.get(19)?,
-            connector_auth: row.get(20)?,
-            featured: row.get::<_, i64>(21)? != 0,
-            synced_at: row.get(22)?,
+            agents_url: row.get(12)?,
+            mcp_ids: row.get(13)?,
+            command_ids: row.get(14)?,
+            hook_ids: row.get(15)?,
+            connector_ids: row.get(16)?,
+            skills_url: row.get(17)?,
+            commands_url: row.get(18)?,
+            hooks_url: row.get(19)?,
+            mcp_url: row.get(20)?,
+            connector_auth: row.get(21)?,
+            featured: row.get::<_, i64>(22)? != 0,
+            synced_at: row.get(23)?,
+            rules_url: row.get(24)?,
+            rule_ids: row.get(25)?,
         })
     }
 
@@ -3536,6 +3646,7 @@ pub struct PluginCacheEntry {
     pub scope: String,
     pub skill_ids: String,
     pub agent_ids: String,
+    pub agents_url: Option<String>,
     pub mcp_ids: String,
     pub command_ids: String,
     pub hook_ids: String,
@@ -3544,6 +3655,8 @@ pub struct PluginCacheEntry {
     pub commands_url: Option<String>,
     pub hooks_url: Option<String>,
     pub mcp_url: Option<String>,
+    pub rules_url: Option<String>,
+    pub rule_ids: String,
     pub connector_auth: String,
     pub featured: bool,
     pub synced_at: String,
@@ -3631,4 +3744,12 @@ pub struct WorkspacePlugin {
     pub scope_id: String,
     pub plugin_id: String,
     pub installed_at: String,
+    pub version: String,
+    pub skill_ids: String,
+    pub agent_ids: String,
+    pub mcp_ids: String,
+    pub command_ids: String,
+    pub hook_ids: String,
+    pub rule_ids: String,
+    pub connector_ids: String,
 }
