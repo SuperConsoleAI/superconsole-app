@@ -26,6 +26,7 @@ Patterns, constraints, and gotchas specific to this codebase.
 - UI state that must survive route changes goes in `WorkspaceProvider`; ephemeral per-view state stays local.
 - Search params are the API for panels: `?file=rel/path.md` opens the editor, `?files=true` opens the file tree, `?tab=account|org|project&section=Skills|Connectors|Commands|Context` deep-links into settings.
 - Theme: `ThemeProvider` toggles `.dark` on `<html>`, persisted to localStorage (`superconsole-theme`); active org persisted as `superconsole-org`.
+- Context Injection: Tab changes and Customize routes dispatch dynamic `titleSuffix` values up to the Router, which updates the TopBar to display the current file or plugin context seamlessly.
 - Tailwind v4 CSS-first: all design tokens in `src/index.css` under `:root` / `.dark` / `@theme inline`. No tailwind.config file.
 
 ## Slash-command autocomplete patterns
@@ -44,6 +45,7 @@ Patterns, constraints, and gotchas specific to this codebase.
 - TerminalView remounts when `tab.id` changes; backend `start_session` is idempotent (re-attach if session exists).
 - macOS traffic lights: `titleBarStyle: "Overlay"` + `hiddenTitle: true` in tauri.conf.json; TopBar has `pl-[78px]` and `data-tauri-drag-region`. Don't put interactive elements in the first 78px.
 - `files.rs::resolve` rejects `..`/absolute paths — every file op must go through it.
+- SQLite `SELECT` statements must match their struct mapping lengths exactly; missing columns cause silent `iter.filter_map(|r| r.ok())` failure drops, leading to empty arrays without logging.
 - Settings changes for HTTP server / Telegram token require app restart (loops read config at boot; Telegram re-reads token each poll, so token alone hot-applies).
 - Updater is wired but inert: empty `pubkey` and placeholder endpoint in tauri.conf.json; `createUpdaterArtifacts` not enabled, so unsigned builds work. UI handles check failure gracefully.
 - **Telegram routing (dual-mode)**:

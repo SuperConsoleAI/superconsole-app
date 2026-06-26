@@ -43,7 +43,7 @@ Every dependency and why it's here. App target: <30MB installed, Mac first (Wind
 | `@uiw/react-codemirror` | Syntax-highlighted code editor for the FileEditor tab. |
 | `lucide-react` | Icon set (CLI brand icons are local SVGs in `src/assets/icons/preset-icons/`). |
 | `@ridemountainpig/svgl-react` | Brand SVG logos for the plugin marketplace (`PluginIcon.tsx`). Light/dark variants for monochrome logos (GitHub); multi-colour logos (Figma, Slack, Google, Stripe…) used as-is. |
-| `@fontsource-variable/{archivo,lora,jetbrains-mono}` | Bundled variable fonts (offline app, no Google Fonts CDN). |
+| `@fontsource-variable/{archivo,lora,jetbrains-mono}` | Bundled variable fonts (offline app, no Google Fonts CDN). Used alongside system fonts (e.g. macOS SF Pro) for native-feeling UI elements like the Top Bar. |
 | JetBrains Mono Nerd Font (static, `src/assets/fonts/`) | Terminal font, bundled `@font-face` (static, not variable — variable fonts mis-measure xterm cell width). Provides Nerd Font icon glyphs for CLI logos/box-art. |
 | `@tauri-apps/api` + plugin guests (`plugin-dialog`, `plugin-opener`, `plugin-updater`) | IPC + plugin JS bindings. |
 
