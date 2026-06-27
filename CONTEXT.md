@@ -90,13 +90,19 @@ Patterns, constraints, and gotchas specific to this codebase.
 
 ## Jobs: run modes + triggers (phase 16b)
 
-- Jobs carry `run_mode` (`cli` print-mode vs `chat` one-shot via `llm::one_shot_completion` vs `agent`), `run_config`, `trigger_type` (`cron`/`manual`/`api`/`github`; non-cron = no `next_run`, so it only runs via the play button), `trigger_config`, and `allowed_connectors`. `scheduler::exec_in_workspace` branches on `run_mode`; `job_command` builds the CLI line per preset (incl. `codex exec`).
+- Jobs carry `run_mode` (`cli` print-mode vs `chat` one-shot via `llm::one_shot_completion` vs `agent` vs `auto`), `run_config`, `trigger_type` (`cron`/`manual`/`api`/`github`; non-cron = no `next_run`, so it only runs via the play button), `trigger_config`, and `allowed_connectors`. `scheduler::exec_in_workspace` branches on `run_mode`:
+  - `cli` — headless PTY print-mode, `job_command()` builds the line
+  - `chat` — one-shot via `llm::one_shot_completion`
+  - `agent` — loads agent.md from `.superconsole/agents/<name>/`, then sub-dispatches by `run_config.mode` (cli/chat/auto); auto prepends router instructions before the agent's own
+  - `auto` (top-level) — prepends router agent.md to prompt, dispatches as `chat`; the router reads `memory/patterns.md` + available agents and picks the approach (Ruflo-inspired). Browser is NOT a CLI preset — it is a tab type.
 
 ## Agents (definition vs job)
 
-- An agent is a *definition* in `.superconsole/agents/<name>/agent.md` (`agents.rs`): instructions + skills + connectors + context, NO harness/model/schedule. Those are picked on the job that runs it (`run_mode: "agent"` → `run_config` supplies cli/chat + model) or via `run_agent_now`/`scheduler::exec_agent` (uses the workspace default CLI).
+- An agent is a *definition* in `.superconsole/agents/<name>/agent.md` (`agents.rs`): instructions + skills + connectors + context, NO harness/model/schedule. Three run modes chosen at task time: **CLI** (headless print-mode), **Chat** (native one-shot), **Auto** (router reads memory + agents → picks best approach, dispatches as chat). Top-level `auto` job mode and agent-scoped `auto` sub-mode both route through `agents/router/agent.md`.
+- The **AgentRunEditDialog** (`src/components/AgentRunEditDialog.tsx`) is the shared edit component for both `AgentsView` (edit dialog) and other surfaces — owns `[CLI][Chat][Auto]` picker, schedule, model. Extracted from `AgentsView`; `AgentsView` now uses `const EditAgentDialog = AgentRunEditDialog`.
+- `files.rs::scaffold_superconsole_dir` auto-generates the full `.superconsole/` structure (8 dirs, 12 write-if-missing files) on every workspace create/import. Includes `agents/router/agent.md` (routes via memory; ends with `memory_write` for learning loop) and `rules/minimal-code.mdc` (always-on 7-rung minimal-code rule).
 - `scheduler::with_available_resources` parses `@skill:`/`@context:`/`@connector:`/`@agent:` tokens from the instructions and prepends ONE availability hint line; resources are fetched on demand via MCP tools at runtime, never inlined.
-- SuperConsole catalog = Turso `agent_catalog` (curated, no org scope) + files in a public GitHub repo; install fetches via raw GitHub. Repos can self-describe with a `.superconsole-plugin/plugin.json` (falls back to `.claude-plugin/` then README). `install_repo_agent` clones a repo into a new project (+ generated `agent.md` + all skills + `.superconsole-plugin`); `scaffold_project_from_repo` clones + scaffolds `.superconsole/`. Full design: `AGENT_SYSTEM_NEW.md`.
+- SuperConsole catalog = Turso `agent_catalog` (curated, no org scope) + files in a public GitHub repo; install fetches via raw GitHub. Repos can self-describe with a `.superconsole-plugin/plugin.json` (falls back to `.claude-plugin/` then README). `install_repo_agent` clones a repo into a new project (+ generated `agent.md` + all skills + `.superconsole-plugin`); `scaffold_project_from_repo` clones + calls `scaffold_superconsole_dir`. Full design: `AGENT_SYSTEM_NEW.md`.
 
 ## Session logs
 

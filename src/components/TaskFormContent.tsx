@@ -378,13 +378,12 @@ export function TaskFormContent({
   const [command, setCommand] = useState("");
 
   // Run via
-  const [runMode, setRunMode]   = useState<"cli" | "chat" | "agent">("cli");
-  const [cli, setCli]           = useState("claude");
-  const [provider, setProvider] = useState("anthropic");
-  const [model, setModel]       = useState("");
-  // Agent sub-options
-  const [agentName, setAgentName] = useState("");
-  const [agentMode, setAgentMode] = useState<"cli" | "chat">("cli");
+  const [runMode, setRunMode]     = useState<"cli" | "chat" | "agent" | "auto">("cli");
+  const [cli, setCli]             = useState("claude");
+  const [provider, setProvider]   = useState("anthropic");
+  const [model, setModel]         = useState("");
+  const [agentName, setAgentName] = useState("auto");
+  const [agentMode, setAgentMode] = useState<"cli" | "chat" | "auto">("cli");
   const [agentCli, setAgentCli]   = useState("claude");
 
   // Schedule / trigger
@@ -446,13 +445,13 @@ export function TaskFormContent({
 
     setName(initialJob.name);
     setCommand(initialJob.command);
-    setRunMode(initialJob.run_mode as "cli" | "chat" | "agent");
+    setRunMode(initialJob.run_mode as "cli" | "chat" | "agent" | "auto");
+    setAgentName(rc.agent ?? "auto");
+    setAgentMode((rc.mode as "cli" | "chat" | "auto") ?? "cli");
+    setAgentCli(rc.cli ?? "claude");
     setCli(rc.cli ?? "claude");
     setProvider(rc.provider ?? "anthropic");
     setModel(rc.model ?? "");
-    setAgentName(rc.agent ?? "");
-    setAgentMode(rc.mode ?? "cli");
-    setAgentCli(rc.cli ?? "claude");
     setTriggerType(
       (initialJob.trigger_type as string) === "manual" ? "manual" :
       (initialJob.trigger_type as string) === "github" ? "github" :
@@ -482,17 +481,23 @@ export function TaskFormContent({
   const submit = async () => {
     if (!name.trim()) { setError("Name is required."); return; }
     if (runMode === "agent" && !agentName) { setError("Pick an agent."); return; }
-    if (runMode !== "agent" && !command.trim()) { setError("A command / prompt is required."); return; }
+    if (runMode !== "auto" && runMode !== "agent" && !command.trim()) { setError("A command / prompt is required."); return; }
     if (!selectedWs && !defaultWsId) { setError("Pick a project first."); return; }
 
     const wsId = selectedWs!.id;
 
     const runConfig =
       runMode === "agent"
-        ? { agent: agentName, mode: agentMode, ...(agentMode === "cli" ? { cli: agentCli } : { provider }), model: model || undefined }
-        : runMode === "cli"
-          ? { cli, model: model || undefined }
-          : { provider, model: model || undefined };
+        ? agentMode === "auto"
+          ? { agent: agentName, mode: "auto" }
+          : agentMode === "cli"
+            ? { agent: agentName, mode: "cli", cli: agentCli, model: model || undefined }
+            : { agent: agentName, mode: "chat", provider, model: model || undefined }
+        : runMode === "auto"
+          ? {}
+          : runMode === "cli"
+            ? { cli, model: model || undefined }
+            : { provider, model: model || undefined };
 
     const triggerConfig =
       triggerType === "cron"   ? { cron: schedule.trim() } :
@@ -612,6 +617,7 @@ export function TaskFormContent({
             <Seg active={runMode === "cli"}   onClick={() => setRunMode("cli")}>CLI</Seg>
             <Seg active={runMode === "chat"}  onClick={() => setRunMode("chat")}>Chat</Seg>
             <Seg active={runMode === "agent"} onClick={() => setRunMode("agent")}>Agent</Seg>
+            <Seg active={runMode === "auto"}  onClick={() => setRunMode("auto")}>Auto</Seg>
           </div>
 
           {runMode === "cli" && (
@@ -662,12 +668,18 @@ export function TaskFormContent({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm" className="h-8 flex-1 justify-start font-normal">
-                  {agentName || (agents.length ? "Select agent…" : "No agents")}
+                  {agentName === "auto"
+                    ? "Auto (router)"
+                    : agentName || (agents.length ? "Select agent…" : "No agents")}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
+                <DropdownMenuItem onClick={() => setAgentName("auto")}>
+                  <span className="italic text-muted-foreground">Auto (router)</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 {agents.length === 0 ? (
-                  <DropdownMenuItem disabled>No agents found</DropdownMenuItem>
+                  <DropdownMenuItem disabled>No named agents yet</DropdownMenuItem>
                 ) : (
                   agents.map((a) => (
                     <DropdownMenuItem key={a.name} onClick={() => setAgentName(a.name)}>
@@ -680,55 +692,74 @@ export function TaskFormContent({
           )}
         </div>
 
-        {/* Agent sub-options: CLI/Chat harness + model */}
+        {/* Agent harness: run via CLI / Chat / Auto when Agent is selected */}
         {runMode === "agent" && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
-            <span className="text-[11px] text-muted-foreground">Run harness:</span>
+            <span className="text-[11px] text-muted-foreground">Run via:</span>
             <div className="flex gap-1 rounded-lg border bg-background p-0.5">
               <Seg active={agentMode === "cli"}  onClick={() => setAgentMode("cli")}>CLI</Seg>
               <Seg active={agentMode === "chat"} onClick={() => setAgentMode("chat")}>Chat</Seg>
+              <Seg active={agentMode === "auto"} onClick={() => setAgentMode("auto")}>Auto</Seg>
             </div>
-            {agentMode === "cli" ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-8 gap-1.5 font-normal">
-                    <PresetIcon preset={agentCli} className="h-3.5 w-3.5" />
-                    {CLI_PRESETS.find((c) => c.id === agentCli)?.label ?? agentCli}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {CLI_PRESETS.map((c) => (
-                    <DropdownMenuItem key={c.id} onClick={() => setAgentCli(c.id)}>
-                      <PresetIcon preset={c.id} className="h-3.5 w-3.5" />
-                      {c.label}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-8 gap-1.5 font-normal">
-                    <ProviderIcon provider={provider} className="h-3.5 w-3.5" />
-                    {CHAT_PROVIDERS.find((p) => p.id === provider)?.label ?? provider}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {CHAT_PROVIDERS.map((p) => (
-                    <DropdownMenuItem key={p.id} onClick={() => setProvider(p.id)}>
-                      <ProviderIcon provider={p.id} className="h-3.5 w-3.5" />
-                      {p.label}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
+            {agentMode === "cli" && (
+              <>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="h-7 gap-1.5 font-normal">
+                      <PresetIcon preset={agentCli} className="h-3 w-3" />
+                      {CLI_PRESETS.find((c) => c.id === agentCli)?.label ?? agentCli}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    {CLI_PRESETS.map((c) => (
+                      <DropdownMenuItem key={c.id} onClick={() => setAgentCli(c.id)}>
+                        <PresetIcon preset={c.id} className="h-3.5 w-3.5" />
+                        {c.label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <ModelPicker model={model} setModel={setModel} setProvider={setProvider} />
+              </>
             )}
-            <ModelPicker model={model} setModel={setModel} setProvider={setProvider} />
+            {agentMode === "chat" && (
+              <>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="h-7 gap-1.5 font-normal">
+                      <ProviderIcon provider={provider} className="h-3 w-3" />
+                      {CHAT_PROVIDERS.find((p) => p.id === provider)?.label ?? provider}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    {CHAT_PROVIDERS.map((p) => (
+                      <DropdownMenuItem key={p.id} onClick={() => setProvider(p.id)}>
+                        <ProviderIcon provider={p.id} className="h-3.5 w-3.5" />
+                        {p.label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <ModelPicker model={model} setModel={setModel} setProvider={setProvider} />
+              </>
+            )}
+            {agentMode === "auto" && (
+              <span className="text-[11px] text-muted-foreground">
+                Router picks the best approach from project memory.
+              </span>
+            )}
           </div>
         )}
-      </div>
 
-      {/* Trigger */}
+        {runMode === "auto" && (
+          <p className="text-[11px] text-muted-foreground rounded-md border bg-muted/30 px-3 py-2 leading-relaxed">
+            Router reads project memory and available agents to pick the best approach each run.
+            Requires <span className="font-mono">.superconsole/agents/router/agent.md</span>
+            {" "}(created automatically when you add a workspace).
+          </p>
+        )}
+
+      </div>
       <div className="space-y-2">
         <div className="text-xs font-medium text-muted-foreground">Trigger</div>
         <div className="flex gap-1 rounded-lg border bg-background p-0.5 w-fit">

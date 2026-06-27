@@ -165,6 +165,7 @@ function Shell() {
       params: { workspaceId: String(ws.id) },
       search: {},
     });
+    return ws;
   };
 
   const handleRemove = async (id: number) => {

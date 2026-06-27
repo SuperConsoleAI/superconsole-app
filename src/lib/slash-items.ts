@@ -5,7 +5,7 @@ export interface SlashItem {
   label: string;       // Display label (same as value for most)
   description: string; // Secondary text shown in dropdown
   group: string;       // Group header
-  source: "command" | "skill" | "context" | "wiki" | "agent" | "memory" | "connector" | "session" | "rule";
+  source: "command" | "skill" | "context" | "wiki" | "agent" | "memory" | "connector" | "session" | "rule" | "builtin";
 }
 
 /** Ordered group names — defines the fixed anchor link order. */
@@ -80,6 +80,15 @@ export async function loadSlashItems(workspaceId: number): Promise<SlashItem[]> 
       });
     }
   }
+
+  // Built-in commands — always available, prepended to Commands group
+  items.push({
+    value: "/compact",
+    label: "/compact",
+    description: "Summarize earlier messages to free up context",
+    group: "Commands",
+    source: "builtin",
+  });
 
   // Commands
   if (commands.status === "fulfilled") {

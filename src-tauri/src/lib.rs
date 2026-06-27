@@ -1,4 +1,5 @@
 mod agents;
+mod git;
 mod auth;
 mod chat;
 mod cli_sessions;
@@ -55,7 +56,19 @@ fn add_workspace(
     } else {
         std::fs::create_dir_all(p).map_err(|e| format!("Could not create folder: {}", e))?;
     }
-    db.add_workspace(&name, &path, &cli, organization_id)
+    let ws = db.add_workspace(&name, &path, &cli, organization_id)?;
+    // Best-effort scaffold — never blocks workspace creation.
+    let _ = files::scaffold_superconsole_dir(&path);
+    Ok(ws)
+}
+
+#[tauri::command]
+fn scaffold_superconsole_dir(
+    db: State<Db>,
+    workspace_id: i64,
+) -> Result<Vec<String>, String> {
+    let ws = db.get_workspace(workspace_id)?;
+    files::scaffold_superconsole_dir(&ws.path)
 }
 
 #[tauri::command]
@@ -853,6 +866,182 @@ fn git_info(db: State<Db>, workspace_id: i64) -> Result<GitInfo, String> {
     })
 }
 
+// ── Git commit/push commands ──────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct GitPushResult {
+    branch: String,
+    pr_url: Option<String>,
+}
+
+/// Generate a commit message from diff using LLM. Falls back gracefully.
+/// Never blocks — has a 10s timeout and skips LLM if no key is configured.
+async fn generate_commit_message(app: &AppHandle, workspace_id: i64) -> String {
+    // Get workspace path + provider/model + check key exists — all sync DB reads
+    let (ws_path, provider, model, has_key) = {
+        let db = app.state::<Db>();
+        let Ok(ws) = db.get_workspace(workspace_id) else {
+            return "Update files".to_string();
+        };
+        let p = if ws.default_provider.is_empty() { "anthropic".to_string() } else { ws.default_provider.clone() };
+        let m = if ws.default_model.is_empty() { "claude-haiku-4-5".to_string() } else { ws.default_model.clone() };
+        // Check if a key is configured before even trying
+        let has_key = p == "local" ||
+            llm::resolve_provider_credentials(app, workspace_id, &p)
+                .map(|c| c.api_key.is_some())
+                .unwrap_or(false);
+        (ws.path, p, m, has_key)
+    };
+
+    // Run git diff off the async runtime (potentially slow on large repos)
+    let diff = tokio::task::spawn_blocking(move || git::git_diff(&ws_path))
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+
+    let diff = match diff {
+        Some(d) if !d.files_changed.is_empty() => d,
+        _ => return "Update files".to_string(),
+    };
+
+    // Skip LLM entirely if no key — return a decent heuristic message instantly
+    if !has_key {
+        return smart_fallback_message(&diff);
+    }
+
+    // Build a compact prompt (cap at 50 files to keep it small)
+    let files = diff.files_changed.iter().take(50)
+        .map(|f| format!("{} {}", f.status, f.path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let summary_line = diff.summary.lines().last().unwrap_or("").to_string();
+    let prompt = format!(
+        "Write a concise git commit message (max 72 chars, imperative mood) for these changes:\n\n{}\n\nSummary: {}",
+        files, summary_line
+    );
+    let system = "You write concise git commit messages. Imperative mood. Under 72 chars. No quotes. No markdown.";
+
+    // 10s timeout — if LLM is slow or unreachable, fall back immediately
+    let fallback = smart_fallback_message(&diff);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        llm::one_shot_completion(app, workspace_id, &provider, &model, system, &prompt),
+    )
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .and_then(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) })
+    .unwrap_or(fallback)
+}
+
+/// Generate a readable commit message from the file list without LLM.
+fn smart_fallback_message(diff: &git::GitDiff) -> String {
+    let total = diff.total_files;
+    // Find the most common directory touched
+    let dirs: Vec<&str> = diff.files_changed.iter()
+        .filter_map(|f| f.path.split('/').next())
+        .collect();
+    let main_area = dirs.first().copied().unwrap_or("files");
+    if total == 1 {
+        let f = &diff.files_changed[0];
+        let action = match f.status.as_str() {
+            "A" => "Add",
+            "D" => "Remove",
+            "R" => "Rename",
+            _ => "Update",
+        };
+        format!("{} {}", action, f.path)
+    } else if total <= 5 {
+        format!("Update {} files in {}", total, main_area)
+    } else {
+        format!("Update {} files", total)
+    }
+}
+
+#[tauri::command]
+async fn git_status_cmd(db: State<'_, Db>, workspace_id: i64) -> Result<git::GitStatus, String> {
+    let ws_path = db.get_workspace(workspace_id)?.path;
+    tokio::task::spawn_blocking(move || git::git_status(&ws_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_diff_summary(db: State<'_, Db>, workspace_id: i64) -> Result<git::GitDiff, String> {
+    let ws_path = db.get_workspace(workspace_id)?.path;
+    tokio::task::spawn_blocking(move || git::git_diff(&ws_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_generate_commit_message(
+    app: AppHandle,
+    workspace_id: i64,
+) -> Result<String, String> {
+    Ok(generate_commit_message(&app, workspace_id).await)
+}
+
+#[tauri::command]
+async fn git_commit_changes(
+    db: State<'_, Db>,
+    workspace_id: i64,
+    message: String,
+) -> Result<(), String> {
+    let ws_path = db.get_workspace(workspace_id)?.path;
+    tokio::task::spawn_blocking(move || git::git_commit(&ws_path, &message))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_init_repo(db: State<'_, Db>, workspace_id: i64) -> Result<(), String> {
+    let ws_path = db.get_workspace(workspace_id)?.path;
+    tokio::task::spawn_blocking(move || git::git_init(&ws_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_commit_and_push(
+    app: AppHandle,
+    workspace_id: i64,
+    message: String,
+    create_pr: bool,
+    pr_title: Option<String>,
+    pr_body: Option<String>,
+) -> Result<GitPushResult, String> {
+    let ws_path = {
+        let db = app.state::<Db>();
+        db.get_workspace(workspace_id)?.path
+    };
+
+    // Run all blocking git shell calls off the async runtime
+    let msg = message.clone();
+    let path = ws_path.clone();
+    let (branch, pr_url) = tokio::task::spawn_blocking(move || -> Result<(String, Option<String>), String> {
+        let status = git::git_status(&path)?;
+        git::git_commit(&path, &msg)?;
+        let pr_url = if create_pr {
+            git::git_push_and_get_pr_url(
+                &path,
+                &status.branch,
+                pr_title.as_deref().unwrap_or(&msg),
+                pr_body.as_deref().unwrap_or(""),
+            )?
+        } else {
+            git::git_push(&path).ok();
+            None
+        };
+        Ok((status.branch, pr_url))
+    })
+    .await
+    .map_err(|e| e.to_string())??
+    ;
+
+    Ok(GitPushResult { branch, pr_url })
+}
+
 #[tauri::command]
 fn move_chat_session(db: State<Db>, id: String, to_project: String) -> Result<(), String> {
     db.move_chat_session(&id, &to_project)
@@ -980,6 +1169,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_workspaces,
             add_workspace,
+            scaffold_superconsole_dir,
             remove_workspace,
             start_session,
             write_session,
@@ -1049,6 +1239,7 @@ pub fn run() {
             chat::chat_send,
             chat::stop_chat,
             chat::has_provider_key,
+            chat::compact_chat_session,
             list_chat_sessions,
             create_chat_session,
             list_chat_messages,
@@ -1061,6 +1252,12 @@ pub fn run() {
             delete_chat_message,
             read_attachment,
             git_info,
+            git_status_cmd,
+            git_diff_summary,
+            git_generate_commit_message,
+            git_commit_changes,
+            git_init_repo,
+            git_commit_and_push,
             move_chat_session,
             clear_local_cloud_data,
             team::list_org_members,

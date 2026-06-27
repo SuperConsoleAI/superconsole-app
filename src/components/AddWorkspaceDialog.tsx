@@ -11,14 +11,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { api, CLI_PRESETS } from "@/lib/api";
+import { api, CLI_PRESETS, type Workspace } from "@/lib/api";
 import { PresetIcon } from "@/components/PresetIcon";
 import { cn } from "@/lib/utils";
 
 interface AddWorkspaceDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAdd: (name: string, path: string, cli: string) => Promise<void>;
+  onAdd: (name: string, path: string, cli: string) => Promise<Workspace>;
 }
 
 export function AddWorkspaceDialog({
@@ -33,6 +33,7 @@ export function AddWorkspaceDialog({
   const [gitRef, setGitRef] = useState("main");
   const [cli, setCli] = useState("claude");
   const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const pickFolder = async () => {
@@ -53,6 +54,20 @@ export function AddWorkspaceDialog({
     setGitRef("main");
     setCli("claude");
     setMode("folder");
+    setSuccessMsg(null);
+  };
+
+  const showScaffoldToast = async (workspaceId: number) => {
+    try {
+      const created = await api.scaffoldSuperconsoleDir(workspaceId);
+      if (created.length > 0) {
+        setSuccessMsg(
+          `✓ Project initialized — ${created.length} default files created (memory, rules, hooks & router agent).`,
+        );
+      }
+    } catch {
+      // Best-effort — non-blocking.
+    }
   };
 
   const submit = async () => {
@@ -75,11 +90,12 @@ export function AddWorkspaceDialog({
             .trim()
             .replace(/\.git$/, "")
             .replace(/[/\\]+$/, "")
-            .split(/[/\\]/)
+            .split(/[/\\/]/)
             .pop() ?? "project";
-        await onAdd(name.trim() || repoName, projectPath, cli);
+        const ws = await onAdd(name.trim() || repoName, projectPath, cli);
         reset();
         onOpenChange(false);
+        void showScaffoldToast(ws.id);
       } catch (e) {
         setError(String(e));
       } finally {
@@ -95,9 +111,10 @@ export function AddWorkspaceDialog({
     setBusy(true);
     setError(null);
     try {
-      await onAdd(name.trim(), path.trim(), cli);
+      const ws = await onAdd(name.trim(), path.trim(), cli);
       reset();
       onOpenChange(false);
+      void showScaffoldToast(ws.id);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -208,6 +225,7 @@ export function AddWorkspaceDialog({
           </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
+          {successMsg && <p className="text-sm text-green-600 dark:text-green-400">{successMsg}</p>}
         </div>
 
         <DialogFooter>

@@ -28,6 +28,39 @@ export interface EnvEntry {
   is_secret: boolean;
 }
 
+export interface GitStatus {
+  branch: string;
+  isDirty: boolean;
+  staged: string[];
+  unstaged: string[];
+  untracked: string[];
+  ahead: number;
+  behind: number;
+  hasRemote: boolean;
+  hasCommits: boolean;
+}
+
+export interface FileDiff {
+  path: string;
+  status: string;
+  insertions: number;
+  deletions: number;
+}
+
+export interface GitDiff {
+  summary: string;
+  filesChanged: FileDiff[];
+  insertions: number;
+  deletions: number;
+  totalFiles: number;
+}
+
+export interface GitPushResult {
+  branch: string;
+  prUrl?: string;
+}
+
+
 export interface WorkspaceUpdate {
   defaultRunMode: string;
   defaultCli: string;
@@ -121,7 +154,7 @@ export interface Job {
   enabled: boolean;
   last_run: string | null;
   next_run: string | null;
-  run_mode: "cli" | "chat" | "agent";
+  run_mode: "cli" | "chat" | "agent" | "auto";
   run_config: string;
   trigger_type: "cron" | "api" | "github";
   trigger_config: string;
@@ -269,7 +302,6 @@ export const CLI_PRESETS = [
   { id: "droid", label: "Droid" },
   { id: "antigravity", label: "Antigravity" },
   { id: "codex", label: "Codex" },
-  { id: "browser", label: "Browser" },
 ] as const;
 
 export interface ChatSession {
@@ -296,6 +328,11 @@ export interface ChatMessage {
   provider: string | null;
   model: string | null;
   created_at: string;
+}
+
+export interface CompactResult {
+  messagesBefore: number;
+  messagesAfter: number;
 }
 
 // Phase 21: usage monitoring. One canonical aggregate shape is reused at every
@@ -910,6 +947,8 @@ export const api = {
     invoke<string>("install_repo_agent", { workspaceId, repo, gitRef }),
   scaffoldProjectFromRepo: (parentDir: string, repo: string, gitRef: string) =>
     invoke<string>("scaffold_project_from_repo", { parentDir, repo, gitRef }),
+  scaffoldSuperconsoleDir: (workspaceId: number) =>
+    invoke<string[]>("scaffold_superconsole_dir", { workspaceId }),
   listInbox: () => invoke<InboxItem[]>("list_inbox"),
   inboxUnreadCount: () => invoke<number>("inbox_unread_count"),
   markInboxRead: (id: number) => invoke<void>("mark_inbox_read", { id }),
@@ -973,11 +1012,42 @@ export const api = {
       reasoning,
     }),
   stopChat: (requestId: string) => invoke<void>("stop_chat", { requestId }),
+  compactChatSession: (
+    workspaceId: number,
+    sessionId: string,
+    provider: string,
+    model: string,
+  ) =>
+    invoke<CompactResult>("compact_chat_session", { workspaceId, sessionId, provider, model }),
   deleteChatMessage: (id: number) => invoke<void>("delete_chat_message", { id }),
   readAttachment: (path: string) => invoke<string>("read_attachment", { path }),
   gitInfo: (workspaceId: number) =>
     invoke<{ branch: string | null; insertions: number; deletions: number }>("git_info", {
       workspaceId,
+    }),
+  gitStatus: (workspaceId: number) =>
+    invoke<GitStatus>("git_status_cmd", { workspaceId }),
+  gitDiffSummary: (workspaceId: number) =>
+    invoke<GitDiff>("git_diff_summary", { workspaceId }),
+  gitGenerateCommitMessage: (workspaceId: number) =>
+    invoke<string>("git_generate_commit_message", { workspaceId }),
+  gitCommitChanges: (workspaceId: number, message: string) =>
+    invoke<void>("git_commit_changes", { workspaceId, message }),
+  gitInitRepo: (workspaceId: number) =>
+    invoke<void>("git_init_repo", { workspaceId }),
+  gitCommitAndPush: (
+    workspaceId: number,
+    message: string,
+    createPr: boolean,
+    prTitle?: string,
+    prBody?: string,
+  ) =>
+    invoke<GitPushResult>("git_commit_and_push", {
+      workspaceId,
+      message,
+      createPr,
+      prTitle,
+      prBody,
     }),
   listOpenrouterModels: () => invoke<OpenrouterModel[]>("list_openrouter_models"),
   hasProviderKey: (workspaceId: number, provider: string) =>

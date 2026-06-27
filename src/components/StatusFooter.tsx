@@ -14,6 +14,7 @@ interface StatusFooterProps {
   // Re-fetch git stats when this changes (e.g. message count).
   refreshKey?: number | string;
   context?: number;
+  contextLimit?: number;
   tokens?: number;
   cost?: number;
   leftExtra?: ReactNode;
@@ -24,6 +25,7 @@ export function StatusFooter({
   onOpenFiles,
   refreshKey,
   context = 0,
+  contextLimit = 0,
   tokens = 0,
   cost = 0,
   leftExtra,
@@ -63,11 +65,26 @@ export function StatusFooter({
         </button>
       </div>
       <div className="flex min-w-0 items-center gap-1.5">
-        {context > 0 && (
-          <span className="rounded border px-1.5 py-0.5" title="Current context window usage">
-            ctx {fmtK(context)}
-          </span>
-        )}
+        {context > 0 && (() => {
+          if (contextLimit > 0) {
+            const usagePct = Math.round((context / contextLimit) * 100);
+            return (
+              <span
+                className={`rounded border px-1.5 py-0.5 tabular-nums ${
+                  usagePct > 70 ? "text-amber-500" : "text-muted-foreground"
+                }`}
+                title={`Context window: ${usagePct}% used (${context.toLocaleString()} / ${contextLimit.toLocaleString()} tokens)`}
+              >
+                {usagePct}% ctx
+              </span>
+            );
+          }
+          return (
+            <span className="rounded border px-1.5 py-0.5" title="Current context window usage">
+              ctx {fmtK(context)}
+            </span>
+          );
+        })()}
         {tokens > 0 && (
           <span
             className="rounded border px-1.5 py-0.5"

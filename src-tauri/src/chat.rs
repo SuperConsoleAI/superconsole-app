@@ -67,6 +67,90 @@ struct ChatError {
     message: String,
 }
 
+#[derive(Clone, Serialize)]
+pub struct CompactedPayload {
+    pub request_id: String,
+    pub messages_before: usize,
+    pub messages_after: usize,
+}
+
+#[derive(Clone, Serialize)]
+pub struct CompactResult {
+    pub messages_before: usize,
+    pub messages_after: usize,
+}
+
+/// Returns the context-window token limit for a given model name.
+fn context_limit_for_model(model: &str) -> u64 {
+    if model.contains("claude-opus-4") || model.contains("claude-sonnet-4") {
+        200_000
+    } else if model.contains("claude-haiku") {
+        200_000
+    } else if model.contains("gpt-4o") {
+        128_000
+    } else if model.contains("gpt-4o-mini") {
+        128_000
+    } else if model.contains("gemini-2") {
+        1_000_000
+    } else {
+        128_000 // safe fallback
+    }
+}
+
+/// Simple token estimator: ~4 chars per token is a reasonable English estimate.
+fn estimate_tokens(text: &str) -> u64 {
+    (text.len() as u64) / 4
+}
+
+/// Summarize the oldest 50% of messages and return:
+/// [summary_system_msg] + [newest 50%]
+async fn compact_messages(
+    messages: Vec<ChatMsg>,
+    provider: &str,
+    model: &str,
+    app: &AppHandle,
+    workspace_id: i64,
+) -> Result<Vec<ChatMsg>, String> {
+    if messages.len() < 4 {
+        return Ok(messages);
+    }
+
+    let split_at = messages.len() / 2;
+    let to_summarize = &messages[..split_at];
+    let to_keep = &messages[split_at..];
+
+    let history_text = to_summarize
+        .iter()
+        .map(|m| format!("{}: {}", m.role, &m.content[..m.content.len().min(500)]))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let summary_prompt = format!(
+        "Summarize this conversation history concisely in 3-5 bullet points. \
+         Preserve key decisions, facts, code snippets, and context needed for continuation. \
+         Be specific, not generic:\n\n{}",
+        history_text
+    );
+
+    let summary = crate::llm::one_shot_completion(
+        app,
+        workspace_id,
+        provider,
+        model,
+        "You are a conversation summarizer. Be concise and specific.",
+        &summary_prompt,
+    )
+    .await
+    .unwrap_or_else(|_| "(summary unavailable)".to_string());
+
+    let mut compacted = vec![ChatMsg {
+        role: "system".to_string(),
+        content: format!("## Earlier conversation summary\n{}", summary),
+    }];
+    compacted.extend_from_slice(to_keep);
+    Ok(compacted)
+}
+
 const SYSTEM_PROMPT_FILES: &[&str] = &["CLAUDE.md", "brand-voice.md", "HEARTBEAT.md"];
 
 pub(crate) fn build_system_prompt(app: &AppHandle, workspace_id: i64) -> String {
@@ -212,6 +296,37 @@ pub async fn chat_send(
         return Err("NO_KEY".to_string());
     }
 
+    // --- Auto-compaction: estimate token usage and compact before sending if >70% full ---
+    let messages = {
+        let history_tokens: u64 = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
+        let limit = context_limit_for_model(&model);
+        let usage_pct = (history_tokens as f64 / limit as f64) * 100.0;
+        if usage_pct > 70.0 && messages.len() >= 4 {
+            let original_count = messages.len();
+            // Clone so we can fall back if compaction fails
+            let fallback = messages.clone();
+            match compact_messages(messages, &provider, &model, &app, workspace_id).await {
+                Ok(compacted) => {
+                    let after = compacted.len();
+                    let _ = app.emit(
+                        "chat-compacted",
+                        CompactedPayload {
+                            request_id: request_id.clone(),
+                            messages_before: original_count,
+                            messages_after: after,
+                        },
+                    );
+                    compacted
+                }
+                Err(e) => {
+                    eprintln!("[chat] auto-compact failed (sending full history): {}", e);
+                    fallback
+                }
+            }
+        } else {
+            messages
+        }
+    };
     let mut system = build_system_prompt(&app, workspace_id);
 
     // Expand a trailing `/slash` command message into its body for the model.
@@ -910,4 +1025,45 @@ fn finalize(tools: std::collections::BTreeMap<i64, (String, String, String)>) ->
             args: if args.trim().is_empty() { "{}".into() } else { args },
         })
         .collect()
+}
+
+/// Manual compaction command — called when the user types `/compact` in the chat input.
+/// Loads the full session history, compacts it using the workspace's configured provider/model,
+/// persists the result, and returns before/after counts.
+#[tauri::command]
+pub async fn compact_chat_session(
+    app: AppHandle,
+    workspace_id: i64,
+    session_id: String,
+    provider: String,
+    model: String,
+) -> Result<CompactResult, String> {
+    let db = app.state::<crate::db::Db>();
+    let messages = db.list_chat_messages(&session_id)?;
+    let messages_before = messages.len();
+
+    // Convert DB ChatMessage -> ChatMsg (the streaming type used by compact_messages)
+    let chat_msgs: Vec<ChatMsg> = messages
+        .into_iter()
+        .map(|m| ChatMsg { role: m.role, content: m.content })
+        .collect();
+
+    // Strip the vendor prefix that OpenRouter uses (e.g. "anthropic/claude-sonnet-4")
+    let bare_model = match provider.as_str() {
+        "anthropic" => {
+            let b = model.split_once('/').map(|(_, m)| m).unwrap_or(&model);
+            b.replace('.', "-")
+        }
+        "openai" | "gemini" => {
+            model.split_once('/').map(|(_, m)| m.to_string()).unwrap_or(model.clone())
+        }
+        _ => model.clone(),
+    };
+
+    let compacted = compact_messages(chat_msgs, &provider, &bare_model, &app, workspace_id).await?;
+    let messages_after = compacted.len();
+
+    db.replace_chat_messages_with_compacted(&session_id, &compacted)?;
+
+    Ok(CompactResult { messages_before, messages_after })
 }

@@ -96,6 +96,7 @@ export function AgentsDialog({ workspaceId, open, onOpenChange }: AgentsDialogPr
   const [selContext, setSelContext] = useState<Record<string, boolean>>({});
   const [instructions, setInstructions] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [defaultRunMode, setDefaultRunMode] = useState<"cli" | "chat" | "auto">("cli");
 
   const refresh = useCallback(() => {
     api.listAgents(workspaceId).then(setAgents).catch(console.error);
@@ -119,10 +120,11 @@ export function AgentsDialog({ workspaceId, open, onOpenChange }: AgentsDialogPr
     setSelContext({});
     setInstructions("");
     setExpanded(false);
+    setDefaultRunMode("cli");
     setError(null);
   };
 
-  const loadForEdit = (a: Agent) => {
+  const loadForEdit = async (a: Agent) => {
     setEditing(true);
     setOrigName(a.name);
     setName(a.name);
@@ -132,6 +134,18 @@ export function AgentsDialog({ workspaceId, open, onOpenChange }: AgentsDialogPr
     setSelContext(Object.fromEntries(a.context.map((c) => [c, true])));
     setInstructions(a.instructions);
     setExpanded(true);
+    // Load saved run mode from metadata (best-effort).
+    try {
+      const rows = await api.listWorkspaceAgents(workspaceId);
+      const row = rows.find((r) => r.name === a.name);
+      if (row?.defaultRunMode) {
+        setDefaultRunMode(row.defaultRunMode as "cli" | "chat" | "auto");
+      } else {
+        setDefaultRunMode("cli");
+      }
+    } catch {
+      setDefaultRunMode("cli");
+    }
   };
 
   const keysOf = (m: Record<string, boolean>) =>
@@ -180,7 +194,7 @@ export function AgentsDialog({ workspaceId, open, onOpenChange }: AgentsDialogPr
         agent.name,
         agent.description,
         "",              // schedule — empty until set via Scheduled jobs
-        "cli",           // default_run_mode
+        defaultRunMode,  // default_run_mode
         "",              // default_cli  — inherits workspace default
         "",              // default_provider
         "",              // default_model
@@ -315,6 +329,32 @@ export function AgentsDialog({ workspaceId, open, onOpenChange }: AgentsDialogPr
                       />
                     ))}
                   </div>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium text-muted-foreground">Default run mode</div>
+                <div className="flex gap-1 rounded-lg border bg-background p-0.5 w-fit">
+                  {(["cli", "chat", "auto"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setDefaultRunMode(m)}
+                      className={cn(
+                        "rounded-md px-2.5 py-0.5 text-[11px] font-medium transition-colors",
+                        defaultRunMode === m
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:bg-muted",
+                      )}
+                    >
+                      {m === "cli" ? "CLI" : m === "chat" ? "Chat" : "Auto"}
+                    </button>
+                  ))}
+                </div>
+                {defaultRunMode === "auto" && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Router picks the best approach each run from project memory.
+                  </p>
                 )}
               </div>
 

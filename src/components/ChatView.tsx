@@ -124,6 +124,7 @@ export function ChatView({
   const [streaming, setStreaming] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [compacted, setCompacted] = useState(false);
   const [keyMissing, setKeyMissing] = useState(false);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -173,6 +174,15 @@ export function ChatView({
   const bufRef = useRef<string>("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+
+  // Derive the context window limit from the model name (mirrors chat.rs context_limit_for_model).
+  const contextLimit = (() => {
+    if (model.includes("claude-opus-4") || model.includes("claude-sonnet-4")) return 200_000;
+    if (model.includes("claude-haiku")) return 200_000;
+    if (model.includes("gpt-4o")) return 128_000;
+    if (model.includes("gemini-2")) return 1_000_000;
+    return 128_000;
+  })();
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify({ provider, model }));
@@ -268,10 +278,28 @@ export function ChatView({
       setSending(false);
       setError(e.payload.message);
     });
+    const unCompacted = listen<{ request_id: string; messages_before: number; messages_after: number }>(
+      "chat-compacted",
+      async (e) => {
+        if (e.payload.request_id !== reqRef.current) return;
+        setCompacted(true);
+        // Reload the compacted message list from DB
+        const sid = sessionRef.current;
+        if (sid) {
+          try {
+            const msgs = await api.listChatMessages(sid);
+            setMessages(msgs);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    );
     return () => {
       unToken.then((fn) => fn());
       unDone.then((fn) => fn());
       unError.then((fn) => fn());
+      unCompacted.then((fn) => fn());
     };
   }, [provider, model, isDraft, tabId, workspace.id, bindChatDraftToSession]);
 
@@ -330,6 +358,23 @@ export function ChatView({
   const send = async () => {
     const text = input.trim();
     if (!text && attachments.length === 0) return;
+
+    // /compact is a builtin: compact the current session, reload messages, show banner
+    if (text === "/compact") {
+      const sid = sessionRef.current;
+      if (!sid || sending) return;
+      setInput("");
+      try {
+        await api.compactChatSession(workspace.id, sid, provider, model);
+        const msgs = await api.listChatMessages(sid);
+        setMessages(msgs);
+        setCompacted(true);
+      } catch (e) {
+        setError(String(e));
+      }
+      return;
+    }
+
     // A `/slash` that matches a project/global command is expanded server-side
     // and sent as a chat message; anything else is routed to the terminal.
     const slashHead = text.split(/\s/)[0];
@@ -538,6 +583,17 @@ export function ChatView({
           {projectError}
         </div>
       )}
+      {compacted && (
+        <div className="flex items-center justify-center gap-2 border-b border-border/50 bg-muted/40 px-4 py-1 text-xs text-muted-foreground">
+          <span>Earlier messages summarized to save context</span>
+          <button
+            className="underline hover:text-foreground transition-colors"
+            onClick={() => setCompacted(false)}
+          >
+            dismiss
+          </button>
+        </div>
+      )}
 
       <div
         ref={scrollRef}
@@ -623,6 +679,7 @@ export function ChatView({
         onOpenFiles={onOpenFiles}
         refreshKey={messages.length}
         context={contextTokens}
+        contextLimit={contextLimit}
         tokens={sessionStats.tokens}
         cost={sessionStats.cost}
       />

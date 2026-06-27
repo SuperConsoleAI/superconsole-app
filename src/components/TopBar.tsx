@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "@tanstack/react-router";
 import {
   Bot,
@@ -8,13 +8,15 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
-
+  GitBranch,
+  GitCommit,
   Library,
   PanelLeft,
   PanelRight,
   Play,
   ScrollText,
   SquareSlash,
+  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -25,14 +27,16 @@ import { CommandDialog } from "@/components/CommandDialog";
 import { MemoryDialog } from "@/components/MemoryDialog";
 import { WikiDialog } from "@/components/WikiDialog";
 import { ContextDialog } from "@/components/ContextDialog";
+import { GitDialog } from "@/components/GitDialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useWorkspaces } from "@/lib/workspace-context";
-import { type Workspace } from "@/lib/api";
+import { type Workspace, type GitStatus, api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface TopBarProps {
@@ -63,6 +67,61 @@ export function TopBar({
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [wikiOpen, setWikiOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  const [gitOpen, setGitOpen] = useState(false);
+  const [gitDialogStep, setGitDialogStep] = useState<"commit" | "publish">("commit");
+
+  // Git status — null means "not a git repo" → hide button
+  // undefined means "not yet loaded"
+  const [gitStatus, setGitStatus] = useState<GitStatus | null | undefined>(undefined);
+  const [isGitRepo, setIsGitRepo] = useState<boolean | null>(null); // null = unknown
+  const [initializingGit, setInitializingGit] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const pollGitStatus = async (wsId: number) => {
+    try {
+      const status = await api.gitStatus(wsId);
+      setGitStatus(status);
+      setIsGitRepo(true);
+    } catch {
+      // Not a git repo or git not available — hide branch button
+      setGitStatus(null);
+      setIsGitRepo(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!workspace || !isProjectPage) {
+      setGitStatus(undefined);
+      setIsGitRepo(null);
+      if (pollRef.current) clearInterval(pollRef.current);
+      return;
+    }
+    const wsId = workspace.id;
+    pollGitStatus(wsId);
+    // 4s poll — fast enough to feel live without hammering git
+    pollRef.current = setInterval(() => pollGitStatus(wsId), 4_000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [workspace?.id, isProjectPage]);
+
+  const handleInitGit = async () => {
+    if (!workspace) return;
+    setInitializingGit(true);
+    try {
+      await api.gitInitRepo(workspace.id);
+      await pollGitStatus(workspace.id);
+    } catch (e) {
+      console.error("git init failed:", e);
+    } finally {
+      setInitializingGit(false);
+    }
+  };
+
+  const handleCommitted = () => {
+    // Refresh git status after a commit
+    if (workspace) pollGitStatus(workspace.id);
+  };
 
   return (
     <header
@@ -138,7 +197,104 @@ export function TopBar({
         </Tooltip>
       )}
 
-      <div className="ml-auto flex items-center gap-0.5">
+      <div className="ml-auto flex items-center gap-1">
+        {/* ── Git: Initialize Git (non-repo) ─────────── */}
+        {workspace && isProjectPage && isGitRepo === false && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2.5 text-[11px] gap-1.5 text-muted-foreground hover:text-foreground"
+                onClick={handleInitGit}
+                disabled={initializingGit}
+              >
+                <GitBranch className="h-3 w-3" strokeWidth={1.5} />
+                {initializingGit ? "Initializing…" : "Initialize Git"}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Initialize git repository in this workspace</TooltipContent>
+          </Tooltip>
+        )}
+
+        {/* ── Git: single split button ───────────────────── */}
+        {workspace && isProjectPage && gitStatus && (() => {
+          const isDirty = gitStatus.isDirty
+          const noRemote = !gitStatus.hasRemote
+          const hasAhead = gitStatus.ahead > 0
+
+          // Which label + icon to show on the left action button
+          const label = isDirty ? "Commit"
+            : noRemote ? "Publish"
+            : hasAhead ? "Push"
+            : null   // clean + remote + no commits to push → hide
+
+          if (!label) return null
+
+          const icon = isDirty
+            ? <GitCommit className="h-3 w-3" strokeWidth={1.5} />
+            : <Upload className="h-3 w-3" />
+
+          const openCommit = () => { setGitDialogStep("commit"); setGitOpen(true) }
+          const openPublish = () => { setGitDialogStep("publish"); setGitOpen(true) }
+
+          return (
+            <div className={cn(
+              "flex items-center h-6 overflow-hidden rounded-md border bg-background shadow-sm",
+              isDirty ? "border-amber-400/50" : "border-input"
+            )}>
+              {/* Left: direct action — same px/hover as Manage left cell */}
+              <button
+                onClick={isDirty || hasAhead ? openCommit : openPublish}
+                className={cn(
+                  "flex items-center gap-1.5 px-1.5 h-full text-[11px] font-medium hover:bg-accent transition-colors",
+                  isDirty ? "text-amber-400" : "text-muted-foreground"
+                )}
+              >
+                {icon}
+                {label}
+              </button>
+
+              {/* Divider — same as Manage */}
+              <div className="w-px h-full bg-border shrink-0" />
+
+              {/* Right: ▾ dropdown — same px/hover as Manage right cell */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className={cn(
+                    "px-1 h-full flex items-center hover:bg-accent transition-colors",
+                    isDirty ? "text-amber-400" : "text-muted-foreground"
+                  )}>
+                    <ChevronDown className="h-3 w-3 shrink-0" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuItem
+                    onClick={openCommit}
+                    disabled={!isDirty && gitStatus.hasCommits}
+                    className="gap-2"
+                  >
+                    <GitCommit className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    <div>
+                      <div>Commit</div>
+                      {!isDirty && gitStatus.hasCommits && (
+                        <div className="text-[10px] text-muted-foreground normal-case font-normal">
+                          Worktree is clean
+                        </div>
+                      )}
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={openPublish} className="gap-2">
+                    <Upload className="h-3.5 w-3.5" />
+                    Publish repository…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )
+        })()}
+
         {workspace && isProjectPage && (
           <>
             <DropdownMenu>
@@ -227,7 +383,6 @@ export function TopBar({
             open={agentsOpen}
             onOpenChange={setAgentsOpen}
           />
-
           <SkillsDialog
             workspaceId={workspace.id}
             open={skillsOpen}
@@ -253,8 +408,21 @@ export function TopBar({
             open={contextOpen}
             onOpenChange={setContextOpen}
           />
+          {gitStatus && (
+            <GitDialog
+              workspaceId={workspace.id}
+              gitStatus={gitStatus}
+              open={gitOpen}
+              onClose={() => setGitOpen(false)}
+              onCommitted={handleCommitted}
+              initialStep={gitDialogStep}
+            />
+          )}
         </>
       )}
     </header>
   );
 }
+
+
+

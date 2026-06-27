@@ -77,7 +77,22 @@ pub async fn exec_in_workspace(
                 command = agent.instructions.clone();
             }
         }
-        run_mode = mode;
+        if mode == "auto" {
+            // Agent→Auto: prepend router instructions so the router picks the
+            // best execution approach, then run via chat.
+            if let Ok(router) = crate::agents::read_agent(&ws.path, "router") {
+                command = format!("{}\n\nAgent instructions:\n{}", router.instructions, command);
+            }
+            run_mode = "chat".to_string();
+        } else {
+            run_mode = mode;
+        }
+    } else if run_mode == "auto" {
+        // Top-level Auto: router picks the best approach from project memory.
+        if let Ok(router) = crate::agents::read_agent(&ws.path, "router") {
+            command = format!("{}\n\nTask: {}", router.instructions, command);
+        }
+        run_mode = "chat".to_string();
     }
     // Surface referenced resources without inlining them — the agent fetches
     // them on demand via MCP tools at runtime.

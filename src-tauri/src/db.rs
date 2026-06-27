@@ -2699,6 +2699,43 @@ impl Db {
         Ok(())
     }
 
+    /// Atomically replace all chat_messages for a session with the compacted set.
+    /// Runs inside a transaction: deletes all old messages, inserts the compacted list
+    /// (preserving role/content), then bumps the session's updated_at.
+    pub fn replace_chat_messages_with_compacted(
+        &self,
+        session_id: &str,
+        messages: &[crate::chat::ChatMsg],
+    ) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        let project_id: String = conn
+            .query_row(
+                "SELECT project_id FROM chat_sessions WHERE id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| "chat session not found".to_string())?;
+
+        conn.execute("DELETE FROM chat_messages WHERE session_id = ?1", [session_id])
+            .map_err(|e| e.to_string())?;
+
+        for msg in messages {
+            conn.execute(
+                "INSERT INTO chat_messages (session_id, project_id, role, content) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![session_id, project_id, msg.role, msg.content],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        conn.execute(
+            "UPDATE chat_sessions SET updated_at = datetime('now') WHERE id = ?1",
+            [session_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
     pub fn move_chat_session(&self, id: &str, to_project: &str) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(

@@ -889,6 +889,9 @@ pub async fn install_repo_agent(
     //    self-describing SuperConsole plugin (re-imports detect it directly).
     write_plugin_manifest(ws_path, &input, &skill_names, instr_rel.as_deref())?;
 
+    // 5. Scaffold the full .superconsole/ default structure (write-if-missing).
+    let _ = crate::files::scaffold_superconsole_dir(ws_path);
+
     Ok(name)
 }
 
@@ -937,9 +940,8 @@ pub fn scaffold_project_from_repo(
     let dest = Path::new(parent_dir).join(&name);
     let dest_str = dest.to_string_lossy().to_string();
     clone_repo_into(&slug, &git_ref, &dest_str)?;
-    for d in ["agents", "skills", "context"] {
-        std::fs::create_dir_all(dest.join(".superconsole").join(d)).map_err(|e| e.to_string())?;
-    }
+    // Scaffold the full .superconsole/ structure (write-if-missing).
+    crate::files::scaffold_superconsole_dir(&dest_str)?;
     Ok(dest_str)
 }
 
