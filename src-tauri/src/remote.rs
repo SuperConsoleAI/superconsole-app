@@ -650,7 +650,7 @@ async fn handle_create_task(
     {
         let db = app.state::<Db>();
         let next = if cron.is_empty() { None } else { crate::scheduler::next_run(&cron).ok() };
-        let _ = db.add_job(workspace_id, &job_name, command, &cron, next.as_deref(), "cli", "{}", "cron", "{}", "[]");
+        let _ = db.add_job(workspace_id, &job_name, command, &cron, next.as_deref(), "cli", "{}", "cron", "{}", "[]", None, 1);
     }
     let schedule_str = if cron.is_empty() {
         "manual".to_string()
@@ -687,7 +687,7 @@ async fn handle_create_schedule(
     {
         let db = app.state::<Db>();
         let next = crate::scheduler::next_run(cron).ok();
-        let _ = db.add_job(workspace_id, &job_name, command, cron, next.as_deref(), "cli", "{}", "cron", "{}", "[]");
+        let _ = db.add_job(workspace_id, &job_name, command, cron, next.as_deref(), "cli", "{}", "cron", "{}", "[]", None, 1);
     }
     send_tg_message(client, token, chat_id, thread_id,
         &format!("✅ Scheduled\n• Command: {}\n• Cron: {}\n\nManage in SuperConsole → Tasks", command, cron)).await;
@@ -1016,4 +1016,160 @@ pub fn spawn_http(app: AppHandle) {
             );
         }
     });
+}
+
+// ── Email trigger polling (3C) ────────────────────────────────────────────────
+//
+// Called from the scheduler's 30s tick loop (scheduler.rs::spawn), alongside the
+// due-jobs runner. Completely independent of the Telegram long-poll, which runs in
+// its own spawned task (spawn_telegram / spawn_telegram_bot).
+//
+// Flow per email-triggered job:
+//   1. Parse trigger_config: {connector, filter, last_checked}
+//   2. Resolve Gmail API key from the connected connector (cache-only)
+//   3. Query Gmail Messages.list?q=<filter> after:<last_checked ISO>
+//   4. For each new message: inject sender + subject as context, exec the job command
+//   5. Persist updated last_checked in trigger_config so the same email never fires twice
+
+#[derive(Debug)]
+struct EmailMeta {
+    sender:  String,
+    subject: String,
+}
+
+/// Resolve the Gmail API key for a workspace from the local connector cache.
+/// Uses session_env (account→org→project cascade). Returns None if not connected.
+fn gmail_api_key_for_workspace(app: &AppHandle, workspace_id: i64) -> Option<String> {
+    let env = crate::connectors::session_env(app, workspace_id);
+    let key = env.into_iter()
+        .find(|(k, _)| k == "GMAIL_API_KEY")
+        .map(|(_, v)| v)
+        .unwrap_or_default();
+    if key.is_empty() { None } else { Some(key) }
+}
+
+/// Poll Gmail for messages matching `filter` received after `since_rfc3339`.
+/// Returns None on auth/network error, Some([]) if nothing new.
+async fn check_gmail_for_new_emails(
+    api_key:       &str,
+    filter:        &str,
+    since_rfc3339: &str,
+) -> Option<Vec<EmailMeta>> {
+    // Parse last_checked into a unix timestamp for Gmail's after: operator
+    let after_ts = chrono::DateTime::parse_from_rfc3339(since_rfc3339)
+        .map(|dt| dt.timestamp())
+        .unwrap_or(0);
+
+    let query = if filter.is_empty() {
+        format!("is:unread after:{}", after_ts)
+    } else {
+        format!("{} after:{}", filter, after_ts)
+    };
+
+    let client = reqwest::Client::new();
+    let list_resp = client
+        .get("https://www.googleapis.com/gmail/v1/users/me/messages")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .query(&[("q", &query), ("maxResults", &"10".to_string())])
+        .send()
+        .await
+        .ok()?;
+
+    if !list_resp.status().is_success() {
+        eprintln!("Email trigger: Gmail API error {}", list_resp.status());
+        return None;
+    }
+
+    let body: serde_json::Value = list_resp.json().await.ok()?;
+    let messages = body["messages"].as_array()?;
+
+    let mut out = Vec::new();
+    for msg in messages.iter().take(5) {
+        let msg_id = msg["id"].as_str().unwrap_or_default();
+        if msg_id.is_empty() { continue; }
+
+        // Fetch message headers (sender + subject only — no body)
+        let detail_resp = client
+            .get(format!("https://www.googleapis.com/gmail/v1/users/me/messages/{}", msg_id))
+            .header("Authorization", format!("Bearer {}", api_key))
+            .query(&[("format", "metadata"), ("metadataHeaders", "From"), ("metadataHeaders", "Subject")])
+            .send()
+            .await
+            .ok()?;
+
+        if !detail_resp.status().is_success() { continue; }
+        let detail: serde_json::Value = detail_resp.json().await.ok()?;
+        let headers = detail["payload"]["headers"].as_array();
+        let mut sender  = String::new();
+        let mut subject = String::new();
+        if let Some(hdrs) = headers {
+            for h in hdrs {
+                match h["name"].as_str().unwrap_or("") {
+                    "From"    => sender  = h["value"].as_str().unwrap_or("").to_string(),
+                    "Subject" => subject = h["value"].as_str().unwrap_or("").to_string(),
+                    _ => {}
+                }
+            }
+        }
+        out.push(EmailMeta { sender, subject });
+    }
+    Some(out)
+}
+
+/// Check all email-triggered jobs and fire the ones with new matching emails.
+/// Called once per 30s tick from `scheduler::spawn`. Cache-only; never blocks Telegram.
+pub async fn check_email_triggers(app: &AppHandle) {
+    let db = app.state::<crate::db::Db>();
+    let email_jobs = db.get_jobs_by_trigger_type("email");
+    if email_jobs.is_empty() { return; }
+
+    for job in email_jobs {
+        let config: serde_json::Value = serde_json::from_str(&job.trigger_config)
+            .unwrap_or_default();
+
+        let filter       = config["filter"].as_str().unwrap_or("").to_string();
+        let last_checked = config["last_checked"].as_str()
+            .unwrap_or("1970-01-01T00:00:00Z")
+            .to_string();
+        let connector_id = config["connector"].as_str().unwrap_or("gmail").to_string();
+
+        // Only Gmail supported in Phase 1; other connectors → skip gracefully
+        if connector_id != "gmail" {
+            eprintln!("Email trigger: unsupported connector '{}', skipping job {}", connector_id, job.id);
+            continue;
+        }
+
+        let Some(api_key) = gmail_api_key_for_workspace(app, job.workspace_id) else {
+            eprintln!("Email trigger: no Gmail connector for workspace {}, skipping", job.workspace_id);
+            continue;
+        };
+
+        let new_emails = check_gmail_for_new_emails(&api_key, &filter, &last_checked).await;
+        let Some(emails) = new_emails else { continue; };
+        if emails.is_empty() { continue; }
+
+        // Fire the job for each new email (one execution per email)
+        for email in &emails {
+            let context = format!(
+                "New email trigger\nFrom: {}\nSubject: {}\nConnector: {}",
+                email.sender, email.subject, connector_id
+            );
+            let command = format!("{}\n\n{}", job.command, context);
+            if let Err(e) = crate::scheduler::exec_in_workspace(
+                app, job.workspace_id, &command,
+                &format!("email: {}", job.name),
+                Some(job.id),
+            ).await {
+                eprintln!("Email trigger: job {} exec failed: {}", job.id, e);
+            }
+        }
+
+        // Persist updated last_checked so the same emails never fire again
+        let new_config = serde_json::json!({
+            "connector": connector_id,
+            "filter":    filter,
+            "last_checked": chrono::Utc::now().to_rfc3339()
+        });
+        let _ = db.update_job_trigger_config(job.id, &new_config.to_string());
+    }
 }

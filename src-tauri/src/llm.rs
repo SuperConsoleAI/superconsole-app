@@ -244,7 +244,8 @@ pub async fn set_llm_key(
         )
         .await?;
     } else {
-        let encrypted = crypto::encrypt(api_key.trim())?;
+        // Scope-bound encryption: key = HKDF(WORKOS_COOKIE_PASSWORD:scope_id)
+        let encrypted = crypto::encrypt_scoped(api_key.trim(), &scope_id)?;
         cloud::turso_execute(
             &client,
             &cfg,
@@ -363,7 +364,12 @@ fn apply_cached(
 ) {
     for k in db.get_cached_llm_keys(scope, scope_id) {
         let key = match &k.credentials_encrypted {
-            Some(enc) if !enc.is_empty() => crypto::decrypt(enc).unwrap_or_default(),
+            Some(enc) if !enc.is_empty() => {
+                // Try scope-bound key first; fall back to global for legacy blobs.
+                crypto::decrypt_scoped(enc, scope_id)
+                    .or_else(|_| crypto::decrypt(enc))
+                    .unwrap_or_default()
+            }
             _ => String::new(),
         };
         if !key.is_empty() {
@@ -395,7 +401,13 @@ fn lookup_provider(db: &Db, scope: &str, scope_id: &str, provider: &str) -> Opti
             continue;
         }
         let api_key = match &k.credentials_encrypted {
-            Some(enc) if !enc.is_empty() => crypto::decrypt(enc).ok().filter(|s| !s.is_empty()),
+            Some(enc) if !enc.is_empty() => {
+                // Try scope-bound key first; fall back to global for legacy blobs.
+                crypto::decrypt_scoped(enc, scope_id)
+                    .or_else(|_| crypto::decrypt(enc))
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            }
             _ => None,
         };
         if api_key.is_some() || k.base_url.is_some() {

@@ -11,7 +11,11 @@
     "skipLibCheck": true,
     "noEmit": true,
     "resolveJsonModule": true,
-    "verbatimModuleSyntax": false
+    "verbatimModuleSyntax": false,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src", "scripts", "drizzle.config.ts", "vite.config.ts", "*.d.ts"]
 }

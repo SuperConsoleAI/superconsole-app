@@ -57,6 +57,15 @@ pub struct Job {
     #[serde(default)]
     pub last_run_tokens: i64,
     pub last_run_session_id: Option<String>,
+    // ── Loop system (Phase 25) ──
+    /// JSON-encoded exit condition or NULL (run-once, existing behavior).
+    pub exit_condition: Option<String>,
+    /// Hard cap on retry attempts. 1 = run-once (default, no retries).
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: i64,
+    /// Current retry count; reset to 0 after completion or max_attempts reached.
+    #[serde(default)]
+    pub current_attempt: i64,
 }
 
 fn default_run_mode() -> String {
@@ -70,6 +79,9 @@ fn default_json_obj() -> String {
 }
 fn default_json_arr() -> String {
     "[]".into()
+}
+fn default_max_attempts() -> i64 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -366,30 +378,74 @@ impl Db {
             CREATE INDEX IF NOT EXISTS installed_plugins_cache_scope_idx 
                 ON installed_plugins_cache(scope, scope_id);
             CREATE TABLE IF NOT EXISTS workspaces (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                path TEXT NOT NULL UNIQUE,
-                cli TEXT NOT NULL DEFAULT 'claude',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
+                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name                TEXT NOT NULL,
+                 path                TEXT NOT NULL UNIQUE,
+                 cli                 TEXT NOT NULL DEFAULT 'claude',
+                 created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                 -- org/project linkage (added after initial release)
+                 organization_id     INTEGER NOT NULL DEFAULT 1,
+                 project_id          TEXT,
+                 -- per-workspace agent defaults + scripts
+                 default_run_mode    TEXT NOT NULL DEFAULT 'cli',
+                 default_cli         TEXT NOT NULL DEFAULT 'claude',
+                 default_provider    TEXT NOT NULL DEFAULT 'anthropic',
+                 default_model       TEXT NOT NULL DEFAULT '',
+                 script_setup        TEXT NOT NULL DEFAULT '',
+                 script_run          TEXT NOT NULL DEFAULT '',
+                 script_teardown     TEXT NOT NULL DEFAULT '',
+                 script_auto_run     INTEGER NOT NULL DEFAULT 0,
+                 repo_url            TEXT NOT NULL DEFAULT '',
+                 description         TEXT NOT NULL DEFAULT '',
+                 env_files           TEXT NOT NULL DEFAULT '[]'
+             );
             CREATE TABLE IF NOT EXISTS jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                command TEXT NOT NULL,
-                schedule TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                last_run TEXT,
-                next_run TEXT
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id        INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                name                TEXT NOT NULL,
+                command             TEXT NOT NULL,
+                schedule            TEXT NOT NULL,
+                enabled             INTEGER NOT NULL DEFAULT 1,
+                last_run            TEXT,
+                next_run            TEXT,
+                -- Phase 16b: run mode, trigger type, connector scoping
+                run_mode            TEXT NOT NULL DEFAULT 'cli',
+                run_config          TEXT NOT NULL DEFAULT '{}',
+                trigger_type        TEXT NOT NULL DEFAULT 'cron',
+                trigger_config      TEXT NOT NULL DEFAULT '{}',
+                allowed_connectors  TEXT NOT NULL DEFAULT '[]',
+                -- Phase 23: post-run cost/usage tracking
+                last_run_cost_usd   REAL NOT NULL DEFAULT 0,
+                last_run_tokens     INTEGER NOT NULL DEFAULT 0,
+                last_run_session_id TEXT,
+                -- Phase 24: agent attribution (NULL = user/manual)
+                agent_id            TEXT,
+                -- Phase 25: loop system (NULL exit_condition = run-once, existing behavior)
+                exit_condition      TEXT,
+                max_attempts        INTEGER NOT NULL DEFAULT 1,
+                current_attempt     INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS session_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                session_id TEXT NOT NULL,
-                cli TEXT NOT NULL,
-                started_at TEXT NOT NULL DEFAULT (datetime('now')),
-                ended_at TEXT
-            );
+                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                 workspace_id        INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                 session_id          TEXT NOT NULL,
+                 cli                 TEXT NOT NULL,
+                 started_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                 ended_at            TEXT,
+                 -- user-assigned label (rename + search)
+                 label               TEXT,
+                 -- Phase 23: cost/usage tracking per session
+                 job_id              INTEGER,
+                 tokens_prompt       INTEGER NOT NULL DEFAULT 0,
+                 tokens_completion   INTEGER NOT NULL DEFAULT 0,
+                 tokens_reasoning    INTEGER NOT NULL DEFAULT 0,
+                 cost_usd            REAL NOT NULL DEFAULT 0,
+                 model               TEXT NOT NULL DEFAULT '',
+                 provider            TEXT NOT NULL DEFAULT '',
+                 last_output         TEXT NOT NULL DEFAULT '',
+                 -- Phase 24: agent attribution (NULL = user/manual)
+                 agent_id            TEXT
+             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -696,14 +752,24 @@ impl Db {
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             -- Multi-session chat: many sessions per project. Local only.
-            CREATE TABLE IF NOT EXISTS chat_sessions (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                name TEXT,
-                is_star INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
+             CREATE TABLE IF NOT EXISTS chat_sessions (
+                 id                  TEXT PRIMARY KEY,
+                 project_id          TEXT NOT NULL,
+                 name                TEXT,
+                 is_star             INTEGER NOT NULL DEFAULT 0,
+                 created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                 updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                 -- Phase 23: cost/usage tracking per chat session
+                 job_id              INTEGER,
+                 tokens_prompt       INTEGER NOT NULL DEFAULT 0,
+                 tokens_completion   INTEGER NOT NULL DEFAULT 0,
+                 tokens_reasoning    INTEGER NOT NULL DEFAULT 0,
+                 cost_usd            REAL NOT NULL DEFAULT 0,
+                 model               TEXT NOT NULL DEFAULT '',
+                 provider            TEXT NOT NULL DEFAULT '',
+                 -- Phase 24: agent attribution (NULL = user/manual)
+                 agent_id            TEXT
+             );
             CREATE INDEX IF NOT EXISTS chat_sessions_project_idx
                 ON chat_sessions(project_id);",
         )
@@ -1099,7 +1165,25 @@ impl Db {
             }
         }
 
-        // Phase B — Session log files.
+        // Phase 25 — Loop system.
+        // exit_condition: JSON-encoded stop condition or NULL (run-once).
+        // max_attempts:   hard cap on retries (1 = run-once, existing behavior).
+        // current_attempt: tracks how many attempts have fired for the current run.
+        // All defaulted so existing jobs continue running unchanged.
+        for (col, decl) in [
+            ("exit_condition",  "TEXT"),
+            ("max_attempts",    "INTEGER NOT NULL DEFAULT 1"),
+            ("current_attempt", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            let exists = conn
+                .prepare(&format!("SELECT {} FROM jobs LIMIT 1", col))
+                .is_ok();
+            if !exists {
+                conn.execute_batch(&format!("ALTER TABLE jobs ADD COLUMN {} {};", col, decl))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
         // `.superconsole/sessions/YYYY-MM-DD-<slug>.md` are opt-in markdown logs
         // saved manually by the user. This table is the local index; Turso mirrors
         // metadata (project_session_logs) — content/file_path never leaves the device.
@@ -1368,13 +1452,16 @@ impl Db {
             last_run_cost_usd: r.get::<_, f64>(13).unwrap_or(0.0),
             last_run_tokens: r.get::<_, i64>(14).unwrap_or(0),
             last_run_session_id: r.get(15).unwrap_or(None),
+            exit_condition: r.get(16).unwrap_or(None),
+            max_attempts: r.get::<_, i64>(17).unwrap_or(1),
+            current_attempt: r.get::<_, i64>(18).unwrap_or(0),
         })
     }
 
     pub fn list_jobs(&self, workspace_id: i64) -> Result<Vec<Job>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors FROM jobs WHERE workspace_id = ?1 ORDER BY name")
+            .prepare("SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE workspace_id = ?1 ORDER BY name")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([workspace_id], Self::job_from_row)
@@ -1385,7 +1472,7 @@ impl Db {
     pub fn due_jobs(&self, now: &str) -> Result<Vec<Job>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors FROM jobs WHERE enabled = 1 AND next_run IS NOT NULL AND next_run <= ?1")
+            .prepare("SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE enabled = 1 AND next_run IS NOT NULL AND next_run <= ?1")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([now], Self::job_from_row)
@@ -1396,7 +1483,7 @@ impl Db {
     pub fn get_job(&self, id: i64) -> Result<Job, String> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id FROM jobs WHERE id = ?1",
+            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE id = ?1",
             [id],
             Self::job_from_row,
         )
@@ -1416,17 +1503,19 @@ impl Db {
         trigger_type: &str,
         trigger_config: &str,
         allowed_connectors: &str,
+        exit_condition: Option<&str>,
+        max_attempts: i64,
     ) -> Result<Job, String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO jobs (workspace_id, name, command, schedule, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            rusqlite::params![workspace_id, name, command, schedule, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors],
+            "INSERT INTO jobs (workspace_id, name, command, schedule, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, exit_condition, max_attempts) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![workspace_id, name, command, schedule, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, exit_condition, max_attempts],
         )
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         conn.query_row(
-            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors FROM jobs WHERE id = ?1",
+            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE id = ?1",
             [id],
             Self::job_from_row,
         )
@@ -1446,16 +1535,19 @@ impl Db {
         trigger_type: &str,
         trigger_config: &str,
         allowed_connectors: &str,
+        exit_condition: Option<&str>,
+        max_attempts: i64,
     ) -> Result<Job, String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "UPDATE jobs SET name = ?1, command = ?2, schedule = ?3, next_run = ?4, run_mode = ?5, \
-             run_config = ?6, trigger_type = ?7, trigger_config = ?8, allowed_connectors = ?9 WHERE id = ?10",
-            rusqlite::params![name, command, schedule, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, id],
+             run_config = ?6, trigger_type = ?7, trigger_config = ?8, allowed_connectors = ?9, \
+             exit_condition = ?10, max_attempts = ?11 WHERE id = ?12",
+            rusqlite::params![name, command, schedule, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, exit_condition, max_attempts, id],
         )
         .map_err(|e| e.to_string())?;
         conn.query_row(
-            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors FROM jobs WHERE id = ?1",
+            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE id = ?1",
             [id],
             Self::job_from_row,
         )
@@ -1475,17 +1567,92 @@ impl Db {
     pub fn mark_job_ran(&self, id: i64, last_run: &str, next_run: Option<&str>) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "UPDATE jobs SET last_run = ?1, next_run = ?2 WHERE id = ?3",
+            "UPDATE jobs SET last_run = ?1, next_run = ?2, current_attempt = 0 WHERE id = ?3",
             (last_run, next_run, id),
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     }
 
+    /// Increment the current_attempt counter for a looping job.
+    pub fn set_job_attempt(&self, job_id: i64, attempt: i64) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE jobs SET current_attempt = ?1 WHERE id = ?2",
+            (attempt, job_id),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Reset current_attempt to 0 (job completed or gave up).
+    pub fn reset_job_attempt(&self, job_id: i64) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE jobs SET current_attempt = 0 WHERE id = ?1",
+            [job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Schedule a retry: set next_run to N seconds from now.
+    pub fn set_job_next_run_relative(&self, job_id: i64, seconds: i64) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            &format!("UPDATE jobs SET next_run = datetime('now', '+{} seconds') WHERE id = ?1", seconds),
+            [job_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Get the status of an inbox item (for inbox_approved exit condition).
+    pub fn get_inbox_status(&self, inbox_id: i64) -> Result<String, String> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row(
+            "SELECT status FROM inbox WHERE id = ?1",
+            [inbox_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
     pub fn delete_job(&self, id: i64) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute("DELETE FROM jobs WHERE id = ?1", [id])
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Return all enabled jobs with a given trigger_type (e.g. "email").
+    /// Used by the email polling loop and any future event-driven trigger types.
+    pub fn get_jobs_by_trigger_type(&self, trigger_type: &str) -> Vec<Job> {
+        let conn = self.0.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, \
+             run_mode, run_config, trigger_type, trigger_config, allowed_connectors, \
+             last_run_cost_usd, last_run_tokens, last_run_session_id, \
+             exit_condition, max_attempts, current_attempt \
+             FROM jobs WHERE enabled = 1 AND trigger_type = ?1",
+        ) else {
+            return Vec::new();
+        };
+        stmt.query_map([trigger_type], Self::job_from_row)
+            .ok()
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Overwrite the trigger_config JSON for a job.
+    /// Used by the email polling loop to persist last_checked timestamps.
+    pub fn update_job_trigger_config(&self, job_id: i64, trigger_config: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE jobs SET trigger_config = ?1 WHERE id = ?2",
+            rusqlite::params![trigger_config, job_id],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -2519,6 +2686,33 @@ impl Db {
         }
     }
 
+    /// Upsert a single connector entry into the local cache. Used as a fallback
+    /// when the project is not yet synced to cloud (no Turso FK target exists).
+    pub fn upsert_connector_cache(
+        &self,
+        scope: &str,
+        scope_id: &str,
+        service: &str,
+        credentials_encrypted: &str,
+    ) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        let ts = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        conn.execute(
+            "INSERT INTO connectors_cache
+                 (scope, scope_id, service, status, credentials_encrypted, synced_at)
+             VALUES (?1, ?2, ?3, 'local', ?4, ?5)
+             ON CONFLICT(scope, scope_id, service) DO UPDATE SET
+                 status = 'local',
+                 credentials_encrypted = excluded.credentials_encrypted,
+                 synced_at = excluded.synced_at",
+            rusqlite::params![scope, scope_id, service, credentials_encrypted, ts],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn set_project_org(&self, project_id: &str, org_id: &str, synced_at: &str) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
@@ -3281,6 +3475,34 @@ impl Db {
             cloud_id: None,
             created_at,
         })
+    }
+
+    /// Lightweight upsert for session logs created by chat compaction.
+    /// Uses INSERT OR IGNORE so the original created_at is preserved across
+    /// multiple compaction passes on the same session.
+    pub fn upsert_session_log(
+        &self,
+        session_id: &str,
+        workspace_id: i64,
+        file_path: &str,
+        summary: &str,
+    ) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO session_logs \
+             (id, workspace_id, file_path, session_id, date, agent_name, model, cost_usd, tokens, summary) \
+             VALUES (?1, ?2, ?3, ?1, ?4, 'chat', '', 0.0, 0, ?5)",
+            rusqlite::params![session_id, workspace_id, file_path, date, summary],
+        )
+        .map_err(|e| e.to_string())?;
+        // Always refresh summary + path (latest compaction wins)
+        conn.execute(
+            "UPDATE session_logs SET summary = ?1, file_path = ?2 WHERE id = ?3",
+            rusqlite::params![summary, file_path, session_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn list_session_logs(&self, workspace_id: i64) -> Vec<SessionLogFile> {

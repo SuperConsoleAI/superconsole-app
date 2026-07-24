@@ -106,7 +106,7 @@ export function ChatView({
   onRouteToPty,
   onOpenFiles,
 }: ChatViewProps) {
-  const { activeCloudOrgId } = useAuth();
+  const { activeCloudOrgId, auth } = useAuth();
   const { openChatSession, newChatDraft, setChatTabLabel, bindChatDraftToSession, closeTab } =
     useWorkspaces();
   const storageKey = `superconsole-chat-${workspace.id}`;
@@ -655,6 +655,8 @@ export function ChatView({
       <ChatComposer
         workspaceId={workspace.id}
         projectId={projectId}
+        orgId={activeCloudOrgId}
+        userId={auth?.user.id ?? null}
         input={input}
         setInput={setInput}
         onSend={send}

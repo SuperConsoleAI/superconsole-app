@@ -14,6 +14,7 @@ import {
   PanelLeft,
   PanelRight,
   Play,
+  RefreshCw,
   ScrollText,
   SquareSlash,
   Upload,
@@ -145,7 +146,7 @@ export function TopBar({
         />
       )}
 
-      <div className="flex items-center gap-1 mb-1">
+      <div className="flex items-center mb-1">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -160,6 +161,20 @@ export function TopBar({
           <TooltipContent>{sidebarOpen ? "Hide sidebar" : "Show sidebar"}</TooltipContent>
         </Tooltip>
 
+        <div className={cn("shrink-0 transition-all", sidebarOpen ? "w-[58px]" : "w-0")} />
+
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => {
+            router.invalidate();
+            window.dispatchEvent(new CustomEvent("app-refresh"));
+          }}
+          title="Refresh page"
+        >
+          <RefreshCw className="h-4 w-4" strokeWidth={1} />
+        </Button>
         <Button
           variant="ghost"
           size="icon"
@@ -178,15 +193,13 @@ export function TopBar({
         </Button>
       </div>
 
-      <div className={cn("shrink-0", sidebarOpen ? "w-[82px]" : "w-0")} />
-
       {workspace && (
         <Tooltip>
           <TooltipTrigger asChild>
             <div className={cn(
               "flex min-w-0 cursor-default items-center gap-1.5 pointer-events-auto",
-              !sidebarOpen && "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2",
-              sidebarOpen && "ml-4"
+              !(sidebarOpen || filesOpen) && "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2",
+              (sidebarOpen || filesOpen) && "ml-4"
             )}>
               <span className="truncate text-xs font-medium">
                 {workspace.name}{titleSuffix ? ` — ${titleSuffix}` : ""}
@@ -198,6 +211,7 @@ export function TopBar({
       )}
 
       <div className="ml-auto flex items-center gap-1">
+        <div id="topbar-portal" className="flex items-center gap-2 mr-1" />
         {/* ── Git: Initialize Git (non-repo) ─────────── */}
         {workspace && isProjectPage && isGitRepo === false && (
           <Tooltip>

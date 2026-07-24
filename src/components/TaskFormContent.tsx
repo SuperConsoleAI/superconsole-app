@@ -38,10 +38,8 @@ import {
   CHAT_PROVIDERS,
   CLI_PRESETS,
   type Agent,
-  type ContextFile,
   type Job,
   type Organization,
-  type Skill,
   type Workspace,
   type WorkspaceConnector,
 } from "@/lib/api";
@@ -55,11 +53,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ComposerPlusMenu } from "@/components/ComposerPlusMenu";
 import { cn } from "@/lib/utils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -264,7 +260,7 @@ function ModelPicker({
         ) : (
           <div className="flex h-64">
             {/* Vendor sidebar */}
-            <div className="w-36 shrink-0 overflow-y-auto border-r p-1">
+            <div className="w-36 shrink-0 overflow-y-auto no-scrollbar border-r p-1">
               {vendorGroups.map(([v, vlist]) => (
                 <button
                   key={v}
@@ -282,7 +278,7 @@ function ModelPicker({
               ))}
             </div>
             {/* Model list */}
-            <div className="flex-1 overflow-y-auto p-1">
+            <div className="flex-1 overflow-y-auto no-scrollbar p-1">
               {list.length === 0
                 ? <div className="p-2 text-xs text-muted-foreground">No matches</div>
                 : list.map((m) => (
@@ -353,8 +349,6 @@ export function TaskFormContent({
   // ── Lazy-loaded workspace data ───────────────────────────────────────────────
   const [agents, setAgents]             = useState<Agent[]>([]);
   const [connectors, setConnectors]     = useState<WorkspaceConnector[]>([]);
-  const [skills, setSkills]             = useState<Skill[]>([]);
-  const [contextFiles, setContextFiles] = useState<ContextFile[]>([]);
   const [settings, setSettings]         = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -367,8 +361,6 @@ export function TaskFormContent({
       .then((lists) => setAgents(lists.flat()))
       .catch(() => {});
     api.listWorkspaceConnectors(selectedWs.id).then(setConnectors).catch(() => {});
-    api.listSkills(selectedWs.id).then(setSkills).catch(() => {});
-    api.listContextFiles(selectedWs.id).then(setContextFiles).catch(() => {});
     api.getSettings().then(setSettings).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedWs, orgWorkspaces]);
@@ -402,6 +394,15 @@ export function TaskFormContent({
   const [checked, setChecked]               = useState<Record<string, boolean>>({});
   const [error, setError]                   = useState<string | null>(null);
   const [saving, setSaving]                 = useState(false);
+
+  // Loop system
+  const [loopType, setLoopType]       = useState<"none" | "command" | "inbox_approved" | "llm_score" | "contains" | "file_exists">("none");
+  const [loopCommand, setLoopCommand] = useState("npm test");
+  const [loopText, setLoopText]       = useState("");
+  const [loopPath, setLoopPath]       = useState("");
+  const [loopThreshold, setLoopThreshold] = useState(4);
+  const [loopPrompt, setLoopPrompt]   = useState("Rate this output 1-5 for quality and correctness.");
+  const [maxAttempts, setMaxAttempts] = useState(3);
 
   // Slash autocomplete
   const [slashItems, setSlashItems]   = useState<SlashItem[]>([]);
@@ -475,6 +476,22 @@ export function TaskFormContent({
     } else {
       setChecked({});
     }
+
+    // Loop system
+    if (initialJob.exit_condition) {
+      try {
+        const ec = JSON.parse(initialJob.exit_condition) as { type: string; command?: string; text?: string; path?: string; threshold?: number; prompt?: string };
+        setLoopType(ec.type as typeof loopType);
+        if (ec.command) setLoopCommand(ec.command);
+        if (ec.text)    setLoopText(ec.text);
+        if (ec.path)    setLoopPath(ec.path);
+        if (ec.threshold !== undefined) setLoopThreshold(ec.threshold);
+        if (ec.prompt)  setLoopPrompt(ec.prompt);
+      } catch { /* ignore */ }
+    } else {
+      setLoopType("none");
+    }
+    setMaxAttempts(initialJob.max_attempts ?? 1);
   }, [initialJob]);
 
   // ── Submit ───────────────────────────────────────────────────────────────────
@@ -506,6 +523,17 @@ export function TaskFormContent({
 
     const finalSchedule = triggerType === "manual" ? "manual" : schedule.trim();
 
+    // Build exit condition JSON or null
+    const exitCondition: string | null = loopType === "none" ? null : (() => {
+      const base: Record<string, unknown> = { type: loopType };
+      if (loopType === "command") base.command = loopCommand.trim();
+      if (loopType === "contains") base.text = loopText.trim();
+      if (loopType === "file_exists") base.path = loopPath.trim();
+      if (loopType === "llm_score") { base.threshold = loopThreshold; base.max = 5; base.prompt = loopPrompt.trim(); }
+      return JSON.stringify(base);
+    })();
+    const finalMaxAttempts = loopType === "none" ? 1 : Math.max(1, maxAttempts);
+
     setError(null);
     setSaving(true);
     try {
@@ -520,6 +548,8 @@ export function TaskFormContent({
           triggerType,
           JSON.stringify(triggerConfig),
           JSON.stringify(allowedConnectors),
+          exitCondition,
+          finalMaxAttempts,
         );
       } else {
         await api.addJob(wsId, name.trim(), command.trim(), finalSchedule, {
@@ -528,6 +558,8 @@ export function TaskFormContent({
           triggerType,
           triggerConfig: JSON.stringify(triggerConfig),
           allowedConnectors: JSON.stringify(allowedConnectors),
+          exitCondition,
+          maxAttempts: finalMaxAttempts,
         });
       }
       onSaved();
@@ -917,70 +949,118 @@ export function TaskFormContent({
         )}
       </div>
 
-      {/* Prompt / command (not shown for agent mode) */}
+      {/* ── Loop system ───────────────────────────────────────────────────── */}
+      <div className="space-y-2 rounded-md border bg-background p-2.5">
+        <div className="text-xs font-semibold text-muted-foreground">Loop (optional)</div>
+
+        {/* Exit condition selector */}
+        <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+          {([
+            ["none",            "None — run once"],
+            ["command",         "Command exits 0"],
+            ["inbox_approved",  "Inbox approved"],
+            ["contains",        "Output contains"],
+            ["file_exists",     "File exists"],
+            ["llm_score",       "LLM score ≥"],
+          ] as const).map(([val, label]) => (
+            <label key={val} className="flex cursor-pointer items-center gap-1.5 text-xs">
+              <input
+                type="radio"
+                name="loop_type"
+                value={val}
+                checked={loopType === val}
+                onChange={() => setLoopType(val)}
+                className="h-3 w-3 accent-primary"
+              />
+              {label}
+              {val === "llm_score" && loopType === "llm_score" && (
+                <input
+                  type="number"
+                  min={1} max={5} step={0.5}
+                  value={loopThreshold}
+                  onChange={(e) => setLoopThreshold(Number(e.target.value))}
+                  className="ml-1 w-12 rounded border bg-muted px-1.5 py-0.5 text-xs"
+                />
+              )}
+            </label>
+          ))}
+        </div>
+
+        {/* Condition-specific input */}
+        {loopType === "command" && (
+          <Input
+            value={loopCommand}
+            onChange={(e) => setLoopCommand(e.target.value)}
+            placeholder="npm test"
+            className="h-7 font-mono text-xs"
+          />
+        )}
+        {loopType === "contains" && (
+          <Input
+            value={loopText}
+            onChange={(e) => setLoopText(e.target.value)}
+            placeholder="DONE"
+            className="h-7 font-mono text-xs"
+          />
+        )}
+        {loopType === "file_exists" && (
+          <Input
+            value={loopPath}
+            onChange={(e) => setLoopPath(e.target.value)}
+            placeholder="output/report.md"
+            className="h-7 font-mono text-xs"
+          />
+        )}
+        {loopType === "llm_score" && (
+          <textarea
+            value={loopPrompt}
+            onChange={(e) => setLoopPrompt(e.target.value)}
+            rows={2}
+            placeholder="Rate this output 1-5 for quality..."
+            className="w-full resize-none rounded-md border bg-muted px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        )}
+
+        {/* Max attempts + warning */}
+        {loopType !== "none" && (
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Max attempts
+              <select
+                value={maxAttempts}
+                onChange={(e) => setMaxAttempts(Number(e.target.value))}
+                className="rounded border bg-muted px-1.5 py-0.5 text-xs"
+              >
+                {[2, 3, 5, 7, 10].map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </label>
+            <Badge variant="outline" className="border-amber-500/40 text-[10px] text-amber-600 dark:text-amber-400">
+              ⚠️ Retries up to {maxAttempts}× — max ~{maxAttempts * 30}s
+            </Badge>
+          </div>
+        )}
+      </div>
+
       {runMode !== "agent" && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5">
               <div className="text-xs font-medium text-muted-foreground">Prompt</div>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-5 w-5" title="Insert skill / connector / context">
-                    <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-56">
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>Skills</DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                      {skills.length === 0
-                        ? <DropdownMenuItem disabled>No skills</DropdownMenuItem>
-                        : skills.map((s) => (
-                          <DropdownMenuItem key={s.name} onClick={() => insert(`/skill:${s.name}`)}>
-                            {s.name}
-                          </DropdownMenuItem>
-                        ))}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>Connectors</DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                      {connectors.length === 0
-                        ? <DropdownMenuItem disabled>No connectors</DropdownMenuItem>
-                        : connectors.map((c) => (
-                          <DropdownMenuItem key={`${c.scope}-${c.service}`} onClick={() => insert(`/connector:${c.service}`)}>
-                            {c.label}
-                          </DropdownMenuItem>
-                        ))}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>Agents</DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                      {agents.length === 0
-                        ? <DropdownMenuItem disabled>No agents</DropdownMenuItem>
-                        : agents.map((a) => (
-                          <DropdownMenuItem key={a.name} onClick={() => insert(`/agent:${a.name}`)}>
-                            {a.name}
-                          </DropdownMenuItem>
-                        ))}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>Context</DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                      {contextFiles.length === 0
-                        ? <DropdownMenuItem disabled>No context files</DropdownMenuItem>
-                        : contextFiles.map((c) => (
-                          <DropdownMenuItem key={c.slug} onClick={() => insert(`/context:${c.slug}`)}>
-                            {c.slug}
-                          </DropdownMenuItem>
-                        ))}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <ComposerPlusMenu
+                workspaceId={selectedWs?.id ?? 0}
+                projectId={selectedWs?.id.toString() ?? null}
+                orgId={selectedWs?.organization_id.toString() ?? null}
+                userId={null}
+                onInsert={(snippet) => insert(snippet)}
+                onPickFiles={() => {}}
+                onGoSettings={() => {}}
+                onGoSettingsTo={() => {}}
+                onGoAgents={() => {}}
+                triggerClassName="h-5 w-5"
+                iconClassName="h-3.5 w-3.5"
+              />
             </div>
             <button
               type="button"
@@ -1017,7 +1097,7 @@ export function TaskFormContent({
 
             return (
               <div className="relative">
-                <div className="absolute bottom-0 left-0 right-0 z-50 max-h-60 overflow-y-auto rounded-md border bg-popover shadow-lg">
+                <div className="absolute bottom-0 left-0 right-0 z-50 max-h-60 overflow-y-auto no-scrollbar rounded-md border bg-popover shadow-lg">
                   {grouped.map(([group, items]) => {
                     const groupStartIdx = filtered.indexOf(items[0]);
                     return (
@@ -1118,7 +1198,7 @@ export function TaskFormContent({
             placeholder="Prompt or shell command… (type / for skills, context, wiki, agents)"
             spellCheck={false}
             className={cn(
-              "w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+              "w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
               promptExpanded ? "min-h-64" : "min-h-20",
             )}
           />

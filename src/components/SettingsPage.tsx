@@ -1,5 +1,5 @@
-import { PluginIcon } from "./PluginIcon";
 import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import {
   Bell,
   BookOpen,
@@ -34,20 +34,19 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   api,
   CLI_PRESETS,
-  CONNECTOR_REGISTRY,
   LLM_PROVIDERS,
   ORG_ROLES,
   PROJECT_ROLES,
-  type ConnectorCategory,
-  type ConnectorScope,
-  type ConnectorView,
   type LlmKeyView,
   type MemberView,
   type SlashCommand,
 } from "@/lib/api";
+import { ConnectorManager } from "@/components/connectors/ConnectorManager";
+export { ConnectorManager };
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+
+
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   DropdownMenu,
@@ -57,11 +56,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PresetIcon } from "@/components/PresetIcon";
 import { useTheme } from "@/components/theme-provider";
-import {
-  AccountSkillsSection,
-  OrgSkillsSection,
-  ProjectSkillsSection,
-} from "@/components/SkillsSettings";
+
 import { LibrarySection } from "@/components/libraryx";
 import { useAuth } from "@/lib/auth-context";
 import { useWorkspaces } from "@/lib/workspace-context";
@@ -82,7 +77,6 @@ const NAV: Record<TopTab, string[]> = {
     "Terminal",
     "Environment",
     "Models",
-    "Skills",
     "Commands",
     "Integrations",
     "Connectors",
@@ -90,14 +84,13 @@ const NAV: Record<TopTab, string[]> = {
     "Notifications",
     "Library",
   ],
-  org: ["General", "Team", "Models", "Skills", "Integrations", "Connectors", "Billing"],
+  org: ["General", "Team", "Models", "Integrations", "Connectors", "Billing"],
   project: [
     "General",
     "Environment",
     "Scripts",
     "Team",
     "Models",
-    "Skills",
     "Integrations",
     "Connectors",
     "Messaging",
@@ -112,7 +105,6 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   Appearance: Palette,
   Terminal: Terminal,
   Models: Sparkles,
-  Skills: Sparkles,
   Commands: Terminal,
   Integrations: Blocks,
   Connectors: Plug,
@@ -318,8 +310,6 @@ function Content({
         ) : (
           <SignInPrompt label="manage model keys" />
         );
-      case "Skills":
-        return <AccountSkillsSection />;
       case "Commands":
         return <GlobalCommandsSection />;
       case "Integrations":
@@ -368,8 +358,6 @@ function Content({
             description={`Shared model keys for everyone in ${activeCloudOrg.name}.`}
           />
         );
-      case "Skills":
-        return <OrgSkillsSection orgId={activeCloudOrg.id} />;
       case "Integrations":
         return (
           <ConnectorManager
@@ -430,12 +418,6 @@ function Content({
             description="Per-project model keys. These override organisation and account keys."
           />
         );
-      case "Skills":
-        return workspaceId !== null ? (
-          <ProjectSkillsSection workspaceId={workspaceId} />
-        ) : (
-          <Hint>Select a project to continue.</Hint>
-        );
       case "Integrations":
         return (
           <ConnectorManager
@@ -453,7 +435,13 @@ function Content({
           />
         );
       case "Automations":
-        return <Placeholder name="Automations" />;
+        return (
+          <div className="rounded-xl border border-dashed px-6 py-12 text-center">
+            <p className="text-sm text-muted-foreground">
+              Automations have moved to the <Link to="/agents" className="font-medium text-primary hover:underline">Agents</Link> page.
+            </p>
+          </div>
+        );
       case "Messaging":
         return <MessagingSection projectId={projectId} />;
     }
@@ -1967,261 +1955,8 @@ function MessagingSection({ projectId }: { projectId: string }) {
   );
 }
 
-export function ConnectorManager({
-  scope,
-  scopeId,
-  category,
-  filterService,
-}: {
-  scope: ConnectorScope;
-  scopeId: string;
-  category: ConnectorCategory;
-  /** If set, show only this service and hide the selector dropdown. */
-  filterService?: string;
-}) {
-  const available = CONNECTOR_REGISTRY.filter(
-    (d) =>
-      d.scopes.includes(scope) &&
-      d.category === category &&
-      (!filterService || d.id === filterService),
-  );
-
-  const [list, setList] = useState<ConnectorView[]>([]);
-  const [editingService, setEditingService] = useState<string | null>(null);
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [detecting, setDetecting] = useState(false);
-  const [detectHint, setDetectHint] = useState<string | null>(null);
-
-  const def = CONNECTOR_REGISTRY.find((d) => d.id === editingService);
-  const current = list.find((c) => c.service === editingService);
-  const isTelegram = editingService === "telegram";
-  const isProjectScope = scope === "project";
-
-  const load = async () => {
-    try {
-      setList(await api.listConnectors(scope, scopeId));
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  useEffect(() => {
-    setList([]);
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, scopeId]);
-
-  // Prefill non-secret fields from the existing connector
-  useEffect(() => {
-    if (!def) return;
-    const existing = list.find((c) => c.service === editingService);
-    const next: Record<string, string> = {};
-    for (const f of def.fields) {
-      const ev = existing?.fields.find((x) => x.key === f.key);
-      next[f.key] = !f.secret && ev?.value ? ev.value : "";
-    }
-    setValues(next);
-    setDetectHint(null);
-  }, [editingService, list, def]);
-
-  const save = async () => {
-    if (!editingService) return;
-    setError(null);
-    try {
-      await api.setConnector(scope, scopeId, editingService, values);
-      await load();
-      setEditingService(null);
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  const canSave = (() => {
-    if (!def) return false;
-    if (editingService === "telegram") {
-      if (scope === "org") {
-        const botFieldSet = current?.fields.find((x) => x.key === "bot_token")?.has_value;
-        return !!(values["bot_token"]?.trim() || botFieldSet);
-      }
-      const chatFieldSet = current?.fields.find((x) => x.key === "chat_id")?.has_value;
-      return !!(values["chat_id"]?.trim() || chatFieldSet);
-    }
-    const anyTyped = Object.values(values).some((v) => v.trim().length > 0);
-    const anySet = current?.fields.some((f) => f.has_value) ?? false;
-    return anyTyped || anySet;
-  })();
-
-  const remove = async (svc: string) => {
-    setError(null);
-    try {
-      await api.deleteConnector(scope, scopeId, svc);
-      await load();
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  const detectChat = async () => {
-    setDetecting(true);
-    setDetectHint("Waiting for a message… Send any message to the bot in your group now.");
-    setError(null);
-    try {
-      const result = await api.detectTelegramChat();
-      setValues((v) => ({
-        ...v,
-        chat_id: result.chat_id,
-        ...(result.thread_id ? { thread_id: result.thread_id } : {}),
-      }));
-      const label = result.chat_title ? `"${result.chat_title}"` : result.chat_id;
-      setDetectHint(
-        `Detected: ${label}${result.thread_id ? ` · topic ${result.thread_id}` : ""}. Click Save to confirm.`,
-      );
-    } catch (e) {
-      setDetectHint(null);
-      setError(String(e));
-    } finally {
-      setDetecting(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col">
-      <div className="grid grid-cols-[1fr_120px_120px_140px] gap-4 border-b px-4 py-2 text-xs font-semibold text-muted-foreground">
-        <div>Connector</div>
-        <div>Type</div>
-        <div>Status</div>
-        <div></div>
-      </div>
-      <div className="flex flex-col">
-        {available.map((c) => {
-          const configured = list.find((l) => l.service === c.id);
-          return (
-            <div
-              key={c.id}
-              className="grid grid-cols-[1fr_120px_120px_140px] items-center gap-4 border-b px-4 py-3 hover:bg-muted/30 transition-colors"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <PluginIcon pluginId={c.id} size={20} fallbackIcon="blocks" className="h-6 w-6 p-0.5 bg-transparent" />
-                <span className="block text-sm font-medium truncate">{c.label}</span>
-              </div>
-              <div className="text-xs text-muted-foreground">
-                API Key
-              </div>
-              <div className="text-xs">
-                {configured ? (
-                  <span className="text-emerald-600 dark:text-emerald-400 font-medium">Connected</span>
-                ) : (
-                  <span className="text-muted-foreground">Not connected</span>
-                )}
-              </div>
-              <div className="flex shrink-0 items-center justify-end gap-1.5">
-                {configured ? (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2 text-xs text-muted-foreground"
-                      onClick={() => setEditingService(c.id)}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2 text-xs text-destructive"
-                      onClick={() => remove(c.id)}
-                    >
-                      Remove
-                    </Button>
-                  </>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 px-2.5 text-xs"
-                    onClick={() => setEditingService(c.id)}
-                  >
-                    Connect
-                  </Button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <Dialog open={!!editingService} onOpenChange={(o) => { if (!o) setEditingService(null); }}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>{def?.label} Configuration</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-3 pt-2">
-            {def?.fields.map((f) => {
-              const fieldSet = current?.fields.find((x) => x.key === f.key)?.has_value;
-              const showBotHint = isTelegram && isProjectScope && f.key === "bot_token" && !values["bot_token"];
-              const showDetect = isTelegram && isProjectScope && f.key === "chat_id";
-
-              return (
-                <div key={f.key} className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium">{f.label}</span>
-                  {showDetect ? (
-                    <div className="flex items-center gap-2">
-                      <Input
-                        value={values[f.key] ?? ""}
-                        onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-                        type="text"
-                        placeholder={f.placeholder ?? f.label}
-                        className="h-8 flex-1 font-mono text-xs"
-                      />
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-8 shrink-0 text-xs"
-                        disabled={detecting}
-                        onClick={detectChat}
-                      >
-                        {detecting ? "Listening…" : "Detect →"}
-                      </Button>
-                    </div>
-                  ) : (
-                    <Input
-                      value={values[f.key] ?? ""}
-                      onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-                      type={f.secret ? "password" : "text"}
-                      placeholder={
-                        f.secret && fieldSet
-                          ? `•••• set (leave blank to keep)`
-                          : (f.placeholder ?? f.label)
-                      }
-                      className="h-8 font-mono text-xs"
-                    />
-                  )}
-                  {showBotHint && (
-                    <p className="text-[11px] text-muted-foreground">
-                      Leave blank to use the org-level Telegram bot. Fill in to give this project its own bot.
-                    </p>
-                  )}
-                </div>
-              );
-            })}
-
-            {detectHint && <p className="text-[11px] text-primary">{detectHint}</p>}
-            {error && <p className="text-[11px] text-destructive">{error}</p>}
-
-            <div className="mt-2 flex justify-end gap-2">
-              <Button size="sm" variant="ghost" onClick={() => setEditingService(null)}>
-                Cancel
-              </Button>
-              <SaveButton onSave={save} disabled={!canSave} />
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
+// ConnectorManager is defined in @/components/connectors/ConnectorManager
+// and re-exported above in the import block.
 function LlmKeyEditor({
   scope,
   scopeId,

@@ -17,7 +17,7 @@ Patterns, constraints, and gotchas specific to this codebase.
 - Command args: Rust snake_case params are called with camelCase keys from JS (`session_id` → `sessionId`).
 - Shared state: `app.manage(Db)`, `app.manage(SessionManager)`; access with `State<T>` in commands or `app.state::<T>()` in spawned tasks.
 - Events: backend → frontend only (`pty-output`, `pty-exit`, `session-usage`, `inbox-new`, `chat-token`/`chat-done`/`chat-error`). Frontend listens with `listen()` and filters by `session_id`/`request_id`/`workspace_id` in the payload.
-- Long-running work: `tauri::async_runtime::spawn` (tokio) for loops, `spawn_blocking` for process exec; the HTTP server runs on a plain `std::thread` (tiny_http is blocking).
+- Long-running work: `tauri::async_runtime::spawn` (tokio) for loops, `spawn_blocking` for process exec (e.g., synchronous shell commands like `git status` or `git commit` to prevent UI freezing); the HTTP server runs on a plain `std::thread` (tiny_http is blocking).
 - New plugin = three places: Cargo.toml + `.plugin(...)` in lib.rs + permission in `capabilities/default.json` (+ npm guest package).
 
 ## Frontend patterns
@@ -31,10 +31,10 @@ Patterns, constraints, and gotchas specific to this codebase.
 
 ## Slash-command autocomplete patterns
 
-- **ChatComposer**: uses `loadSlashItems(workspaceId)` from `lib/slash-items.ts` (called lazily once on first `/`). Items are `SlashItem[]` with `value`, `label`, `description`, `source` groupings. Dropdown shows label inline with description truncated to 1 line (`items-baseline` flex, `truncate` on description span).
+- **ChatComposer**: uses `loadSlashItems(workspaceId)` from `lib/slash-items.ts` (called lazily once on first `/`; includes the builtin `/compact` command). Items are `SlashItem[]` with `value`, `label`, `description`, `source` groupings. Dropdown shows label inline with description truncated to 1 line (`items-baseline` flex, `truncate` on description span).
 - **TerminalView rich input**: uses a local `ensureCtx()` that fires all data fetches on first `/` keypress (`api.listSkills`, `listContextFiles`, `listCommands`, `listWorkspaceConnectors`, `listAgents`, `listSessionLogFiles`). Items built via `useMemo` keyed on all state arrays. Suggestions recompute via `useEffect([allSlashItems, slashToken])` — no stale-closure risk. Colour-coded by type (amber/blue/green/purple/teal/grey).
-- **[+] menu token routing** (TerminalView): if rich input is open → `insertIntoRich(token)` (appends to textarea); if closed → `writeToSession(token)` (writes to live PTY buffer, no `\r`—user presses Enter).
-- **Settings deep-link**: `router.navigate({ to: "/settings", search: { tab: "project", section: "Skills" } })` navigates to the right tab+section from any [+ Add …] footer.
+- **ComposerPlusMenu token routing** (TerminalView): if rich input is open → `insertIntoRich(token)` (appends to textarea); if closed → `writeToSession(token)` (writes to live PTY buffer, no `\r`—user presses Enter).
+- **Settings deep-link**: `router.navigate({ to: "/settings", search: { tab: "project", section: "Skills" } })` navigates to the right tab+section from any ComposerPlusMenu [+ Add …] footer.
 
 ## Gotchas / workarounds
 
@@ -74,7 +74,7 @@ Patterns, constraints, and gotchas specific to this codebase.
 - Secret precedence (LLM keys + connectors): project → org → account/local → `.env` → skip. Project overrides org. Telegram resolves project → org → local `telegram_token` setting → skip.
 - Encryption parity: AES-256-GCM, key = HKDF-SHA256(`WORKOS_COOKIE_PASSWORD`), salt `superconsole-llm-keys-v1`, info `aes-256-gcm`, format `base64(nonce[12] || ct||tag)`. Connector creds are an encrypted JSON blob in `credentials_encrypted`. Keep `crypto.rs` and the web `crypto.ts` identical.
 - Registries (LLM providers + connectors) are mirrored in three places: `src-tauri/src/connectors.rs`, `src/lib/api.ts`, and `superconsole-web/src/connector-registry.ts`. Keep service ids, field keys, scopes, and env mappings identical. (e.g. the `web_search` connector → `TAVILY_API_KEY` was added to all three.)
-- Native chat: `chat.rs` streams provider tokens via `chat-token`/`chat-done`/`chat-error` events through Anthropic/OpenAI-compatible/Gemini/OpenRouter adapters; it is cancellable (`stop_chat` + `ChatCancel` state) and supports a `tool_mode` and `reasoning` effort (`apply_reasoning`). Messages are stored locally in `chat_messages` keyed by project; the system prompt is built from CLAUDE.md/brand-voice.md/HEARTBEAT.md + on-demand context files plus the project's connected services, skills, memory, and wiki. Chat runs a native tool-calling loop backed by `mcp::execute`. `chat-done` carries `tokens_prompt`/`tokens_completion`/`cost_usd` (cost prefers OpenRouter live pricing via `llm::or_price_per_token`, else `usage::estimate_cost`). OpenRouter model list/pricing comes from `llm::list_openrouter_models` (cached hourly).
+- Native chat: `chat.rs` streams provider tokens via `chat-token`/`chat-done`/`chat-error` events through Anthropic/OpenAI-compatible/Gemini/OpenRouter adapters; it is cancellable (`stop_chat` + `ChatCancel` state) and supports a `tool_mode` and `reasoning` effort (`apply_reasoning`). Messages are stored locally in `chat_messages` keyed by project; the system prompt is built from CLAUDE.md/brand-voice.md/HEARTBEAT.md + on-demand context files plus the project's connected services, skills, memory, and wiki. Chat runs a native tool-calling loop backed by `mcp::execute`. `chat-done` carries `tokens_prompt`/`tokens_completion`/`cost_usd` (cost prefers OpenRouter live pricing via `llm::or_price_per_token`, else `usage::estimate_cost`). OpenRouter model list/pricing comes from `llm::list_openrouter_models` (cached hourly). Context history is auto-compacted (summarized into a single system message) when token usage exceeds 70% of the model window.
 - `ensure_workspace_project` is serialized via a process Mutex and reuses an existing cloud project by (org_id, local_path_hint) before inserting — keeps Turso from accumulating duplicate project rows.
 
 ## MCP tools (phase 16)

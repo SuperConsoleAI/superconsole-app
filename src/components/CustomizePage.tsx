@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Blocks,
@@ -19,11 +20,16 @@ import {
   Building2,
   FolderClosed,
   Info,
+  BookText,
+  Brain,
+  GalleryVerticalEnd,
+  FileText,
 } from "lucide-react";
 import { GitHubLight, GitHubDark } from "@ridemountainpig/svgl-react";
 import { ModelContextProtocol } from "./McpIcon";
 import { api, type HookFile, type PluginListItem } from "../lib/api";
 import { useWorkspaces } from "../lib/workspace-context";
+import { useAuth } from "../lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -32,6 +38,10 @@ import { SkillsView } from "./SkillsDialog";
 import { RulesView, RuleEditorDialog } from "./RulesDialog";
 import { CommandsView, CommandEditorDialog } from "./CommandDialog";
 
+import { ContextView } from "./ContextDialog";
+import { WikiView } from "./WikiDialog";
+import { MemoryView } from "./MemoryDialog";
+import { ProjectSessionsView } from "./ProjectSessionsView";
 import { ConnectorManager } from "./SettingsPage";
 import {
   DropdownMenu,
@@ -422,30 +432,69 @@ function PluginRow({
 
 // ─── Main CustomizePage ────────────────────────────────────────────────────────
 
-export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: number }) {
+export function CustomizePage({ initialWorkspaceId, initialTab }: { initialWorkspaceId?: number, initialTab?: string }) {
   const navigate = useNavigate();
   const { workspaces, organizations } = useWorkspaces();
+  const { auth } = useAuth();
 
-  const [tab, setTab] = useState<"plugins" | "hooks" | "skills" | "commands" | "connectors" | "mcp" | "rules">("plugins");
+  const [tab, setTab] = useState<"plugins" | "hooks" | "skills" | "commands" | "connectors" | "mcp" | "rules" | "context" | "memory" | "sessions" | "wiki">(() => {
+    if (initialTab) return initialTab as any;
+    return (sessionStorage.getItem("customizeTab") as any) || "plugins";
+  });
+  
+  const [portalNode, setPortalNode] = useState<Element | null>(null);
+
+  useEffect(() => {
+    if (initialTab) setTab(initialTab as any);
+  }, [initialTab]);
+
+  useEffect(() => {
+    sessionStorage.setItem("customizeTab", tab);
+    window.dispatchEvent(new CustomEvent("customize-tab", { detail: tab }));
+  }, [tab]);
+
+  useEffect(() => {
+    setPortalNode(document.getElementById("topbar-portal"));
+  }, []);
   
   useEffect(() => {
     window.dispatchEvent(new CustomEvent("customize-tab", { detail: tab }));
   }, [tab]);
 
-  const [scope, setScope] = useState<{ type: "account" | "org" | "project", id: string }>({
-    type: initialWorkspaceId ? "project" : "account",
-    id: initialWorkspaceId ? String(initialWorkspaceId) : "account",
+  type ScopeState = {
+    type: "account" | "org" | "project";
+    id: string;              // cloud ULID for org/account level ops
+    localWorkspaceId?: number;
+  };
+
+  const [scope, setScope] = useState<ScopeState>(() => {
+    if (initialWorkspaceId) {
+      return { type: "project", id: "", localWorkspaceId: initialWorkspaceId };
+    }
+    const saved = sessionStorage.getItem("customizeScope");
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return { type: "account", id: auth?.user.id ?? "" };
   });
 
-  // Keep scope in sync with route param
+  useEffect(() => {
+    sessionStorage.setItem("customizeScope", JSON.stringify(scope));
+  }, [scope]);
+
+  // Keep scope in sync with route param and auth.
   useEffect(() => {
     if (initialWorkspaceId) {
-      setScope({ type: "project", id: String(initialWorkspaceId) });
+      const ws = workspaces.find((w) => w.id === initialWorkspaceId);
+      if (ws) setScope({ type: "project", id: ws.project_id ?? "", localWorkspaceId: ws.id });
+    } else if (scope.type === "account" && auth?.user.id && scope.id !== auth.user.id) {
+      setScope({ type: "account", id: auth.user.id });
     }
-  }, [initialWorkspaceId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialWorkspaceId, workspaces, auth]);
 
-  const wsName = (id: string) => workspaces.find((w) => String(w.id) === id)?.name ?? "unknown";
-  const orgName = (id: string) => organizations.find((o) => String(o.id) === id)?.name ?? "unknown";
+  const wsName = (localId?: number) => workspaces.find((w) => w.id === localId)?.name ?? "unknown";
+  const orgName = (id: string) => auth?.orgs.find((o) => o.id === id)?.name ?? "unknown";
 
   // ── Plugins state ──────────────────────────────────────────────────────────
   const [plugins, setPlugins] = useState<PluginListItem[]>([]);
@@ -517,26 +566,126 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
     return () => clearTimeout(t);
   }, []);
 
-  const loadHooks = useCallback(async (scopeType: string, scopeId: string) => {
-    if (scopeType !== "project" || !scopeId || scopeId === "account") { setHooks([]); return; }
+  const loadHooks = useCallback(async (scopeType: string, localWsId: number | undefined) => {
+    if (scopeType !== "project" || !localWsId) { setHooks([]); return; }
     setHooksLoading(true);
-    try { setHooks(await api.listHooks(Number(scopeId))); }
+    try { setHooks(await api.listHooks(localWsId)); }
     catch { setHooks([]); }
     finally { setHooksLoading(false); }
   }, []);
 
-  useEffect(() => { if (tab === "hooks") loadHooks(scope.type, scope.id); }, [tab, scope]);
+  useEffect(() => { loadHooks(scope.type, scope.localWorkspaceId); }, [scope.type, scope.localWorkspaceId, loadHooks]);
 
   const editingHookFile = hooks.find((h) => h.hookType === editingHook);
 
   // ─────────────────────────────────────────────────────────────────────────────
+  
+  const topbarActions = (
+    <>
+      {tab === "commands" && scope?.type === "project" && (
+        <Button size="sm" className="h-6 gap-1" onClick={() => setAddCommandOpen({ name: "", slash: "", description: "", content: "", isNew: true })}>
+          <Plus className="h-3.5 w-3.5" />
+          Add command
+        </Button>
+      )}
+      {tab === "rules" && scope?.type === "project" && (
+        <Button size="sm" className="h-6 gap-1" onClick={() => setAddRuleOpen({ slug: "", name: "", description: "", content: "", alwaysApply: true, isNew: true })}>
+          <Plus className="h-3.5 w-3.5" />
+          Add rule
+        </Button>
+      )}
+      {showPointer && (
+        <div className="flex items-center gap-1.5 text-xs text-primary animate-pulse mr-1">
+          <span className="font-medium">Select a project</span>
+          <ArrowRight className="h-3.5 w-3.5" />
+        </div>
+      )}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm" className="h-6 font-normal gap-2 px-2.5">
+            {scope.type === "account" ? (
+              <>
+                <UserCog className="h-4 w-4 text-muted-foreground" />
+                Account
+              </>
+            ) : scope.type === "org" ? (
+              <>
+                <Building2 className="h-4 w-4 text-muted-foreground" />
+                {orgName(scope.id)}
+              </>
+            ) : (
+              <>
+                <FolderClosed className="h-4 w-4 text-muted-foreground" />
+                {wsName(scope.localWorkspaceId)}
+              </>
+            )}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuItem onClick={() => { setScope({ type: "account", id: auth?.user.id ?? "" }); navigate({ to: "/customize", search: { ws: undefined }, replace: true }); }} className="justify-between font-medium">
+            <span className="flex items-center gap-2">
+              <UserCog className="h-4 w-4 text-muted-foreground" />
+              Account (machine)
+            </span>
+            {scope.type === "account" && <Check className="h-4 w-4" />}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {organizations.map((o) => {
+            const cloudOrg = auth?.orgs.find((co) => co.name === o.name);
+            const cloudOrgId = cloudOrg?.id ?? "";
+            const orgWorkspaces = workspaces.filter((w) => w.organization_id === o.id);
+            return (
+              <DropdownMenuGroup key={o.id}>
+                <div className="px-2 py-1 text-[10px] font-semibold uppercase text-muted-foreground">
+                  Organization
+                </div>
+                <DropdownMenuItem
+                  onClick={() => { if (cloudOrgId) setScope({ type: "org", id: cloudOrgId }); navigate({ to: "/customize", search: { ws: undefined }, replace: true }); }}
+                  className="justify-between font-medium"
+                  disabled={!cloudOrgId}
+                >
+                  <span className="flex items-center gap-2">
+                    <Building2 className="h-4 w-4 text-muted-foreground" />
+                    {o.name} (Org)
+                  </span>
+                  {scope.type === "org" && scope.id === cloudOrgId && <Check className="h-4 w-4" />}
+                </DropdownMenuItem>
+
+                {orgWorkspaces.length > 0 && (
+                  <>
+                    <div className="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase text-muted-foreground">
+                      Projects
+                    </div>
+                    {orgWorkspaces.map((w) => (
+                      <DropdownMenuItem
+                        key={w.id}
+                        onClick={() => { setScope({ type: "project", id: w.project_id ?? "", localWorkspaceId: w.id }); navigate({ to: "/customize", search: { ws: w.id }, replace: true }); }}
+                        className="pl-4 justify-between"
+                      >
+                        <span className="flex items-center gap-2">
+                          <FolderClosed className="h-3.5 w-3.5 text-muted-foreground" />
+                          {w.name}
+                        </span>
+                        {scope.type === "project" && scope.id === w.project_id && <Check className="h-4 w-4" />}
+                      </DropdownMenuItem>
+                    ))}
+                  </>
+                )}
+                <DropdownMenuSeparator />
+              </DropdownMenuGroup>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
+  );
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col min-w-0 overflow-hidden">
       {/* ── Top bar (same as TasksView) ──────────────────────────────────────── */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card/60 px-5 relative">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card/60 px-5 relative overflow-x-auto no-scrollbar">
         {/* Tab toggle pill */}
-        <div className="flex gap-0.5 rounded-lg border bg-background p-0.5">
+        <div className="flex gap-0.5 rounded-lg border bg-background p-0.5 shrink-0">
           <button
             onClick={() => setTab("plugins")}
             className={cn(
@@ -550,18 +699,17 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
             </span>
           </button>
           <button
-            onClick={() => setTab("hooks")}
+            onClick={() => setTab("connectors")}
             className={cn(
               "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-              tab === "hooks" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
+              tab === "connectors" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
             )}
           >
             <span className="flex items-center gap-1.5">
-              <Webhook className="h-3.5 w-3.5" strokeWidth={1} />
-              Hooks
+              <Blocks className="h-3.5 w-3.5" strokeWidth={1} />
+              Connectors
             </span>
           </button>
-
           <button
             onClick={() => setTab("skills")}
             className={cn(
@@ -586,20 +734,18 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
               Commands
             </span>
           </button>
-
           <button
-            onClick={() => setTab("connectors")}
+            onClick={() => setTab("hooks")}
             className={cn(
               "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-              tab === "connectors" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
+              tab === "hooks" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
             )}
           >
             <span className="flex items-center gap-1.5">
-              <Blocks className="h-3.5 w-3.5" strokeWidth={1} />
-              Connectors
+              <Webhook className="h-3.5 w-3.5" strokeWidth={1} />
+              Hooks
             </span>
           </button>
-          
           <button
             onClick={() => setTab("rules")}
             className={cn(
@@ -624,122 +770,128 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
               MCP
             </span>
           </button>
+          <button
+            onClick={() => setTab("context")}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              tab === "context" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
+            )}
+          >
+            <span className="flex items-center gap-1.5">
+              <FileText className="h-3.5 w-3.5" strokeWidth={1} />
+              Context
+            </span>
+          </button>
+          <button
+            onClick={() => setTab("wiki")}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              tab === "wiki" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
+            )}
+          >
+            <span className="flex items-center gap-1.5">
+              <BookText className="h-3.5 w-3.5" strokeWidth={1} />
+              Wiki
+            </span>
+          </button>
+          <button
+            onClick={() => setTab("memory")}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              tab === "memory" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
+            )}
+          >
+            <span className="flex items-center gap-1.5">
+              <Brain className="h-3.5 w-3.5" strokeWidth={1} />
+              Memory
+            </span>
+          </button>
+          <button
+            onClick={() => setTab("sessions")}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+              tab === "sessions" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
+            )}
+          >
+            <span className="flex items-center gap-1.5">
+              <GalleryVerticalEnd className="h-3.5 w-3.5" strokeWidth={1} />
+              Sessions
+            </span>
+          </button>
         </div>
 
-                <div className="ml-auto flex items-center gap-2">
-{tab === "commands" && scope?.type === "project" && (
-            <Button size="sm" className="h-7 gap-1" onClick={() => setAddCommandOpen({ name: "", slash: "", description: "", content: "", isNew: true })}>
-              <Plus className="h-3.5 w-3.5" />
-              Add command
-            </Button>
-          )}
-          {tab === "rules" && scope?.type === "project" && (
-            <Button size="sm" className="h-7 gap-1" onClick={() => setAddRuleOpen({ slug: "", name: "", description: "", content: "", alwaysApply: true, isNew: true })}>
-              <Plus className="h-3.5 w-3.5" />
-              Add rule
-            </Button>
-          )}
-          {showPointer && (
-            <div className="flex items-center gap-1.5 text-xs text-primary animate-pulse mr-1">
-              <span className="font-medium">Select a project</span>
-              <ArrowRight className="h-3.5 w-3.5" />
-            </div>
-          )}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-7 font-normal gap-2 px-2.5">
-                {scope.type === "account" ? (
-                  <>
-                    <UserCog className="h-4 w-4 text-muted-foreground" />
-                    Account
-                  </>
-                ) : scope.type === "org" ? (
-                  <>
-                    <Building2 className="h-4 w-4 text-muted-foreground" />
-                    {orgName(scope.id)}
-                  </>
-                ) : (
-                  <>
-                    <FolderClosed className="h-4 w-4 text-muted-foreground" />
-                    {wsName(scope.id)}
-                  </>
-                )}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuItem onClick={() => { setScope({ type: "account", id: "account" }); navigate({ to: "/customize", search: { ws: undefined }, replace: true }); }} className="justify-between font-medium">
-                <span className="flex items-center gap-2">
-                  <UserCog className="h-4 w-4 text-muted-foreground" />
-                  Account (machine)
-                </span>
-                {scope.type === "account" && <Check className="h-4 w-4" />}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              {organizations.map((o) => {
-                const orgWorkspaces = workspaces.filter((w) => w.organization_id === o.id);
-                return (
-                  <DropdownMenuGroup key={o.id}>
-                    <div className="px-2 py-1 text-[10px] font-semibold uppercase text-muted-foreground">
-                      Organization
-                    </div>
-                    <DropdownMenuItem
-                      onClick={() => { setScope({ type: "org", id: String(o.id) }); navigate({ to: "/customize", search: { ws: undefined }, replace: true }); }}
-                      className="justify-between font-medium"
-                    >
-                      <span className="flex items-center gap-2">
-                        <Building2 className="h-4 w-4 text-muted-foreground" />
-                        {o.name} (Org)
-                      </span>
-                      {scope.type === "org" && scope.id === String(o.id) && <Check className="h-4 w-4" />}
-                    </DropdownMenuItem>
-
-                    {orgWorkspaces.length > 0 && (
-                      <>
-                        <div className="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase text-muted-foreground">
-                          Projects
-                        </div>
-                        {orgWorkspaces.map((w) => (
-                          <DropdownMenuItem
-                            key={w.id}
-                            onClick={() => { setScope({ type: "project", id: String(w.id) }); navigate({ to: "/customize", search: { ws: w.id }, replace: true }); }}
-                            className="pl-4 justify-between"
-                          >
-                            <span className="flex items-center gap-2">
-                              <FolderClosed className="h-3.5 w-3.5 text-muted-foreground" />
-                              {w.name}
-                            </span>
-                            {scope.type === "project" && scope.id === String(w.id) && <Check className="h-4 w-4" />}
-                          </DropdownMenuItem>
-                        ))}
-                      </>
-                    )}
-                    <DropdownMenuSeparator />
-                  </DropdownMenuGroup>
-                );
-              })}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+        {portalNode ? (
+          createPortal(topbarActions, portalNode)
+        ) : (
+          <div className="ml-auto flex items-center gap-2">
+            {topbarActions}
+          </div>
+        )}
       </div>
 
       {/* ── Rules tab ────────────────────────────────────────────────────────── */}
-      {tab === "rules" && (
-        <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-          {scope && scope.type === "project" ? (
-             <RulesView workspaceId={Number(scope.id)} />
+      <div className={cn("min-h-0 flex-1 flex-col overflow-hidden", tab === "rules" ? "flex" : "hidden")}>
+        {scope && scope.type === "project" ? (
+             <RulesView workspaceId={scope.localWorkspaceId ?? 0} />
           ) : (
              <div className="flex flex-col items-center justify-center py-16 text-center px-5">
                <ScrollText className="h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
                <p className="mt-3 text-sm text-muted-foreground">Select a project to manage rules.</p>
              </div>
           )}
-        </div>
-      )}
+      </div>
+
+      {/* ── Context tab ──────────────────────────────────────────────────────── */}
+      <div className={cn("min-h-0 flex-1 flex-col overflow-hidden", tab === "context" ? "flex" : "hidden")}>
+        {scope && scope.type === "project" ? (
+             <ContextView workspaceId={scope.localWorkspaceId ?? 0} />
+          ) : (
+             <div className="flex flex-col items-center justify-center py-16 text-center px-5">
+               <FileText className="h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
+               <p className="mt-3 text-sm text-muted-foreground">Select a project to manage context files.</p>
+             </div>
+          )}
+      </div>
+
+      {/* ── Wiki tab ─────────────────────────────────────────────────────────── */}
+      <div className={cn("min-h-0 flex-1 flex-col overflow-hidden", tab === "wiki" ? "flex" : "hidden")}>
+        {scope && scope.type === "project" ? (
+             <WikiView workspaceId={scope.localWorkspaceId ?? 0} />
+          ) : (
+             <div className="flex flex-col items-center justify-center py-16 text-center px-5">
+               <BookText className="h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
+               <p className="mt-3 text-sm text-muted-foreground">Select a project to manage wiki pages.</p>
+             </div>
+          )}
+      </div>
+
+      {/* ── Memory tab ───────────────────────────────────────────────────────── */}
+      <div className={cn("min-h-0 flex-1 flex-col overflow-hidden", tab === "memory" ? "flex" : "hidden")}>
+        {scope && scope.type === "project" ? (
+             <MemoryView workspaceId={scope.localWorkspaceId ?? 0} />
+          ) : (
+             <div className="flex flex-col items-center justify-center py-16 text-center px-5">
+               <Brain className="h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
+               <p className="mt-3 text-sm text-muted-foreground">Select a project to manage memory.</p>
+             </div>
+          )}
+      </div>
+
+      {/* ── Sessions tab ─────────────────────────────────────────────────────── */}
+      <div className={cn("min-h-0 flex-1 flex-col overflow-hidden", tab === "sessions" ? "flex" : "hidden")}>
+        {scope && scope.type === "project" ? (
+             <ProjectSessionsView workspaceId={scope.localWorkspaceId ?? 0} />
+          ) : (
+             <div className="flex flex-col items-center justify-center py-16 text-center px-5">
+               <GalleryVerticalEnd className="h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
+               <p className="mt-3 text-sm text-muted-foreground">Select a project to view saved sessions.</p>
+             </div>
+          )}
+      </div>
 
       {/* ── Plugins tab ──────────────────────────────────────────────────────── */}
-      {tab === "plugins" && (
-        <div className="flex flex-col min-h-0 flex-1">
-          <ScrollArea className="min-h-0 flex-1">
+      <div className={cn("flex-col min-h-0 flex-1", tab === "plugins" ? "flex" : "hidden")}>
+        <ScrollArea className="min-h-0 flex-1">
           <div className="flex flex-col gap-3 px-5 py-4">
             {/* Search + category row */}
             <div className="flex items-center gap-2">
@@ -817,7 +969,7 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
                   <PluginRow
                     key={p.id}
                     plugin={p}
-                    wsName={scope ? wsName(scope.id) : ""}
+                    wsName={scope ? wsName(scope.localWorkspaceId) : ""}
                     scope={scope}
                     onInstall={() => handleInstall(p.id)}
                     onUninstall={() => handleUninstall(p.id)}
@@ -865,10 +1017,9 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
             </div>
           </div>
         </div>
-      )}
 
       {/* ── Hooks tab ────────────────────────────────────────────────────────── */}
-      {tab === "hooks" && (
+      <div className={cn("min-h-0 flex-1 flex-col overflow-hidden", tab === "hooks" ? "flex" : "hidden")}>
         <ScrollArea className="min-h-0 flex-1">
           <div className="flex flex-col gap-2 px-5 py-4">
             {/* No workspace */}
@@ -898,25 +1049,25 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
             ))}
           </div>
         </ScrollArea>
-      )}
+      </div>
 
-      {tab === "skills" && (
-        <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-          {scope && scope.type === "project" ? (
-             <SkillsView workspaceId={Number(scope.id)} />
+      {/* ── Skills tab ────────────────────────────────────────────────────────── */}
+      <div className={cn("min-h-0 flex-1 flex-col overflow-hidden", tab === "skills" ? "flex" : "hidden")}>
+        {scope && scope.type === "project" ? (
+             <SkillsView workspaceId={scope.localWorkspaceId ?? 0} />
           ) : (
              <div className="flex flex-col items-center justify-center py-16 text-center px-5">
                <ScrollText className="h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
                <p className="mt-3 text-sm text-muted-foreground">Select a project to manage skills.</p>
              </div>
           )}
-        </div>
-      )}
+      </div>
       
-      {tab === "commands" && (
+      {/* ── Commands tab ──────────────────────────────────────────────────────── */}
+      <div className={cn("min-h-0 flex-1 flex-col overflow-hidden", tab === "commands" ? "flex" : "hidden")}>
         <ScrollArea className="min-h-0 flex-1">
           {scope && scope.type === "project" ? (
-             <CommandsView workspaceId={Number(scope.id)} />
+             <CommandsView workspaceId={scope.localWorkspaceId ?? 0} />
           ) : (
              <div className="flex flex-col items-center justify-center py-16 text-center px-5">
                <SquareSlash className="h-8 w-8 text-muted-foreground/40" strokeWidth={1} />
@@ -924,9 +1075,10 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
              </div>
           )}
         </ScrollArea>
-      )}
+      </div>
 
-      {tab === "connectors" && (
+      {/* ── Connectors tab ────────────────────────────────────────────────────── */}
+      <div className={cn("min-h-0 flex-1 flex-col overflow-hidden", tab === "connectors" ? "flex" : "hidden")}>
         <ScrollArea className="min-h-0 flex-1">
           {scope ? (
              <div className="px-5 py-4">
@@ -939,11 +1091,10 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
              </div>
           )}
         </ScrollArea>
-      )}
-
+      </div>
 
       {/* ── MCP tab ──────────────────────────────────────────────────────────── */}
-      {tab === "mcp" && (
+      <div className={cn("min-h-0 flex-1 flex-col overflow-hidden", tab === "mcp" ? "flex" : "hidden")}>
         <ScrollArea className="min-h-0 flex-1">
           <div className="flex flex-col gap-2 px-5 py-4">
             <div className="rounded-xl border bg-card overflow-hidden">
@@ -973,16 +1124,16 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
             </div>
           </div>
         </ScrollArea>
-      )}
+      </div>
 
       {/* ── Hook editor modal ─────────────────────────────────────────────────── */}
       {editingHook && scope && (
         <HookEditor
-          workspaceId={Number(scope.id)}
+          workspaceId={scope.localWorkspaceId ?? 0}
           hookType={editingHook}
           initial={editingHookFile?.content ?? ""}
           onClose={() => setEditingHook(null)}
-          onSaved={() => loadHooks(scope.type, scope.id)}
+          onSaved={() => loadHooks(scope.type, scope.localWorkspaceId)}
         />
       )}
 
@@ -990,12 +1141,12 @@ export function CustomizePage({ initialWorkspaceId }: { initialWorkspaceId?: num
       {scope && scope.type === "project" && (
         <>
           <CommandEditorDialog 
-            workspaceId={Number(scope.id)} 
+            workspaceId={scope.localWorkspaceId ?? 0} 
             editing={addCommandOpen} 
             setEditing={setAddCommandOpen} 
           />
           <RuleEditorDialog 
-            workspaceId={Number(scope.id)} 
+            workspaceId={scope.localWorkspaceId ?? 0} 
             editing={addRuleOpen} 
             setEditing={setAddRuleOpen} 
           />

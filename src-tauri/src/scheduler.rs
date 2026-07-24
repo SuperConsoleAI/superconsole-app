@@ -1,3 +1,11 @@
+// Scheduler — 30-second tick loop + headless job execution.
+//
+// Architecture: SQLite is the source of truth for due jobs (computed on each tick),
+// so edits apply instantly and missed runs fire on the next tick after wake.
+// Loop jobs (exit_condition IS NOT NULL) retry up to max_attempts times, scheduling
+// a 30-second retry on each failure. The hard cap prevents infinite loops.
+// Decrypted credentials NEVER leave memory (injected per-session, never written).
+
 use crate::db::{Db, Job, Workspace};
 use chrono::{Local, Utc};
 use cron::Schedule;
@@ -41,6 +49,100 @@ fn job_command(cli: &str, prompt: &str) -> (String, Vec<String>) {
         "antigravity" => ("agy".into(), vec![prompt.into()]),
         "codex" => ("codex".into(), vec!["exec".into(), prompt.into()]),
         other => (other.to_string(), vec![prompt.to_string()]),
+    }
+}
+
+// ── Exit condition evaluator ──────────────────────────────────────────────────
+//
+// Called after each job run. Returns true = condition met (done), false = retry.
+// Supported types:
+//   command       — run a shell command in workspace dir, check exit code
+//   inbox_approved — check if a specific inbox item has been approved
+//   llm_score     — ask LLM to score output; pass if score >= threshold
+//   contains      — check if output contains a string
+//   file_exists   — check if a file was created by the agent
+//
+// Unknown type returns true (safe default — don't loop forever on a typo).
+
+pub async fn check_exit_condition(
+    condition: &serde_json::Value,
+    output: &str,
+    workspace_path: &str,
+    inbox_item_id: Option<i64>,
+    db: &Db,
+    app: &AppHandle,
+    workspace_id: i64,
+) -> bool {
+    match condition["type"].as_str().unwrap_or("") {
+        "command" => {
+            let cmd = condition["command"].as_str().unwrap_or("true");
+            let status = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(cmd)
+                .current_dir(workspace_path)
+                .env("PATH", crate::pty::enriched_path())
+                .status();
+            match status {
+                Ok(s) => s.success(),
+                Err(e) => {
+                    eprintln!("Loop: exit condition command error: {}", e);
+                    false
+                }
+            }
+        }
+
+        "inbox_approved" => {
+            if let Some(id) = inbox_item_id {
+                db.get_inbox_status(id).map(|s| s == "approved").unwrap_or(false)
+            } else {
+                false
+            }
+        }
+
+        "llm_score" => {
+            let threshold = condition["threshold"].as_f64().unwrap_or(4.0);
+            let max_score = condition["max"].as_f64().unwrap_or(5.0) as i64;
+            let prompt = condition["prompt"]
+                .as_str()
+                .unwrap_or("Rate this output 1-5 for quality.");
+            let score_prompt = format!(
+                "{}\n\nOutput to rate:\n{}\n\nReply with ONLY a number from 1 to {}.",
+                prompt,
+                &output[..output.len().min(2000)],
+                max_score
+            );
+            // Use the workspace's default provider/model for scoring.
+            let db_ref = app.state::<Db>();
+            let (provider, model) = match db_ref.get_workspace(workspace_id) {
+                Ok(ws) => (ws.default_provider.clone(), ws.default_model.clone()),
+                Err(_) => ("anthropic".to_string(), "claude-haiku-4-5".to_string()),
+            };
+            let model = if model.is_empty() { "claude-haiku-4-5".to_string() } else { model };
+            let system = "You are a quality scorer. Reply with only a number.";
+            match crate::llm::one_shot_completion(app, workspace_id, &provider, &model, system, &score_prompt).await {
+                Ok(s) => s.trim().parse::<f64>().map(|n| n >= threshold).unwrap_or(false),
+                Err(e) => {
+                    eprintln!("Loop: llm_score error: {}", e);
+                    false
+                }
+            }
+        }
+
+        "contains" => {
+            let text = condition["text"].as_str().unwrap_or("");
+            output.contains(text)
+        }
+
+        "file_exists" => {
+            let rel = condition["path"].as_str().unwrap_or("");
+            let full = format!("{}/{}", workspace_path, rel);
+            std::path::Path::new(&full).exists()
+        }
+
+        _ => {
+            eprintln!("Loop: unknown exit condition type — treating as met");
+            true
+        }
     }
 }
 
@@ -237,42 +339,106 @@ async fn run_and_record(
         }
     };
 
-    let title = format!("{} — {}", ws.name, title_suffix);
+    // ── Tag session history row ───────────────────────────────────────────────
     {
         let db = app.state::<Db>();
-        db.add_inbox_item(workspace_id, job_id, &title, &body)?;
-        // Tag the most-recent session_history row from this session with agent_name.
-        // exec_in_workspace runs headless (no PTY), so we log a synthetic entry here.
         if let Some(aname) = agent_name {
             let session_id = format!("agent-{}-{}", aname, chrono::Utc::now().timestamp_millis());
             let _ = db.log_session(workspace_id, &session_id, "cli", job_id, Some(aname));
         }
     }
 
-    let _ = app.emit(
-        "inbox-new",
-        InboxNew {
-            workspace_id,
-            title: title.clone(),
-        },
-    );
+    let title = format!("{} — {}", ws.name, title_suffix);
 
-    crate::remote::notify_telegram(app, &format!("{}\n\n{}", title, body)).await;
-    // Also notify the project-specific Telegram topic if configured.
-    {
+    // ── Loop system: handle exit condition / retries ──────────────────────────
+    //
+    // If the job has no exit_condition this is a simple run-once and we write
+    // to inbox + telegram immediately (existing behavior, unchanged).
+    //
+    // If there IS an exit_condition:
+    //   1. For inbox_approved: send to inbox first so the human can review.
+    //   2. Evaluate condition.
+    //   3. Condition met → reset attempt counter, telegram notify.
+    //   4. Max attempts hit → write ⚠️ failure to inbox, reset, NO telegram spam.
+    //   5. Still looping → schedule retry in 30s (one scheduler tick).
+
+    let exit_condition: Option<serde_json::Value> = job_id
+        .and_then(|jid| app.state::<Db>().get_job(jid).ok())
+        .and_then(|j| j.exit_condition)
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    if let Some(condition) = exit_condition {
         let db = app.state::<Db>();
-        if let Some((token, chat_id, thread_id)) =
-            crate::remote::get_telegram_route_for_workspace(&db, workspace_id)
-        {
-            let client = reqwest::Client::new();
-            crate::remote::notify_telegram_topic(
-                &client, &token, &chat_id, &thread_id,
-                &format!("{}\n\n{}", title, body),
-            )
-            .await;
+        let job = db.get_job(job_id.unwrap())?;
+        let max = job.max_attempts.max(1);
+        let attempt = job.current_attempt + 1;
+
+        db.set_job_attempt(job.id, attempt)?;
+
+        // For inbox_approved: send to inbox FIRST so the human can approve or reject.
+        let inbox_item_id = if condition["type"] == "inbox_approved" {
+            Some(db.add_inbox_item(workspace_id, job_id, &title, &body)?)
+        } else {
+            None
+        };
+
+        let _ = app.emit("inbox-new", InboxNew { workspace_id, title: title.clone() });
+
+        let condition_met = check_exit_condition(
+            &condition, &body, &ws.path, inbox_item_id, &db, app, workspace_id,
+        ).await;
+
+        if condition_met {
+            // Done — write to inbox (skip if inbox_approved already wrote it).
+            if inbox_item_id.is_none() {
+                db.add_inbox_item(workspace_id, job_id, &title, &body)?;
+                let _ = app.emit("inbox-new", InboxNew { workspace_id, title: title.clone() });
+            }
+            db.reset_job_attempt(job.id)?;
+            notify_and_telegram(app, ws, &title, &body).await;
+        } else if attempt >= max {
+            // Exhausted — write ⚠️ failure, reset, don't retry.
+            let failed_output = format!(
+                "⚠️ Max attempts ({}) reached without meeting exit condition.\n\nLast output:\n{}",
+                max, body
+            );
+            db.add_inbox_item(workspace_id, job_id, &title, &failed_output)?;
+            let _ = app.emit("inbox-new", InboxNew { workspace_id, title: title.clone() });
+            db.reset_job_attempt(job.id)?;
+            eprintln!("Loop: job {} gave up after {} attempts", job.id, max);
+        } else {
+            // Condition not met, attempts remaining — retry in 30s.
+            db.set_job_next_run_relative(job.id, 30)?;
+            eprintln!(
+                "Loop: job {} attempt {}/{} failed condition, retrying in 30s",
+                job.id, attempt, max
+            );
         }
+    } else {
+        // No exit condition — run-once behavior (existing, unchanged).
+        let db = app.state::<Db>();
+        db.add_inbox_item(workspace_id, job_id, &title, &body)?;
+        let _ = app.emit("inbox-new", InboxNew { workspace_id, title: title.clone() });
+        notify_and_telegram(app, ws, &title, &body).await;
     }
+
     Ok(body)
+}
+
+/// Send global + project-scoped Telegram notifications.
+async fn notify_and_telegram(app: &AppHandle, ws: &Workspace, title: &str, body: &str) {
+    crate::remote::notify_telegram(app, &format!("{}\n\n{}", title, body)).await;
+    let db = app.state::<Db>();
+    if let Some((token, chat_id, thread_id)) =
+        crate::remote::get_telegram_route_for_workspace(&db, ws.id)
+    {
+        let client = reqwest::Client::new();
+        crate::remote::notify_telegram_topic(
+            &client, &token, &chat_id, &thread_id,
+            &format!("{}\n\n{}", title, body),
+        )
+        .await;
+    }
 }
 
 pub async fn run_job(app: &AppHandle, job: Job) -> Result<(), String> {
@@ -285,19 +451,34 @@ pub async fn run_job(app: &AppHandle, job: Job) -> Result<(), String> {
         let db = app.state::<Db>();
         db.finalize_job_cost(job.id, &session_id);
     }
-    let next = next_run(&job.schedule).ok();
+    // Only advance next_run for jobs NOT currently in a retry loop.
+    // Loop retries have already set next_run via set_job_next_run_relative.
     let db = app.state::<Db>();
-    db.mark_job_ran(job.id, &now_utc(), next.as_deref())?;
+    let refreshed = db.get_job(job.id).ok();
+    let still_looping = refreshed
+        .as_ref()
+        .map(|j| j.current_attempt > 0)
+        .unwrap_or(false);
+    if !still_looping {
+        let next = next_run(&job.schedule).ok();
+        db.mark_job_ran(job.id, &now_utc(), next.as_deref())?;
+    }
     Ok(())
 }
 
 /// Tick loop instead of an in-memory cron scheduler: due jobs are computed
 /// from SQLite on every tick, so edits apply instantly and runs missed
 /// during sleep fire on the next tick after wake.
+///
+/// Also runs check_email_triggers on every tick (same 30s cadence).
+/// The Telegram long-poll lives in its own independent spawned task
+/// (remote::spawn_telegram) and is completely unaffected.
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
+
+            // ── Due cron/manual/api/github jobs ──────────────────────────────
             let due = {
                 let db = app.state::<Db>();
                 db.due_jobs(&now_utc()).unwrap_or_default()
@@ -310,6 +491,10 @@ pub fn spawn(app: AppHandle) {
                     let _ = db.mark_job_ran(job_id, &now_utc(), None);
                 }
             }
+
+            // ── Email-triggered jobs (polling, 30s cadence) ──────────────────
+            // Runs alongside the jobs runner; independent of Telegram long-poll.
+            crate::remote::check_email_triggers(&app).await;
         }
     });
 }

@@ -7,6 +7,8 @@ import {
   deleteConnector,
   listConnectors,
   setConnector,
+  testConnectorCredentials,
+  type ConnectorTestResult,
   type ConnectorView,
 } from "./server/connectors";
 import {
@@ -46,6 +48,14 @@ const removeConnector = createServerFn({ method: "POST" })
     await deleteConnector(user, data.scope, data.scopeId, data.service);
   });
 
+const runTestConnector = createServerFn({ method: "POST" })
+  .validator((d: { service: string; credentials: Record<string, string> }) => d)
+  .handler(async ({ data }): Promise<ConnectorTestResult> => {
+    const user = await getSessionUser();
+    if (!user) throw redirect({ to: "/login" });
+    return testConnectorCredentials(data.service, data.credentials);
+  });
+
 export function ConnectorManager({
   scope,
   scopeId,
@@ -66,6 +76,9 @@ export function ConnectorManager({
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<ConnectorTestResult | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [tested, setTested] = useState(false);
 
   const def = CONNECTOR_REGISTRY.find((d) => d.id === service);
   const current = list.find((c) => c.service === service);
@@ -91,7 +104,15 @@ export function ConnectorManager({
       next[f.key] = !f.secret && ev?.value ? ev.value : "";
     }
     setValues(next);
+    // Reset test when switching service
+    setTestResult(null);
+    setTested(false);
   }, [service, list, def]);
+
+  const resetTest = () => {
+    setTestResult(null);
+    setTested(false);
+  };
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -106,10 +127,27 @@ export function ConnectorManager({
     }
   };
 
+  const handleTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    setError(null);
+    try {
+      const result = await runTestConnector({ data: { service, credentials: values } });
+      setTestResult(result);
+      setTested(true);
+    } catch (e) {
+      setTestResult({ success: false, message: errorText(e) });
+      setTested(true);
+    } finally {
+      setTesting(false);
+    }
+  };
+
   const labelFor = (svc: string) =>
     CONNECTOR_REGISTRY.find((d) => d.id === svc)?.label ?? svc;
 
   const shown = list.filter((c) => inCategory(c.service));
+  const hasRequiredFields = Object.values(values).some((v) => v.trim().length > 0);
 
   return (
     <>
@@ -179,9 +217,10 @@ export function ConnectorManager({
                 className="input mono"
                 type={f.secret ? "password" : "text"}
                 value={values[f.key] ?? ""}
-                onChange={(e) =>
-                  setValues((v) => ({ ...v, [f.key]: e.target.value }))
-                }
+                onChange={(e) => {
+                  setValues((v) => ({ ...v, [f.key]: e.target.value }));
+                  resetTest();
+                }}
                 placeholder={
                   f.secret && fieldSet
                     ? `${f.label} •••• set (leave blank to keep)`
@@ -190,17 +229,67 @@ export function ConnectorManager({
               />
             );
           })}
-          <div className="row end">
+
+          {/* Test connection button */}
+          <button
+            className="btn ghost"
+            style={{ width: "100%", marginTop: 4 }}
+            disabled={testing || !hasRequiredFields}
+            onClick={handleTest}
+          >
+            {testing ? "Testing…" : "Test connection"}
+          </button>
+
+          {/* Test result banner */}
+          {testResult && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 6,
+                borderRadius: 6,
+                padding: "6px 8px",
+                fontSize: 12,
+                marginTop: 4,
+                border: `1px solid ${testResult.success ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`,
+                background: testResult.success
+                  ? "rgba(16,185,129,0.08)"
+                  : "rgba(239,68,68,0.08)",
+                color: testResult.success ? "var(--emerald, #10b981)" : "var(--warn, #ef4444)",
+              }}
+            >
+              <span>{testResult.success ? "✓" : "✗"}</span>
+              <span>
+                {testResult.message}
+                {testResult.details && (
+                  <span style={{ opacity: 0.7, display: "block", marginTop: 2 }}>
+                    {testResult.details}
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+
+          <div className="row end" style={{ marginTop: 8 }}>
             <button
               className="btn"
               disabled={busy}
+              style={
+                tested && !testResult?.success
+                  ? { border: "1px solid #f59e0b" }
+                  : undefined
+              }
               onClick={() =>
                 run(() =>
                   saveConnector({ data: { scope, scopeId, service, fields: values } }),
                 )
               }
             >
-              {busy ? "Saving..." : "Save"}
+              {busy
+                ? "Saving..."
+                : tested && !testResult?.success
+                  ? "Save anyway"
+                  : "Save"}
             </button>
           </div>
         </div>

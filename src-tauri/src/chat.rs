@@ -102,33 +102,45 @@ fn estimate_tokens(text: &str) -> u64 {
     (text.len() as u64) / 4
 }
 
-/// Summarize the oldest 50% of messages and return:
-/// [summary_system_msg] + [newest 50%]
+/// 3-layer chat compaction:
+///   Layer 1 — identify oldest 50% of user/assistant/tool messages (never touch system/harness)
+///   Layer 2 — LLM produces a structured markdown summary, written as an append-only session log
+///             file at .superconsole/sessions/<session_id>.md
+///   Layer 3 — replace pruned messages with a single user-role context message (NOT system,
+///             which is the SuperConsole harness — never overwrite it)
 async fn compact_messages(
     messages: Vec<ChatMsg>,
     provider: &str,
     model: &str,
     app: &AppHandle,
     workspace_id: i64,
+    session_id: &str,
+    workspace_path: &str,
 ) -> Result<Vec<ChatMsg>, String> {
     if messages.len() < 4 {
         return Ok(messages);
     }
 
     let split_at = messages.len() / 2;
-    let to_summarize = &messages[..split_at];
-    let to_keep = &messages[split_at..];
+    let to_prune = &messages[..split_at];
+    let to_keep  = &messages[split_at..];
 
-    let history_text = to_summarize
+    // Layer 1: collect messages to prune (skip system — that's the SuperConsole harness)
+    let history_text = to_prune
         .iter()
-        .map(|m| format!("{}: {}", m.role, &m.content[..m.content.len().min(500)]))
+        .filter(|m| m.role != "system")
+        .map(|m| format!("{}: {}", m.role, &m.content[..m.content.len().min(300)]))
         .collect::<Vec<_>>()
         .join("\n");
 
+    // Layer 2: structured summary (not a raw dump)
     let summary_prompt = format!(
-        "Summarize this conversation history concisely in 3-5 bullet points. \
-         Preserve key decisions, facts, code snippets, and context needed for continuation. \
-         Be specific, not generic:\n\n{}",
+        "Summarize this conversation in structured markdown. Include:\n\
+         - What was being worked on (1-2 sentences)\n\
+         - Key decisions made (bullet list)\n\
+         - Current state / outcome\n\
+         Be specific. Use real names, file paths, values from the conversation.\n\n\
+         Conversation:\n{}",
         history_text
     );
 
@@ -137,15 +149,52 @@ async fn compact_messages(
         workspace_id,
         provider,
         model,
-        "You are a conversation summarizer. Be concise and specific.",
+        "You summarize conversations into structured markdown. Be specific, not generic.",
         &summary_prompt,
     )
     .await
-    .unwrap_or_else(|_| "(summary unavailable)".to_string());
+    .unwrap_or_else(|_| "Earlier conversation context omitted.".to_string());
 
+    // Layer 2 (cont.): write structured summary to session log file (append-only)
+    let sessions_dir = format!("{}/.superconsole/sessions", workspace_path);
+    std::fs::create_dir_all(&sessions_dir).ok();
+    let session_log_path = format!("{}/{}.md", sessions_dir, session_id);
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
+    let existing = std::fs::read_to_string(&session_log_path).unwrap_or_default();
+    let header = if existing.is_empty() {
+        format!(
+            "# Session Log\n\nSession: `{}`  \nStarted: {}\n\n---\n",
+            session_id,
+            chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+        )
+    } else {
+        String::new()
+    };
+    let log_entry = format!("\n\n## Compacted at {}\n\n{}\n\n---", timestamp, summary);
+    // Never fail compaction because of log write failure
+    std::fs::write(&session_log_path, format!("{}{}{}", existing, header, log_entry)).ok();
+
+    // Upsert session log metadata so it's discoverable in SessionsView + autocomplete
+    {
+        let db = app.state::<crate::db::Db>();
+        let _ = db.upsert_session_log(
+            session_id,
+            workspace_id,
+            &session_log_path,
+            &format!("Chat compaction at {}", timestamp),
+        );
+    }
+
+    // Layer 3: replace pruned messages with ONE user message (NOT system)
+    // system message = SuperConsole harness (build_system_prompt) — never touch it
+    // user message   = conversation history — safe to insert summary context here
     let mut compacted = vec![ChatMsg {
-        role: "system".to_string(),
-        content: format!("## Earlier conversation summary\n{}", summary),
+        role: "user".to_string(),
+        content: format!(
+            "[Context from earlier in this conversation]\n\n{}\n\n\
+             [Full log: .superconsole/sessions/{}.md]",
+            summary, session_id
+        ),
     }];
     compacted.extend_from_slice(to_keep);
     Ok(compacted)
@@ -305,7 +354,13 @@ pub async fn chat_send(
             let original_count = messages.len();
             // Clone so we can fall back if compaction fails
             let fallback = messages.clone();
-            match compact_messages(messages, &provider, &model, &app, workspace_id).await {
+            match compact_messages(messages, &provider, &model, &app, workspace_id,
+                "auto", // auto-compact during chat_send has no canonical session_id
+                &{
+                    let db = app.state::<crate::db::Db>();
+                    db.get_workspace(workspace_id).map(|w| w.path).unwrap_or_default()
+                },
+            ).await {
                 Ok(compacted) => {
                     let after = compacted.len();
                     let _ = app.emit(
@@ -1029,7 +1084,7 @@ fn finalize(tools: std::collections::BTreeMap<i64, (String, String, String)>) ->
 
 /// Manual compaction command — called when the user types `/compact` in the chat input.
 /// Loads the full session history, compacts it using the workspace's configured provider/model,
-/// persists the result, and returns before/after counts.
+/// persists the result, writes a structured session log file, and returns before/after counts.
 #[tauri::command]
 pub async fn compact_chat_session(
     app: AppHandle,
@@ -1038,8 +1093,14 @@ pub async fn compact_chat_session(
     provider: String,
     model: String,
 ) -> Result<CompactResult, String> {
-    let db = app.state::<crate::db::Db>();
-    let messages = db.list_chat_messages(&session_id)?;
+    let (messages, workspace_path) = {
+        let db = app.state::<crate::db::Db>();
+        let messages = db.list_chat_messages(&session_id)?;
+        let path = db.get_workspace(workspace_id)
+            .map(|w| w.path)
+            .unwrap_or_default();
+        (messages, path)
+    };
     let messages_before = messages.len();
 
     // Convert DB ChatMessage -> ChatMsg (the streaming type used by compact_messages)
@@ -1060,10 +1121,16 @@ pub async fn compact_chat_session(
         _ => model.clone(),
     };
 
-    let compacted = compact_messages(chat_msgs, &provider, &bare_model, &app, workspace_id).await?;
+    let compacted = compact_messages(
+        chat_msgs, &provider, &bare_model, &app, workspace_id,
+        &session_id, &workspace_path,
+    ).await?;
     let messages_after = compacted.len();
 
-    db.replace_chat_messages_with_compacted(&session_id, &compacted)?;
+    {
+        let db = app.state::<crate::db::Db>();
+        db.replace_chat_messages_with_compacted(&session_id, &compacted)?;
+    }
 
     Ok(CompactResult { messages_before, messages_after })
 }

@@ -22,8 +22,9 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
                             ├─► cloud.rs      Turso HTTP exec helper (turso_execute / rows / cell_*)
                             ├─► crypto.rs     AES-256-GCM (HKDF from WORKOS_COOKIE_PASSWORD); key cached in keychain
                             ├─► sync_manager.rs  pulls Turso config → local *_cache (startup/manual/org-switch/30min); also syncs global catalogs (plugins, connector_catalog, mcp_catalog, commands_catalog, hooks_catalog) best-effort on every sync
+                            ├─► git.rs        shell-based Git operations via `tokio::task::spawn_blocking` (no UI blocking)
                             ├─► llm.rs        LLM key CRUD (project>org>account) + session_env + chat adapters + one_shot
-                            ├─► chat.rs       native chat: streams provider tokens (incl. OpenRouter) + native tool loop; cancellable; reasoning effort; chat-done carries usage + cost
+                            ├─► chat.rs       native chat: streams provider tokens (incl. OpenRouter) + native tool loop; cancellable; reasoning effort; chat-done carries usage + cost; auto-compacts history (summarizes oldest 50%) when context >70% full; emits chat-compacted event
                             ├─► context.rs    on-demand project context files (scan/read/search) → context_* MCP tools
                             ├─► commands.rs   cross-CLI + global slash command discovery/expansion
                             ├─► mcp.rs        in-process tool layer (+ web_search tool) + write_mcp_config (Claude/Droid auto-wire + pre-approve)
@@ -36,13 +37,13 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
 ```
 
 - UI never touches disk/processes/cloud directly; everything goes through `invoke()` commands.
+- **Web portal** (`superconsole-web/`): A Cloudflare Workers (TanStack Start, React 19, Tailwind v4, shadcn/ui) surface acting directly against the exact same Turso DB. Code is entirely separate from the Tauri app but shares the same Drizzle schema. It implements the WorkOS OAuth callback flow, syncs organizations + memberships into Turso, and serves as the team management / cloud config dashboard. Note: the web portal manages the *metadata* (which connectors are authorized, which APIs exist); the local app reads that metadata and makes the actual API calls from the user's secure perimeter.
 - PTY output streams via Tauri events (`pty-output` with `session_id`), filtered per terminal in the frontend; `session-usage` is emitted on exit (screen-scraped tokens + est. cost) for the footer. Chat streams via `chat-token`/`chat-done`/`chat-error`, where `chat-done` carries `tokens_prompt`/`tokens_completion`/`cost_usd` (cost prefers OpenRouter live pricing).
 - Three trigger paths (scheduler, HTTP `/trigger`, Telegram) all funnel into `scheduler::exec_in_workspace`, so results consistently land in the Inbox. After recording, `run_and_record` also calls `notify_telegram` (global bot) and `notify_telegram_topic` (per-project topic via `get_telegram_route_for_workspace`).
 - **Session page routing** — `session_history` and `chat_sessions` each carry `job_id` and `agent_id` columns, used to route rows to the right surface:
   - Sessions page: `job_id IS NULL AND agent_id IS NULL` → `list_user_sessions`
   - Agent Activity tab: `agent_id IS NOT NULL` → `list_agent_sessions(workspace_id, agent_name)`
   - Tasks Activity tab: `job_id IS NOT NULL AND agent_id IS NULL` → `list_all_job_sessions`
-
 
 ## Cloud layer (identity + sync)
 
@@ -67,8 +68,8 @@ React UI ──invoke()──► Tauri commands (src-tauri/src/lib.rs)
 - CRITICAL: terminals are rendered in the root layout (`Shell`), NOT inside route outlets. Routes only control visibility. This keeps PTY sessions alive across navigation.
 - Tabs are typed: terminal tabs render `TerminalView`, chat tabs (`{workspaceId}:chat`) render `ChatView`, and browser tabs (`{workspaceId}:browser`) render `BrowserView` (using a native overlay that is hidden via opacity when inactive). The router picks the view by `tab.cli`; chat and browser are their own tab types, not a per-tab toggle.
 - `TerminalView` and `ChatView` share `StatusFooter` (git stat / files toggle / branch / token·cost, with a `leftExtra` slot). Chat uses `ChatComposer` (OpenRouter-backed model selector, reasoning, agent mode, web search, attachments) and quick-prompt chips; the terminal exposes an optional rich-text input + file-path attach.
-- **Slash-command UX**: both `ChatComposer` and `TerminalView` rich input support `/` autocomplete. Items come from `lib/slash-items.ts` (`loadSlashItems`) in ChatComposer, and from an async `ensureCtx()` in TerminalView that loads skills/context/commands/connectors/agents/sessions lazily on first `/` keypress. Items are memoized via `useMemo` and suggestions recompute reactively via `useEffect([allSlashItems, slashToken])`. Slash tokens are colour-coded in TerminalView (amber=skill, blue=context, green=command, purple=connector, teal=agent, grey=session).
-- **`[+]` menus**: `ChatComposer` and `TerminalView` both expose a `[+]` dropdown with per-type submenus (Skills, Agents, Connectors, Context, Commands, Sessions). Each submenu item shows a **clean name** only (no `/prefix:` in the display); on click it inserts the full `/prefix:name` token. Every submenu has a `[+ Add …]` footer that navigates to the correct settings tab+section via `router.navigate({ to: "/settings", search: { tab, section } })`. The Connectors submenu includes the Tool access radio (auto/direct). Token routing in TerminalView: rich input open → insert into textarea; closed → write to live PTY buffer (no `\r`).
+- **Slash-command UX**: both `ChatComposer` and `TerminalView` rich input support `/` autocomplete. Items come from `lib/slash-items.ts` (`loadSlashItems`, plus the builtin `/compact`) in ChatComposer, and from an async `ensureCtx()` in TerminalView that loads skills/context/commands/connectors/agents/sessions lazily on first `/` keypress. Items are memoized via `useMemo` and suggestions recompute reactively via `useEffect([allSlashItems, slashToken])`. Slash tokens are colour-coded in TerminalView (amber=skill, blue=context, green=command, purple=connector, teal=agent, grey=session).
+- **`[+]` menus**: `ChatComposer` and `TerminalView` both use the shared `ComposerPlusMenu` component to expose a `[+]` dropdown with per-type submenus (Skills, Agents, Context, Commands, Sessions). Each submenu item shows a **clean name** only (no `/prefix:` in the display); on click it inserts the full `/prefix:name` token. Every submenu has a `[+ Add …]` footer that navigates to the correct settings tab+section via `router.navigate({ to: "/settings", search: { tab, section } })`. The Connectors menu shows project, org, and account scoped connectors in a unified flat panel (with tool access settings). Token routing in TerminalView: rich input open → insert into textarea; closed → write to live PTY buffer (no `\r`).
 - **Session logs**: `.superconsole/sessions/` holds structured session-log files (opt-in, not raw CLI history). Listed via `api.listSessionLogFiles(workspaceId)` and accessible as `/session:id` tokens. The `SessionLogFile` type carries `id`, `summary?`.
 - Shared state lives in `WorkspaceProvider` (src/lib/workspace-context.tsx): workspaces, organizations, per-workspace tab sets, live sessions, active org (localStorage). Cloud identity/session state lives in `AuthProvider` (src/lib/auth-context.tsx): WorkOS user, orgs, active cloud org.
 - Layout: full-width `TopBar` (holds macOS traffic lights via titleBarStyle Overlay + drag region; dynamically appends the active context suffix like file name or tab context via an en dash `–` and smoothly aligns left-margin with sidebar state) → below it `Sidebar`/`SidebarRail` + content column (`TabStrip` → terminal/editor + optional `FilePanel`).
@@ -101,5 +102,5 @@ src-tauri/              Rust backend
   tauri.conf.json       window (Overlay titlebar), bundling, updater config
   capabilities/default.json  permission grants
   icons/                generated by `cargo tauri icon app-icon.png`
-superconsole-web/       Cloudflare Workers web portal (TanStack Start, own PROJECT.md/CLAUDE.md)
+  superconsole-web/       Cloudflare Workers web portal (TanStack Start, Tailwind v4, shadcn, own PROJECT.md/CLAUDE.md)
 ```

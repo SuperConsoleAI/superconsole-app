@@ -14,9 +14,6 @@ import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -35,8 +32,7 @@ type Editing = {
   body: string;
 } | null;
 
-export function MemoryDialog({ workspaceId, open, onOpenChange }: MemoryDialogProps) {
-  const { activeCloudOrg } = useAuth();
+export function MemoryView({ workspaceId }: { workspaceId: number }) {
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -48,12 +44,10 @@ export function MemoryDialog({ workspaceId, open, onOpenChange }: MemoryDialogPr
   }, [workspaceId]);
 
   useEffect(() => {
-    if (open) {
-      setQuery("");
-      setEditing(null);
-      refresh();
-    }
-  }, [open, refresh]);
+    setQuery("");
+    setEditing(null);
+    refresh();
+  }, [workspaceId, refresh]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -92,28 +86,21 @@ export function MemoryDialog({ workspaceId, open, onOpenChange }: MemoryDialogPr
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Brain className="h-4 w-4 text-primary" />
-            Memory
-          </DialogTitle>
-          <DialogDescription>
-            What this project's agent remembers. Small, focused entries — searched on demand, not
-            dumped into every session.
-          </DialogDescription>
-        </DialogHeader>
+    <div className="flex flex-col gap-4 p-5 h-full">
+      <div className="flex flex-col gap-1">
+        <h2 className="flex items-center gap-2 text-lg font-semibold">
+          <Brain className="h-5 w-5 text-primary" />
+          Memory
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Memory that compounds — agents get smarter every run.
+        </p>
+      </div>
 
-        {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && <p className="text-xs text-destructive">{error}</p>}
 
-        <Tabs defaultValue="project">
-          <TabsList>
-            <TabsTrigger value="project">Project</TabsTrigger>
-            <TabsTrigger value="org">Org facts</TabsTrigger>
-          </TabsList>
 
-          <TabsContent value="project">
+
             {editing ? (
               <EntryForm
                 editing={editing}
@@ -134,6 +121,22 @@ export function MemoryDialog({ workspaceId, open, onOpenChange }: MemoryDialogPr
                       className="h-8 pl-8 text-sm"
                     />
                   </div>
+                  <Button
+                    size="sm"
+                    className="h-8"
+                    onClick={() =>
+                      setEditing({
+                        category: "facts", // Default category
+                        slug: null,
+                        title: query,
+                        tags: "",
+                        body: "",
+                      })
+                    }
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1" />
+                    New memory
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
@@ -156,8 +159,8 @@ export function MemoryDialog({ workspaceId, open, onOpenChange }: MemoryDialogPr
                   </Button>
                 </div>
 
-                <ScrollArea className="max-h-[26rem]">
-                  <div className="flex flex-col gap-3 pr-2">
+                <ScrollArea className="flex-1 min-h-0">
+                  <div className="flex flex-col gap-1.5 pr-2">
                     {MEMORY_CATEGORIES.map((cat) => {
                       const items = filtered.filter((e) => e.category === cat.id);
                       return (
@@ -174,7 +177,7 @@ export function MemoryDialog({ workspaceId, open, onOpenChange }: MemoryDialogPr
                                 setEditing({
                                   category: cat.id,
                                   slug: null,
-                                  title: "",
+                                  title: query,
                                   tags: "",
                                   body: "",
                                 })
@@ -248,9 +251,28 @@ export function MemoryDialog({ workspaceId, open, onOpenChange }: MemoryDialogPr
                 </ScrollArea>
               </div>
             )}
+    </div>
+  );
+}
+
+export function MemoryDialog({ workspaceId, open, onOpenChange }: MemoryDialogProps) {
+  const { activeCloudOrg } = useAuth();
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl h-[80vh] flex flex-col p-0 overflow-hidden">
+        <Tabs defaultValue="project" className="flex flex-col h-full">
+          <div className="px-5 pt-4">
+            <TabsList>
+              <TabsTrigger value="project">Project</TabsTrigger>
+              <TabsTrigger value="org">Org facts</TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent value="project" className="flex-1 min-h-0 m-0">
+            {open && <MemoryView workspaceId={workspaceId} />}
           </TabsContent>
 
-          <TabsContent value="org">
+          <TabsContent value="org" className="flex-1 min-h-0 m-0 p-5">
             {activeCloudOrg ? (
               <OrgMemoryPanel orgId={activeCloudOrg.id} orgName={activeCloudOrg.name} />
             ) : (
@@ -260,6 +282,10 @@ export function MemoryDialog({ workspaceId, open, onOpenChange }: MemoryDialogPr
             )}
           </TabsContent>
         </Tabs>
+        <p className="mt-3 border-t border-border/50 pt-3 text-center text-xs text-muted-foreground">
+          Plain Markdown files in <code className="font-mono">.superconsole/</code> —{" "}
+          open in Obsidian, VS Code, or any editor. Committed to git automatically.
+        </p>
       </DialogContent>
     </Dialog>
   );

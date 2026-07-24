@@ -64,7 +64,7 @@ export function SkillsView({ workspaceId }: { workspaceId: number }) {
       {error && <p className="text-xs text-destructive">{error}</p>}
 
       <Tabs defaultValue="mine" className="flex flex-col flex-1 min-h-0">
-        <TabsList>
+        <TabsList className="p-0.5">
           <TabsTrigger value="mine" className="data-[state=active]:bg-black/5 dark:data-[state=active]:bg-black/40">My Skills</TabsTrigger>
           <TabsTrigger value="library" className="data-[state=active]:bg-black/5 dark:data-[state=active]:bg-black/40">Browse Library</TabsTrigger>
           <TabsTrigger value="create" className="data-[state=active]:bg-black/5 dark:data-[state=active]:bg-black/40">New / Import</TabsTrigger>

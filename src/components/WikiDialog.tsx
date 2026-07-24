@@ -8,9 +8,6 @@ import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -28,7 +25,7 @@ type Editing = {
   body: string;
 } | null;
 
-export function WikiDialog({ workspaceId, open, onOpenChange }: WikiDialogProps) {
+export function WikiView({ workspaceId }: { workspaceId: number }) {
   const [pages, setPages] = useState<WikiPage[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -36,16 +33,15 @@ export function WikiDialog({ workspaceId, open, onOpenChange }: WikiDialogProps)
   const [editing, setEditing] = useState<Editing>(null);
 
   const refresh = useCallback(() => {
+    if (!workspaceId) return;
     api.listWiki(workspaceId).then(setPages).catch((e) => setError(String(e)));
   }, [workspaceId]);
 
   useEffect(() => {
-    if (open) {
-      setQuery("");
-      setEditing(null);
-      refresh();
-    }
-  }, [open, refresh]);
+    setQuery("");
+    setEditing(null);
+    refresh();
+  }, [workspaceId, refresh]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -86,18 +82,17 @@ export function WikiDialog({ workspaceId, open, onOpenChange }: WikiDialogProps)
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <BookText className="h-4 w-4 text-primary" />
-            Wiki
-          </DialogTitle>
-          <DialogDescription>
-            The project's permanent reference. Focused pages the agent reads on demand — what you
-            want it to always know.
-          </DialogDescription>
-        </DialogHeader>
+    <div className="flex flex-col gap-4 p-5 h-full">
+      <div className="flex flex-col gap-1">
+        <h2 className="flex items-center gap-2 text-lg font-semibold">
+          <BookText className="h-5 w-5 text-primary" />
+          Wiki
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          The project's permanent reference. Focused pages the agent reads on demand — what you
+          want it to always know.
+        </p>
+      </div>
 
         {error && <p className="text-xs text-destructive">{error}</p>}
 
@@ -190,7 +185,7 @@ export function WikiDialog({ workspaceId, open, onOpenChange }: WikiDialogProps)
               </Button>
             </div>
 
-            <ScrollArea className="max-h-[28rem]">
+            <ScrollArea className="flex-1 min-h-0">
               <div className="flex flex-col gap-1.5 pr-2">
                 {filtered.length === 0 && (
                   <p className="py-8 text-center text-sm text-muted-foreground">
@@ -251,6 +246,18 @@ export function WikiDialog({ workspaceId, open, onOpenChange }: WikiDialogProps)
             </ScrollArea>
           </div>
         )}
+        <p className="mt-3 border-t border-border/50 pt-3 text-center text-xs text-muted-foreground">
+          Wiki pages are plain Markdown — edit in any editor, committed to git automatically.
+        </p>
+    </div>
+  );
+}
+
+export function WikiDialog({ workspaceId, open, onOpenChange }: WikiDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl h-[80vh] flex flex-col p-0 overflow-hidden">
+        {open && <WikiView workspaceId={workspaceId} />}
       </DialogContent>
     </Dialog>
   );

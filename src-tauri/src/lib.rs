@@ -41,14 +41,15 @@ fn list_workspaces(db: State<Db>) -> Result<Vec<Workspace>, String> {
 }
 
 #[tauri::command]
-fn add_workspace(
-    db: State<Db>,
+async fn add_workspace(
+    app: AppHandle,
+    db: State<'_, Db>,
     name: String,
     path: String,
     cli: String,
     organization_id: i64,
 ) -> Result<Workspace, String> {
-    let p = Path::new(&path);
+    let p = std::path::Path::new(&path);
     if p.exists() {
         if !p.is_dir() {
             return Err(format!("Not a folder: {}", path));
@@ -59,6 +60,28 @@ fn add_workspace(
     let ws = db.add_workspace(&name, &path, &cli, organization_id)?;
     // Best-effort scaffold — never blocks workspace creation.
     let _ = files::scaffold_superconsole_dir(&path);
+
+    // Auto-link to Turso immediately using the first org from the cached auth.
+    // Best-effort: workspace is usable even if this fails.
+    let cloud_org_id: Option<String> = db
+        .get_cloud_identity()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|v| {
+            v["orgs"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|o| o["id"].as_str().map(|s| s.to_string()))
+        });
+
+    if let Some(org_id) = cloud_org_id {
+        let app2 = app.clone();
+        let ws_id = ws.id;
+        // Spawn so the response returns immediately to the UI.
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::llm::ensure_workspace_project(app2, ws_id, org_id).await;
+        });
+    }
+
     Ok(ws)
 }
 
@@ -361,6 +384,8 @@ fn add_job(
     trigger_type: Option<String>,
     trigger_config: Option<String>,
     allowed_connectors: Option<String>,
+    exit_condition: Option<String>,
+    max_attempts: Option<i64>,
 ) -> Result<Job, String> {
     let trigger_type = trigger_type.unwrap_or_else(|| "cron".into());
     let next = if trigger_type == "cron" {
@@ -379,6 +404,8 @@ fn add_job(
         &trigger_type,
         &trigger_config.unwrap_or_else(|| "{}".into()),
         &allowed_connectors.unwrap_or_else(|| "[]".into()),
+        exit_condition.as_deref(),
+        max_attempts.unwrap_or(1),
     )
 }
 
@@ -395,6 +422,8 @@ fn update_job(
     trigger_type: String,
     trigger_config: String,
     allowed_connectors: String,
+    exit_condition: Option<String>,
+    max_attempts: Option<i64>,
 ) -> Result<Job, String> {
     let existing = db.get_job(id)?;
     let next = if trigger_type == "cron" {
@@ -417,6 +446,8 @@ fn update_job(
         &trigger_type,
         &trigger_config,
         &allowed_connectors,
+        exit_condition.as_deref(),
+        max_attempts.unwrap_or(1),
     )
 }
 
@@ -1273,6 +1304,7 @@ pub fn run() {
             connectors::list_connectors,
             connectors::set_connector,
             connectors::delete_connector,
+            connectors::test_connector_cmd,
             skills::list_skills,
             skills::scan_detected_skills,
             skills::read_workspace_skill,

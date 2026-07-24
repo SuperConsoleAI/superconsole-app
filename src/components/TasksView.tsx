@@ -390,7 +390,7 @@ export function TasksView({
               New task
             </DialogTitle>
           </DialogHeader>
-          <ScrollArea className="max-h-[70vh] [&_[data-slot=scroll-area-viewport]>div]:!block">
+          <div className="max-h-[70vh] overflow-y-auto no-scrollbar">
             <TaskFormContent
               workspaces={workspaces}
               organizations={allOrgs}
@@ -398,7 +398,7 @@ export function TasksView({
               onSaved={() => { refresh(); setShowAddTask(false); }}
               onCancel={() => setShowAddTask(false)}
             />
-          </ScrollArea>
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -411,7 +411,7 @@ export function TasksView({
               Edit: {editJob?.name ?? "Task"}
             </DialogTitle>
           </DialogHeader>
-          <ScrollArea className="max-h-[70vh] [&_[data-slot=scroll-area-viewport]>div]:!block">
+          <div className="max-h-[70vh] overflow-y-auto no-scrollbar">
             {editJob && (
               <TaskFormContent
                 workspaces={workspaces}
@@ -422,7 +422,7 @@ export function TasksView({
                 onCancel={() => setEditJob(null)}
               />
             )}
-          </ScrollArea>
+          </div>
         </DialogContent>
       </Dialog>
 

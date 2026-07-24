@@ -312,10 +312,10 @@ export function Sidebar({
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      <div className="px-3 pb-2">
+      <div className="px-2 pb-2">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="flex w-full items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-accent/60">
+            <button className="flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition-colors hover:bg-accent/60">
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent/60">
                 <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-label="SuperConsole" className="h-8 w-8">
                   <rect width="32" height="32" rx="8" fill="var(--primary)" />
@@ -395,14 +395,14 @@ export function Sidebar({
         </DropdownMenu>
       </div>
 
-      <div className="flex flex-col gap-1 px-2 pb-2">
+      <div className="flex flex-col px-2 pb-2">
         <div
           role="button"
           tabIndex={0}
           onClick={onInbox}
           onKeyDown={(e) => e.key === "Enter" && onInbox()}
           className={cn(
-            "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
+            "flex cursor-pointer items-center gap-2.5 rounded-md p-2 transition-colors",
             inboxActive ? "bg-accent" : "hover:bg-accent/50",
           )}
         >
@@ -423,7 +423,7 @@ export function Sidebar({
           onClick={onTasks}
           onKeyDown={(e) => e.key === "Enter" && onTasks()}
           className={cn(
-            "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
+            "flex cursor-pointer items-center gap-2.5 rounded-md p-2 transition-colors",
             tasksActive ? "bg-accent" : "hover:bg-accent/50",
           )}
         >
@@ -439,7 +439,7 @@ export function Sidebar({
           onClick={onSessions}
           onKeyDown={(e) => e.key === "Enter" && onSessions()}
           className={cn(
-            "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
+            "flex cursor-pointer items-center gap-2.5 rounded-md p-2 transition-colors",
             sessionsActive ? "bg-accent" : "hover:bg-accent/50",
           )}
         >
@@ -455,7 +455,7 @@ export function Sidebar({
           onClick={onUsage}
           onKeyDown={(e) => e.key === "Enter" && onUsage()}
           className={cn(
-            "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
+            "flex cursor-pointer items-center gap-2.5 rounded-md p-2 transition-colors",
             usageActive ? "bg-accent" : "hover:bg-accent/50",
           )}
         >
@@ -471,7 +471,7 @@ export function Sidebar({
           onClick={onAgents}
           onKeyDown={(e) => e.key === "Enter" && onAgents()}
           className={cn(
-            "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
+            "flex cursor-pointer items-center gap-2.5 rounded-md p-2 transition-colors",
             agentsActive ? "bg-accent" : "hover:bg-accent/50",
           )}
         >
@@ -488,7 +488,7 @@ export function Sidebar({
             onClick={onCustomize}
             onKeyDown={(e) => e.key === "Enter" && onCustomize()}
             className={cn(
-              "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors",
+              "flex cursor-pointer items-center gap-2.5 rounded-md p-2 transition-colors",
               customizeActive ? "bg-accent" : "hover:bg-accent/50",
             )}
           >
@@ -525,7 +525,7 @@ export function Sidebar({
                 onClick={() => onSelect(ws.id)}
                 onKeyDown={(e) => e.key === "Enter" && onSelect(ws.id)}
                 className={cn(
-                  "relative flex cursor-pointer items-center gap-2 px-3 py-3 transition-colors",
+                  "relative flex cursor-pointer items-center gap-2 px-3 py-[0.75rem] transition-colors",
                   active ? "bg-accent" : "hover:bg-accent/50",
                 )}
               >
@@ -551,7 +551,7 @@ export function Sidebar({
       </ScrollArea>
 
       <div
-        className="group flex h-[44px] shrink-0 cursor-pointer items-center justify-between border-t border-sidebar-border px-3 transition-colors hover:bg-accent/50"
+        className="group flex h-[44px] shrink-0 cursor-pointer items-center justify-between border-t border-sidebar-border px-2 transition-colors hover:bg-accent/50"
         onClick={onAdd}
       >
         <div className="flex items-center gap-2 text-muted-foreground transition-colors group-hover:text-foreground">

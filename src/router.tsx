@@ -36,6 +36,7 @@ import { LoginScreen } from "@/components/LoginScreen";
 import { WorkspaceProvider, useWorkspaces } from "@/lib/workspace-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { Anchor as AnchorIcon } from "lucide-react";
+import appIconUrl from "@/assets/app-icon.svg";
 import { CustomizePage } from "@/components/CustomizePage";
 
 interface WorkspaceSearch {
@@ -79,8 +80,16 @@ function Shell() {
   const params = useParams({ strict: false }) as { workspaceId?: string };
   const search = useSearch({ strict: false }) as WorkspaceSearch;
   const [unread, setUnread] = useState(0);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarState, setSidebarState] = useState<"open" | "rail" | "hidden">("open");
+  const isSidebarOpen = sidebarState === "open";
   const [customizeTab, setCustomizeTab] = useState("plugins");
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    const onRefresh = () => setRefreshKey(k => k + 1);
+    window.addEventListener("app-refresh", onRefresh);
+    return () => window.removeEventListener("app-refresh", onRefresh);
+  }, []);
 
   useEffect(() => {
     const onTab = (e: any) => setCustomizeTab(e.detail);
@@ -186,8 +195,12 @@ function Shell() {
         isProjectPage={!!activeWorkspace}
         titleSuffix={titleSuffix}
         filesOpen={filesOpen}
-        sidebarOpen={sidebarOpen}
-        onToggleSidebar={() => setSidebarOpen((o) => !o)}
+        sidebarOpen={isSidebarOpen}
+        onToggleSidebar={() => setSidebarState(s => {
+          if (s === "open") return "rail";
+          if (s === "rail") return "hidden";
+          return "open";
+        })}
         onToggleFiles={() =>
           activeWorkspace &&
           goToWorkspace(activeWorkspace.id, {
@@ -197,7 +210,7 @@ function Shell() {
       />
 
       <div className="flex min-h-0 flex-1">
-        {sidebarOpen ? (
+        {sidebarState === "open" ? (
           <Sidebar
             workspaces={orgWorkspaces}
             organizations={organizations}
@@ -227,7 +240,7 @@ function Shell() {
             onCustomize={() => navigate({ to: "/customize", search: activeId ? { ws: activeId } : {} })}
             onSettings={() => navigate({ to: "/settings" })}
           />
-        ) : (
+        ) : sidebarState === "rail" ? (
           <SidebarRail
             workspaces={orgWorkspaces}
             activeId={activeId}
@@ -240,7 +253,7 @@ function Shell() {
             agentsActive={agentsActive}
             customizeActive={customizeActive}
             orgName={organizations.find((o) => o.id === activeOrgId)?.name ?? "Personal"}
-            onExpand={() => setSidebarOpen(true)}
+            onExpand={() => setSidebarState("open")}
             onSelect={(id) => goToWorkspace(id)}
             onAdd={() => setAddOpen(true)}
             onInbox={() => navigate({ to: "/inbox" })}
@@ -251,7 +264,7 @@ function Shell() {
             onCustomize={() => navigate({ to: "/customize", search: activeId ? { ws: activeId } : {} })}
             onSettings={() => navigate({ to: "/settings" })}
           />
-        )}
+        ) : null}
 
         <div className="flex min-h-0 min-w-0 flex-1">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -286,7 +299,7 @@ function Shell() {
                     <div
                       key={tab.id}
                       className={cn(
-                        "absolute inset-0 bg-background transition-opacity duration-150",
+                        "absolute inset-0 bg-background",
                         isActiveTab ? "z-10 opacity-100" : "-z-10 opacity-0 pointer-events-none"
                       )}
                     >
@@ -317,7 +330,7 @@ function Shell() {
                     <div
                       key={tab.id}
                       className={cn(
-                        "absolute inset-0 bg-background transition-opacity duration-150",
+                        "absolute inset-0 bg-background",
                         isActiveTab ? "z-10 opacity-100" : "-z-10 opacity-0 pointer-events-none"
                       )}
                     >
@@ -330,7 +343,7 @@ function Shell() {
                     <div
                       key={tab.id}
                       className={cn(
-                        "absolute inset-0 bg-background transition-opacity duration-150",
+                        "absolute inset-0 bg-background",
                         isActiveTab ? "z-10 opacity-100" : "-z-10 opacity-0 pointer-events-none"
                       )}
                     >
@@ -347,7 +360,7 @@ function Shell() {
                   <div
                     key={tab.id}
                     className={cn(
-                      "absolute inset-0 bg-background transition-opacity duration-150",
+                      "absolute inset-0 bg-background",
                       isActiveTab ? "z-10 opacity-100" : "-z-10 opacity-0 pointer-events-none"
                     )}
                   >
@@ -367,7 +380,7 @@ function Shell() {
                 );
               }),
             )}
-            <Outlet />
+            <Outlet key={refreshKey} />
             </main>
           </div>
 
@@ -423,9 +436,7 @@ function Welcome() {
   const firstRun = workspaces.length === 0;
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 text-center">
-      <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
-        <Anchor className="h-8 w-8 text-primary" />
-      </span>
+      <img src={appIconUrl} className="h-16 w-16 drop-shadow-sm" alt="SuperConsole" />
       <div>
         <h1 className="font-display text-2xl font-semibold tracking-tight">
           Welcome to SuperConsole
@@ -688,13 +699,14 @@ const settingsRoute = createRoute({
 
 interface CustomizeSearch {
   ws?: number;
+  tab?: string;
 }
 
 function CustomizeRoute() {
-  const { ws } = customizeRoute.useSearch();
+  const { ws, tab } = customizeRoute.useSearch();
   return (
     <div className="absolute inset-0 bg-background">
-      <CustomizePage initialWorkspaceId={ws} />
+      <CustomizePage initialWorkspaceId={ws} initialTab={tab} />
     </div>
   );
 }
@@ -707,6 +719,7 @@ const customizeRoute = createRoute({
     ws: typeof search.ws === "number" ? search.ws
       : typeof search.ws === "string" ? Number(search.ws) || undefined
       : undefined,
+    tab: typeof search.tab === "string" ? search.tab : undefined,
   }),
 });
 

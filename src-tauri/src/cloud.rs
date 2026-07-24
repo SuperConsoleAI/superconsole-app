@@ -26,6 +26,7 @@ pub fn cookie_password() -> Result<String, String> {
         .map_err(|_| "WORKOS_COOKIE_PASSWORD is not set".to_string())
 }
 
+#[derive(Clone)]
 pub struct TursoConfig {
     pub url: String,
     pub token: String,

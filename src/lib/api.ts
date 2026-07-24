@@ -162,6 +162,37 @@ export interface Job {
   last_run_cost_usd: number;
   last_run_tokens: number;
   last_run_session_id: string | null;
+  // ── Loop system (Phase 25) ──
+  /** JSON-encoded exit condition, or null/undefined for run-once. */
+  exit_condition?: string | null;
+  /** Hard retry cap. 1 = run-once (default). */
+  max_attempts: number;
+  /** How many attempts have fired for the current loop (reset on completion). */
+  current_attempt: number;
+}
+
+/** Discriminated union for all supported exit condition types. */
+export type ExitConditionType =
+  | "command"
+  | "inbox_approved"
+  | "llm_score"
+  | "contains"
+  | "file_exists";
+
+export interface ExitCondition {
+  type: ExitConditionType;
+  /** Shell command to run in workspace dir (type=command). Exit 0 = done. */
+  command?: string;
+  /** Substring to find in job output (type=contains). */
+  text?: string;
+  /** Relative file path to check for (type=file_exists). */
+  path?: string;
+  /** Minimum score to pass (type=llm_score). Default 4. */
+  threshold?: number;
+  /** Score scale upper bound (type=llm_score). Default 5. */
+  max?: number;
+  /** Scoring instructions for the LLM (type=llm_score). */
+  prompt?: string;
 }
 
 export interface JobRunConfig {
@@ -503,6 +534,8 @@ export interface ConnectorDef {
   category: ConnectorCategory;
   scopes: ConnectorScope[];
   fields: ConnectorFieldDef[];
+  description?: string;
+  docsUrl?: string;
 }
 
 export interface ConnectorFieldValue {
@@ -516,6 +549,12 @@ export interface ConnectorView {
   service: string;
   status: string | null;
   fields: ConnectorFieldValue[];
+}
+
+export interface ConnectorTestResult {
+  success: boolean;
+  message: string;
+  details?: string;
 }
 
 // Hardcoded registry (API key / token only for Phase 17). Must mirror the
@@ -665,6 +704,24 @@ export const CONNECTOR_REGISTRY: ConnectorDef[] = [
     category: "integrations",
     scopes: ALL_CONNECTOR_SCOPES,
     fields: [{ key: "api_key", label: "Tavily API key", secret: true }],
+  },
+  // Composio — 1000+ tools via one connection (Gmail, GitHub, Slack, Notion, HubSpot…).
+  // Injected as COMPOSIO_API_KEY env var in every PTY session where connected.
+  {
+    id: "composio",
+    label: "Composio",
+    category: "connectors",
+    description: "1000+ tools via one connection — Gmail, GitHub, Slack, Notion, HubSpot and more",
+    scopes: ALL_CONNECTOR_SCOPES,
+    fields: [
+      {
+        key: "api_key",
+        label: "Composio API Key",
+        secret: true,
+        placeholder: "From composio.dev → Settings → API Keys",
+      },
+    ],
+    docsUrl: "https://docs.composio.dev",
   },
 ];
 
@@ -868,6 +925,8 @@ export const api = {
       triggerType?: string;
       triggerConfig?: string;
       allowedConnectors?: string;
+      exitCondition?: string | null;
+      maxAttempts?: number;
     },
   ) => invoke<Job>("add_job", { workspaceId, name, command, schedule, ...extra }),
   updateJob: (
@@ -880,6 +939,8 @@ export const api = {
     triggerType: string,
     triggerConfig: string,
     allowedConnectors: string,
+    exitCondition?: string | null,
+    maxAttempts?: number,
   ) =>
     invoke<Job>("update_job", {
       id,
@@ -891,6 +952,8 @@ export const api = {
       triggerType,
       triggerConfig,
       allowedConnectors,
+      exitCondition,
+      maxAttempts,
     }),
   listWorkspaceConnectors: (workspaceId: number) =>
     invoke<WorkspaceConnector[]>("list_workspace_connectors", { workspaceId }),
@@ -1109,9 +1172,11 @@ export const api = {
     scopeId: string,
     service: string,
     fields: Record<string, string>,
-  ) => invoke<void>("set_connector", { scope, scopeId, service, fields }),
+  ) => invoke<string>("set_connector", { scope, scopeId, service, fields }),
   deleteConnector: (scope: ConnectorScope, scopeId: string, service: string) =>
     invoke<void>("delete_connector", { scope, scopeId, service }),
+  testConnector: (service: string, credentialsJson: string) =>
+    invoke<ConnectorTestResult>("test_connector_cmd", { service, credentialsJson }),
   listSkills: (workspaceId: number) =>
     invoke<Skill[]>("list_skills", { workspaceId }),
   scanDetectedSkills: (workspaceId: number) =>

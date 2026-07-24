@@ -16,6 +16,7 @@ import { Route as ProjectConnectorsRouteImport } from './routes/project-connecto
 import { Route as ModelsRouteImport } from './routes/models'
 import { Route as LogoutRouteImport } from './routes/logout'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as LandingRouteImport } from './routes/landing'
 import { Route as ConnectorsRouteImport } from './routes/connectors'
 import { Route as CallbackRouteImport } from './routes/callback'
 import { Route as IndexRouteImport } from './routes/index'
@@ -55,6 +56,11 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LandingRoute = LandingRouteImport.update({
+  id: '/landing',
+  path: '/landing',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ConnectorsRoute = ConnectorsRouteImport.update({
   id: '/connectors',
   path: '/connectors',
@@ -75,6 +81,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/callback': typeof CallbackRoute
   '/connectors': typeof ConnectorsRoute
+  '/landing': typeof LandingRoute
   '/login': typeof LoginRoute
   '/logout': typeof LogoutRoute
   '/models': typeof ModelsRoute
@@ -87,6 +94,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/callback': typeof CallbackRoute
   '/connectors': typeof ConnectorsRoute
+  '/landing': typeof LandingRoute
   '/login': typeof LoginRoute
   '/logout': typeof LogoutRoute
   '/models': typeof ModelsRoute
@@ -100,6 +108,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/callback': typeof CallbackRoute
   '/connectors': typeof ConnectorsRoute
+  '/landing': typeof LandingRoute
   '/login': typeof LoginRoute
   '/logout': typeof LogoutRoute
   '/models': typeof ModelsRoute
@@ -114,6 +123,7 @@ export interface FileRouteTypes {
     | '/'
     | '/callback'
     | '/connectors'
+    | '/landing'
     | '/login'
     | '/logout'
     | '/models'
@@ -126,6 +136,7 @@ export interface FileRouteTypes {
     | '/'
     | '/callback'
     | '/connectors'
+    | '/landing'
     | '/login'
     | '/logout'
     | '/models'
@@ -138,6 +149,7 @@ export interface FileRouteTypes {
     | '/'
     | '/callback'
     | '/connectors'
+    | '/landing'
     | '/login'
     | '/logout'
     | '/models'
@@ -151,6 +163,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CallbackRoute: typeof CallbackRoute
   ConnectorsRoute: typeof ConnectorsRoute
+  LandingRoute: typeof LandingRoute
   LoginRoute: typeof LoginRoute
   LogoutRoute: typeof LogoutRoute
   ModelsRoute: typeof ModelsRoute
@@ -211,6 +224,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/landing': {
+      id: '/landing'
+      path: '/landing'
+      fullPath: '/landing'
+      preLoaderRoute: typeof LandingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/connectors': {
       id: '/connectors'
       path: '/connectors'
@@ -239,6 +259,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CallbackRoute: CallbackRoute,
   ConnectorsRoute: ConnectorsRoute,
+  LandingRoute: LandingRoute,
   LoginRoute: LoginRoute,
   LogoutRoute: LogoutRoute,
   ModelsRoute: ModelsRoute,

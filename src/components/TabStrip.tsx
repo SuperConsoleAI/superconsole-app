@@ -31,7 +31,7 @@ export function TabStrip({
   return (
     <div className="flex h-9 shrink-0 items-stretch border-b bg-sidebar">
       <div
-        className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden no-scrollbar"
         onWheel={(e) => {
           if (e.deltaY !== 0) {
             e.currentTarget.scrollLeft += e.deltaY;
@@ -122,6 +122,10 @@ export function TabStrip({
             <DropdownMenuItem onClick={() => onOpen("chat")}>
               <MessageSquare className="h-3.5 w-3.5" />
               Chat
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onOpen("browser")}>
+              <Globe className="h-3.5 w-3.5" />
+              Browser
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => onOpen("shell")}>

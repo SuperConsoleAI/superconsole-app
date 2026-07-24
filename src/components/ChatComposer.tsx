@@ -10,38 +10,24 @@ import { useRouter } from "@tanstack/react-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowUp,
-  BookOpen,
-  Bot,
   Brain,
   Check,
   ChevronDown,
-  ClipboardList,
-  Globe,
   Paperclip,
-  Plug,
-  Plus,
-  ScrollText,
   Square,
-  SquareSlash,
-  Wrench,
   X,
   Zap,
 } from "lucide-react";
-import { api, type Agent, type ContextFile, type OpenrouterModel, type SessionLogFile, type Skill, type SlashCommand } from "@/lib/api";
+import { api, type OpenrouterModel } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { ComposerPlusMenu } from "@/components/ComposerPlusMenu";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuShortcut,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
@@ -144,6 +130,8 @@ function shortName(name: string): string {
 interface ChatComposerProps {
   workspaceId: number;
   projectId: string | null;
+  orgId: string | null;
+  userId: string | null;
   input: string;
   setInput: (v: string) => void;
   onSend: () => void;
@@ -166,6 +154,8 @@ interface ChatComposerProps {
 export function ChatComposer({
   workspaceId,
   projectId,
+  orgId,
+  userId,
   input,
   setInput,
   onSend,
@@ -185,12 +175,6 @@ export function ChatComposer({
   setAgentMode,
 }: ChatComposerProps) {
   const router = useRouter();
-  const [skills, setSkills] = useState<Skill[]>([]);
-  const [commands, setCommands] = useState<SlashCommand[]>([]);
-  const [connectors, setConnectors] = useState<string[]>([]);
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [ctxFiles, setCtxFiles] = useState<ContextFile[]>([]);
-  const [sessionLogs, setSessionLogs] = useState<SessionLogFile[]>([]);
   const [customModel, setCustomModel] = useState(false);
   const [orModels, setOrModels] = useState<OpenrouterModel[]>([]);
   const [modelQuery, setModelQuery] = useState("");
@@ -212,26 +196,6 @@ export function ChatComposer({
       .then(setSlashItems)
       .catch(() => setSlashItems([]));
   };
-
-  useEffect(() => {
-    api
-      .listSkills(workspaceId)
-      .then((s) => setSkills(s.filter((x) => x.active)))
-      .catch(() => setSkills([]));
-    api.listCommands(workspaceId).then(setCommands).catch(() => setCommands([]));
-    api.listAgents(workspaceId).then(setAgents).catch(() => setAgents([]));
-    api.listContextFiles(workspaceId).then(setCtxFiles).catch(() => setCtxFiles([]));
-    api.listSessionLogFiles(workspaceId).then(setSessionLogs).catch(() => setSessionLogs([]));
-  }, [workspaceId]);
-
-  useEffect(() => {
-    if (projectId) {
-      api
-        .listConnectors("project", projectId)
-        .then((c) => setConnectors(c.map((x) => x.service)))
-        .catch(() => setConnectors([]));
-    }
-  }, [projectId]);
 
   useEffect(() => {
     api.listOpenrouterModels().then(setOrModels).catch(() => setOrModels([]));
@@ -303,8 +267,8 @@ export function ChatComposer({
     ? baseList.filter((m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q))
     : baseList;
   const goSettings = () => router.navigate({ to: "/settings" });
-  const goSettingsTo = (tab: "account" | "org" | "project", section: string) =>
-    router.navigate({ to: "/settings", search: { tab, section } });
+  const goSettingsTo = (_tab: "account" | "org" | "project", section: string) =>
+    router.navigate({ to: "/customize", search: { ws: workspaceId, tab: section.toLowerCase() } });
   const selectModel = (id: string) => {
     // The active tab decides the provider: the OpenRouter tab always routes via
     // OpenRouter (even for a Claude/GPT model); native tabs use their provider.
@@ -558,184 +522,22 @@ export function ChatComposer({
 
         {/* Bottom control bar */}
         <div className="flex items-center gap-1 px-2 pb-2">
-          {/* + menu */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" title="Add context">
-                <Plus className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="top" className="w-60">
-              <DropdownMenuItem onClick={pickFiles}>
-                <Paperclip className="h-4 w-4" />
-                Add files
-                <DropdownMenuShortcut>⌘U</DropdownMenuShortcut>
-              </DropdownMenuItem>
+          {/* + menu — self-contained reusable component */}
+          <ComposerPlusMenu
+            workspaceId={workspaceId}
+            projectId={projectId}
+            orgId={orgId}
+            userId={userId}
+            toolMode={toolMode}
+            setToolMode={setToolMode}
+            onInsert={insert}
+            onPickFiles={pickFiles}
+            onGoSettings={goSettings}
+            onGoSettingsTo={goSettingsTo}
+            onGoAgents={() => router.navigate({ to: "/agents" })}
+          />
 
-              {/* Skills */}
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <ScrollText className="h-4 w-4" />
-                  Skills
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                  {skills.length === 0 ? (
-                    <DropdownMenuItem disabled>No active skills</DropdownMenuItem>
-                  ) : (
-                    skills.map((s) => (
-                      <DropdownMenuItem key={s.name} onClick={() => insert(`/skill:${s.name}`)} className="font-mono text-xs">
-                        {s.name}
-                      </DropdownMenuItem>
-                    ))
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => goSettingsTo("project", "Skills")}>
-                    <Plus className="h-3.5 w-3.5" /> Add skill
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
 
-              {/* Agents */}
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <Bot className="h-4 w-4" />
-                  Agents
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                  {agents.length === 0 ? (
-                    <DropdownMenuItem disabled>No agents</DropdownMenuItem>
-                  ) : (
-                    agents.map((a) => (
-                      <DropdownMenuItem key={a.name} onClick={() => insert(`/agent:${a.name}`)} className="font-mono text-xs">
-                        {a.name}
-                      </DropdownMenuItem>
-                    ))
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => router.navigate({ to: "/agents" })}>
-                    <Plus className="h-3.5 w-3.5" /> Add agent
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-
-              {/* Connectors */}
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <Plug className="h-4 w-4" />
-                  Connectors
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="w-56 overflow-y-auto">
-                  {/* Add connector at top */}
-                  <DropdownMenuItem onClick={() => goSettingsTo("project", "Connectors")}>
-                    <Plus className="h-3.5 w-3.5" /> Add connector
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  {connectors.length === 0 ? (
-                    <DropdownMenuItem disabled>None connected</DropdownMenuItem>
-                  ) : (
-                    connectors.map((c) => (
-                      <DropdownMenuItem key={c} onClick={() => insert(`/connector:${c}`)} className="font-mono text-xs">
-                        {c}
-                      </DropdownMenuItem>
-                    ))
-                  )}
-                  {/* Tool access at bottom */}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
-                    <Wrench className="h-3.5 w-3.5" />
-                    Tool access
-                  </DropdownMenuLabel>
-                  <DropdownMenuRadioGroup
-                    value={toolMode}
-                    onValueChange={(v) => setToolMode(v as "auto" | "direct")}
-                  >
-                    <DropdownMenuRadioItem value="auto">Load tools when needed</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="direct">Tools already loaded</DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-
-              {/* Context */}
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <BookOpen className="h-4 w-4" />
-                  Context
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                  {ctxFiles.length === 0 ? (
-                    <DropdownMenuItem disabled>No context files</DropdownMenuItem>
-                  ) : (
-                    ctxFiles.map((f) => (
-                      <DropdownMenuItem key={f.slug} onClick={() => insert(`/context:${f.slug}`)} className="font-mono text-xs">
-                        {f.slug}
-                      </DropdownMenuItem>
-                    ))
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => goSettingsTo("project", "Context")}>
-                    <Plus className="h-3.5 w-3.5" /> Add context file
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-
-              {/* Commands */}
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <SquareSlash className="h-4 w-4" />
-                  Commands
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
-                  {commands.length === 0 ? (
-                    <DropdownMenuItem disabled>No commands</DropdownMenuItem>
-                  ) : (
-                    commands.map((c) => (
-                      <DropdownMenuItem
-                        key={c.file_path}
-                        onClick={() => insert(c.slash)}
-                        className="font-mono text-xs"
-                      >
-                        {c.slash}
-                      </DropdownMenuItem>
-                    ))
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => goSettingsTo("project", "Commands")}>
-                    <Plus className="h-3.5 w-3.5" /> Add command
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-
-              {/* Sessions */}
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <ClipboardList className="h-4 w-4" />
-                  Sessions
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="max-h-72 w-60 overflow-y-auto">
-                  {sessionLogs.length === 0 ? (
-                    <DropdownMenuItem disabled>No saved sessions</DropdownMenuItem>
-                  ) : (
-                    sessionLogs.map((s) => (
-                      <DropdownMenuItem key={s.id} onClick={() => insert(`/session:${s.id}`)} className="flex-col items-start font-mono text-xs">
-                        <span className="truncate">{s.id}</span>
-                        {s.summary && <span className="truncate text-[10px] text-muted-foreground">{s.summary}</span>}
-                      </DropdownMenuItem>
-                    ))
-                  )}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-
-              <DropdownMenuItem
-                onClick={connectors.includes("web_search") ? undefined : goSettings}
-              >
-                <Globe className="h-4 w-4" />
-                Web search
-                <DropdownMenuShortcut>
-                  {connectors.includes("web_search") ? "connected" : "connect"}
-                </DropdownMenuShortcut>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
 
           {/* Unified provider → model selector (OpenRouter-backed) */}
           {customModel ? (

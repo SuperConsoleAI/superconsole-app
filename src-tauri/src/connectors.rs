@@ -127,6 +127,13 @@ const REGISTRY: &[Def] = &[
         service: "web_search",
         fields: &[Field { key: "api_key", env: "TAVILY_API_KEY", secret: true }],
     },
+    // Composio — 1000+ tools via a single API key + MCP server.
+    // Injected as COMPOSIO_API_KEY into every PTY session where connected.
+    // Same scope-based HKDF encryption as all other connectors.
+    Def {
+        service: "composio",
+        fields: &[Field { key: "api_key", env: "COMPOSIO_API_KEY", secret: true }],
+    },
 ];
 
 fn connector_def(service: &str) -> Option<&'static Def> {
@@ -196,13 +203,17 @@ pub async fn ensure_account_connectors_table(
     Ok(())
 }
 
-fn parse_blob(encrypted: Option<&str>) -> Map<String, Value> {
+/// Decrypt and parse a connector credentials blob.
+/// `scope_id` is the project_id / org_id / user_id that was used when encrypting.
+fn parse_blob(encrypted: Option<&str>, scope_id: &str) -> Map<String, Value> {
     let Some(enc) = encrypted.filter(|s| !s.is_empty()) else {
         return Map::new();
     };
-    let Ok(plain) = crypto::decrypt(enc) else {
-        return Map::new();
-    };
+    // Try scope-bound key first (new standard); fall back to global for blobs
+    // that were written before the scope migration.
+    let plain = crypto::decrypt_scoped(enc, scope_id)
+        .or_else(|_| crypto::decrypt(enc))
+        .unwrap_or_default();
     serde_json::from_str::<Value>(&plain)
         .ok()
         .and_then(|v| v.as_object().cloned())
@@ -252,7 +263,7 @@ pub async fn list_connectors(scope: String, scope_id: String) -> Result<Vec<Conn
             "SELECT service, status, credentials_encrypted FROM {} WHERE {} = ? ORDER BY service",
             table, id_col
         ),
-        vec![Some(scope_id)],
+        vec![Some(scope_id.clone())],
     )
     .await?;
 
@@ -261,7 +272,7 @@ pub async fn list_connectors(scope: String, scope_id: String) -> Result<Vec<Conn
         .filter_map(|row| {
             let service = cell_text(row, 0);
             let def = connector_def(&service)?;
-            let blob = parse_blob(cell_opt(row, 2).as_deref());
+            let blob = parse_blob(cell_opt(row, 2).as_deref(), &scope_id);
             Some(view_from_blob(def, cell_opt(row, 1), &blob))
         })
         .collect())
@@ -274,7 +285,7 @@ pub async fn set_connector(
     scope_id: String,
     service: String,
     fields: HashMap<String, String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let (table, id_col, has_scope) = scope_table(&scope)?;
     let def = connector_def(&service).ok_or_else(|| format!("unknown service '{}'", service))?;
 
@@ -300,6 +311,7 @@ pub async fn set_connector(
             .first()
             .and_then(|r| cell_opt(r, 0))
             .as_deref(),
+        &scope_id,
     );
 
     let mut blob = Map::new();
@@ -342,7 +354,8 @@ pub async fn set_connector(
     }
 
     let plaintext = serde_json::to_string(&Value::Object(blob)).map_err(|e| e.to_string())?;
-    let encrypted = crypto::encrypt(&plaintext)?;
+    // Scope-bound encryption: key = HKDF(WORKOS_COOKIE_PASSWORD:scope_id)
+    let encrypted = crypto::encrypt_scoped(&plaintext, &scope_id)?;
     let user_id = cached_user_id(&app.state::<Db>());
     let ts = now_iso();
     let id = Ulid::new().to_string();
@@ -364,21 +377,109 @@ pub async fn set_connector(
                connected_by = excluded.connected_by, updated_at = excluded.updated_at"
         )
     };
+    // Helper closure: execute the connector INSERT and write local cache.
+    let do_save = |id: String, ts: String, uid: Option<String>| {
+        let sql = sql.clone();
+        let client = client.clone();
+        let cfg = cfg.clone();
+        let scope_id = scope_id.clone();
+        let service = service.clone();
+        let encrypted = encrypted.clone();
+        async move {
+            cloud::turso_execute(
+                &client,
+                &cfg,
+                &sql,
+                vec![
+                    Some(id),
+                    Some(scope_id.clone()),
+                    Some(service.clone()),
+                    Some(encrypted.clone()),
+                    uid,
+                    Some(ts),
+                ],
+            )
+            .await
+        }
+    };
 
-    cloud::turso_execute(
-        &client,
-        &cfg,
-        &sql,
-        vec![
-            Some(id),
-            Some(scope_id.clone()),
-            Some(service.clone()),
-            Some(encrypted),
-            user_id,
-            Some(ts),
-        ],
-    )
-    .await?;
+    let result = do_save(id.clone(), ts.clone(), user_id.clone()).await;
+
+    match result {
+        Ok(_) => {}
+        Err(ref e) if e.contains("FOREIGN KEY") && scope == "project" => {
+            // The project row doesn't exist in Turso yet (or the local
+            // project_org_cache is stale). Resolve org_id: first try the
+            // local cache, then fall back to querying Turso directly.
+            let db = app.state::<Db>();
+
+            let org_id = if let Some(cached) = db.get_project_org(&scope_id) {
+                cached
+            } else {
+                // Query Turso — project may already exist there (e.g. created
+                // from another machine or before the Settings→Project tab was opened).
+                let found = cloud::turso_execute(
+                    &client,
+                    &cfg,
+                    "SELECT org_id FROM projects WHERE id = ?",
+                    vec![Some(scope_id.clone())],
+                )
+                .await
+                .unwrap_or_default();
+
+                let org_id_from_turso = cloud::rows(&found)
+                    .first()
+                    .and_then(|r| cloud::cell_opt(r, 0));
+
+                match org_id_from_turso {
+                    Some(oid) => {
+                        // Cache it locally so future saves don't need to re-query.
+                        let _ = db.set_project_org(&scope_id, &oid, &ts);
+                        oid
+                    }
+                    None => {
+                        return Err(
+                            "Connector save failed: project not found in cloud. \
+                             Open Settings → Project, select this workspace to sync it, \
+                             then try again."
+                                .to_string(),
+                        );
+                    }
+                }
+            };
+
+            // Find the workspace_id for this project_id.
+            let workspace_id: i64 = {
+                let conn_guard = db.0.lock().unwrap();
+                conn_guard
+                    .query_row(
+                        "SELECT id FROM workspaces WHERE project_id = ?1",
+                        [&scope_id],
+                        |r| r.get(0),
+                    )
+                    .map_err(|_| {
+                        "Connector save failed: workspace not found for this project.".to_string()
+                    })?
+            };
+
+            // Ensure project row exists in Turso (idempotent if it already does).
+            crate::llm::ensure_workspace_project(app.clone(), workspace_id, org_id)
+                .await
+                .map_err(|e| format!("Auto-provision project failed: {}", e))?;
+
+            // Retry the INSERT now that the project row is confirmed in Turso.
+            let new_id = Ulid::new().to_string();
+            do_save(new_id, ts.clone(), user_id.clone())
+                .await
+                .map_err(|e| format!("Retry after auto-provision failed: {}", e))?;
+        }
+        Err(e) => return Err(e),
+    }
+
+    // Always write to local cache too (local + cloud by default).
+    let _ = app
+        .state::<Db>()
+        .upsert_connector_cache(&scope, &scope_id, &service, &encrypted);
 
     crate::sync_manager::sync_on_update(&app, &scope, &scope_id).await;
 
@@ -387,8 +488,9 @@ pub async fn set_connector(
     if service == "telegram" {
         crate::remote::refresh_telegram_bots(&app);
     }
-    Ok(())
+    Ok("ok".to_string())
 }
+
 
 #[tauri::command]
 pub async fn delete_connector(
@@ -432,7 +534,7 @@ fn apply_scope(db: &Db, scope: &str, scope_id: &str, env: &mut Vec<(String, Stri
         let Some(def) = connector_def(&c.service) else {
             continue;
         };
-        let blob = parse_blob(c.credentials_encrypted.as_deref());
+        let blob = parse_blob(c.credentials_encrypted.as_deref(), scope_id);
         for f in def.fields {
             if let Some(v) = field_string(&blob, f.key) {
                 set_env(env, f.env, v);
@@ -490,7 +592,7 @@ pub fn project_telegram_bots(db: &Db) -> Vec<(String, i64, String, String, Vec<S
 
         for c in db.get_cached_connectors("project", &project_id) {
             if c.service != "telegram" { continue; }
-            let blob = parse_blob(c.credentials_encrypted.as_deref());
+            let blob = parse_blob(c.credentials_encrypted.as_deref(), &project_id);
             proj_bot_token = field_string(&blob, "bot_token").unwrap_or_default();
             chat_id = field_string(&blob, "chat_id").unwrap_or_default();
             thread_id = field_string(&blob, "thread_id").unwrap_or_default();
@@ -530,7 +632,7 @@ pub fn get_telegram_bot_token(db: &Db, org_id: Option<&str>) -> Option<String> {
             if c.service != "telegram" {
                 continue;
             }
-            let blob = parse_blob(c.credentials_encrypted.as_deref());
+            let blob = parse_blob(c.credentials_encrypted.as_deref(), oid);
             if let Some(tok) = field_string(&blob, "bot_token") {
                 if !tok.is_empty() {
                     return Some(tok);
@@ -693,7 +795,7 @@ pub fn resolve_connector_fields(
                 continue;
             }
             *found = true;
-            let blob = parse_blob(c.credentials_encrypted.as_deref());
+            let blob = parse_blob(c.credentials_encrypted.as_deref(), scope_id);
             for f in def.fields {
                 if let Some(v) = field_string(&blob, f.key) {
                     out.insert(f.key.to_string(), v);
@@ -756,6 +858,404 @@ pub fn workspace_connectors(app: &AppHandle, workspace_id: i64) -> Vec<Workspace
         }
     }
     out
+}
+
+// ─── Connector test-before-save ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorTestResult {
+    pub success: bool,
+    pub message: String,
+    pub details: Option<String>,
+}
+
+fn ok_result(message: &str) -> ConnectorTestResult {
+    ConnectorTestResult { success: true, message: message.to_string(), details: None }
+}
+
+fn ok_result_with(message: &str, details: &str) -> ConnectorTestResult {
+    ConnectorTestResult {
+        success: true,
+        message: message.to_string(),
+        details: Some(details.to_string()),
+    }
+}
+
+fn err_result(message: &str) -> ConnectorTestResult {
+    ConnectorTestResult { success: false, message: message.to_string(), details: None }
+}
+
+async fn test_supabase(url: &str, key: &str) -> ConnectorTestResult {
+    if url.is_empty() || key.is_empty() {
+        return err_result("URL and service role key are required");
+    }
+    let resp = reqwest::Client::new()
+        .get(format!("{}/rest/v1/", url.trim_end_matches('/')))
+        .header("apikey", key)
+        .header("Authorization", format!("Bearer {}", key))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() || r.status().as_u16() == 404 => {
+            ok_result("Connected to Supabase")
+        }
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
+        Ok(r) => err_result(&format!("Unexpected status: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_github(token: &str) -> ConnectorTestResult {
+    if token.is_empty() {
+        return err_result("Token is required");
+    }
+    let resp = reqwest::Client::new()
+        .get("https://api.github.com/user")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "SuperConsole")
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            let login = body["login"].as_str().unwrap_or("unknown");
+            ok_result_with(
+                &format!("Connected as @{}", login),
+                &format!("GitHub user: {}", login),
+            )
+        }
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid token"),
+        Ok(r) => err_result(&format!("GitHub error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_shopify(shop_domain: &str, api_key: &str) -> ConnectorTestResult {
+    if shop_domain.is_empty() || api_key.is_empty() {
+        return err_result("Shop domain and API key are required");
+    }
+    let domain = shop_domain.trim_end_matches('/');
+    let domain = if domain.contains('.') {
+        domain.to_string()
+    } else {
+        format!("{}.myshopify.com", domain)
+    };
+    let resp = reqwest::Client::new()
+        .get(format!("https://{}/admin/api/2024-01/shop.json", domain))
+        .header("X-Shopify-Access-Token", api_key)
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            let name = body["shop"]["name"].as_str().unwrap_or("Unknown store");
+            ok_result_with("Connected to Shopify", &format!("Store: {}", name))
+        }
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
+        Ok(r) if r.status().as_u16() == 404 => err_result("Shop domain not found"),
+        Ok(r) => err_result(&format!("Shopify error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_slack(token: &str) -> ConnectorTestResult {
+    if token.is_empty() {
+        return err_result("Bot token is required");
+    }
+    let resp = reqwest::Client::new()
+        .post("https://slack.com/api/auth.test")
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            if body["ok"].as_bool().unwrap_or(false) {
+                let user = body["user"].as_str().unwrap_or("bot");
+                let team = body["team"].as_str().unwrap_or("workspace");
+                ok_result_with("Connected to Slack", &format!("{} in {}", user, team))
+            } else {
+                let error = body["error"].as_str().unwrap_or("unknown error");
+                err_result(&format!("Slack error: {}", error))
+            }
+        }
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+        _ => err_result("Unexpected response"),
+    }
+}
+
+async fn test_notion(api_key: &str) -> ConnectorTestResult {
+    if api_key.is_empty() {
+        return err_result("API key is required");
+    }
+    let resp = reqwest::Client::new()
+        .get("https://api.notion.com/v1/users/me")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Notion-Version", "2022-06-28")
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            let name = body["name"].as_str().unwrap_or("Unknown");
+            ok_result_with("Connected to Notion", &format!("User: {}", name))
+        }
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
+        Ok(r) => err_result(&format!("Notion error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_linear(api_key: &str) -> ConnectorTestResult {
+    if api_key.is_empty() {
+        return err_result("API key is required");
+    }
+    let query = r#"{"query": "{ viewer { id name email } }"}"#;
+    let resp = reqwest::Client::new()
+        .post("https://api.linear.app/graphql")
+        .header("Authorization", api_key)
+        .header("Content-Type", "application/json")
+        .body(query)
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            let name = body["data"]["viewer"]["name"].as_str().unwrap_or("Unknown");
+            ok_result_with("Connected to Linear", &format!("User: {}", name))
+        }
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
+        Ok(r) => err_result(&format!("Linear error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_stripe(api_key: &str) -> ConnectorTestResult {
+    if api_key.is_empty() {
+        return err_result("API key is required");
+    }
+    let resp = reqwest::Client::new()
+        .get("https://api.stripe.com/v1/balance")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let mode = if api_key.starts_with("sk_live_") { "live" } else { "test" };
+            ok_result_with("Connected to Stripe", &format!("Mode: {}", mode))
+        }
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
+        Ok(r) => err_result(&format!("Stripe error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_beehiiv(api_key: &str) -> ConnectorTestResult {
+    if api_key.is_empty() {
+        return err_result("API key is required");
+    }
+    let resp = reqwest::Client::new()
+        .get("https://api.beehiiv.com/v2/publications")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => ok_result("Connected to Beehiiv"),
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
+        Ok(r) => err_result(&format!("Beehiiv error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_telegram(bot_token: &str) -> ConnectorTestResult {
+    if bot_token.is_empty() {
+        return err_result("Bot token is required");
+    }
+    let url = format!("https://api.telegram.org/bot{}/getMe", bot_token);
+    let resp = reqwest::Client::new().get(&url).send().await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            if body["ok"].as_bool().unwrap_or(false) {
+                let username = body["result"]["username"].as_str().unwrap_or("bot");
+                ok_result_with("Connected to Telegram", &format!("Bot: @{}", username))
+            } else {
+                err_result("Invalid bot token")
+            }
+        }
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+        _ => err_result("Invalid bot token"),
+    }
+}
+
+async fn test_tavily(api_key: &str) -> ConnectorTestResult {
+    if api_key.is_empty() {
+        return err_result("API key is required");
+    }
+    let resp = reqwest::Client::new()
+        .post("https://api.tavily.com/search")
+        .json(&serde_json::json!({
+            "api_key": api_key,
+            "query": "test",
+            "max_results": 1
+        }))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => ok_result("Connected to Tavily"),
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
+        Ok(r) => err_result(&format!("Tavily error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_turso(database_url: &str, auth_token: &str) -> ConnectorTestResult {
+    if database_url.is_empty() || auth_token.is_empty() {
+        return err_result("Database URL and auth token are required");
+    }
+    // Turso URLs are stored as libsql:// (native protocol) but the HTTP
+    // pipeline endpoint requires https://. Normalise before building the URL.
+    let http_url = database_url
+        .trim_end_matches('/')
+        .replacen("libsql://", "https://", 1);
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v2/pipeline", http_url))
+        .header("Authorization", format!("Bearer {}", auth_token))
+        .json(&serde_json::json!({
+            "requests": [{"type": "execute", "stmt": {"sql": "SELECT 1"}}]
+        }))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => ok_result("Connected to Turso"),
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid auth token"),
+        Ok(r) => err_result(&format!("Turso error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_airtable(api_key: &str) -> ConnectorTestResult {
+    if api_key.is_empty() {
+        return err_result("API key is required");
+    }
+    let resp = reqwest::Client::new()
+        .get("https://api.airtable.com/v0/meta/whoami")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => ok_result("Connected to Airtable"),
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
+        Ok(r) => err_result(&format!("Airtable error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_convertkit(api_key: &str) -> ConnectorTestResult {
+    if api_key.is_empty() {
+        return err_result("API key is required");
+    }
+    let resp = reqwest::Client::new()
+        .get(format!("https://api.convertkit.com/v3/account?api_key={}", api_key))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => ok_result("Connected to ConvertKit"),
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
+        Ok(r) => err_result(&format!("ConvertKit error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_composio(api_key: &str) -> ConnectorTestResult {
+    if api_key.is_empty() {
+        return err_result("API key is required");
+    }
+    let resp = reqwest::Client::new()
+        .get("https://backend.composio.dev/api/v1/client/auth/client_info")
+        .header("x-api-key", api_key)
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            let email = body["client"]["userEmail"].as_str().unwrap_or("unknown");
+            ok_result_with("Connected to Composio", &format!("Account: {}", email))
+        }
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
+        Ok(r) => err_result(&format!("Composio error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+async fn test_gmail(api_key: &str) -> ConnectorTestResult {
+    if api_key.is_empty() {
+        return err_result("API key is required");
+    }
+    let resp = reqwest::Client::new()
+        .get("https://www.googleapis.com/oauth2/v2/userinfo")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            let email = body["email"].as_str().unwrap_or("unknown");
+            ok_result_with("Connected to Gmail", &format!("Account: {}", email))
+        }
+        Ok(r) if r.status().as_u16() == 401 => err_result("Invalid or expired token"),
+        Ok(r) => err_result(&format!("Gmail error: {}", r.status())),
+        Err(e) => err_result(&format!("Connection failed: {}", e)),
+    }
+}
+
+pub async fn test_connector(service: &str, credentials_json: &str) -> ConnectorTestResult {
+    let creds: serde_json::Value = match serde_json::from_str(credentials_json) {
+        Ok(v) => v,
+        Err(e) => {
+            return err_result(&format!("Invalid credentials format: {}", e));
+        }
+    };
+    let field = |key: &str| creds[key].as_str().unwrap_or("").to_string();
+
+    let inner = async {
+        match service {
+            "supabase" => test_supabase(&field("url"), &field("service_role_key")).await,
+            "github" => test_github(&field("token")).await,
+            "shopify" => test_shopify(&field("shop_domain"), &field("api_key")).await,
+            "slack" => test_slack(&field("bot_token")).await,
+            "notion" => test_notion(&field("api_key")).await,
+            "linear" => test_linear(&field("api_key")).await,
+            "stripe" => test_stripe(&field("api_key")).await,
+            "beehiiv" => test_beehiiv(&field("api_key")).await,
+            "gmail" => test_gmail(&field("api_key")).await,
+            "telegram" => test_telegram(&field("bot_token")).await,
+            "tavily" | "web_search" => test_tavily(&field("api_key")).await,
+            "turso" => test_turso(&field("url"), &field("auth_token")).await,
+            "airtable" => test_airtable(&field("api_key")).await,
+            "convertkit" => test_convertkit(&field("api_key")).await,
+            "composio" => test_composio(&field("api_key")).await,
+            _ => ConnectorTestResult {
+                success: true,
+                message: "No test available for this connector — credentials saved as-is"
+                    .to_string(),
+                details: None,
+            },
+        }
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(10), inner).await {
+        Ok(result) => result,
+        Err(_) => err_result("Connection timed out"),
+    }
+}
+
+#[tauri::command]
+pub async fn test_connector_cmd(
+    service: String,
+    credentials_json: String,
+) -> Result<ConnectorTestResult, String> {
+    Ok(test_connector(&service, &credentials_json).await)
 }
 
 fn label_for(service: &str) -> String {

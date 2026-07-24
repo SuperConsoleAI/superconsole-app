@@ -7,9 +7,6 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -26,23 +23,22 @@ function fmtSize(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
-export function ContextDialog({ workspaceId, open, onOpenChange }: ContextDialogProps) {
+export function ContextView({ workspaceId }: { workspaceId: number }) {
   const [files, setFiles] = useState<ContextFile[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<Editing>(null);
 
   const refresh = useCallback(() => {
+    if (!workspaceId) return;
     api.listContextFiles(workspaceId).then(setFiles).catch((e) => setError(String(e)));
   }, [workspaceId]);
 
   useEffect(() => {
-    if (open) {
-      setEditing(null);
-      setError(null);
-      refresh();
-    }
-  }, [open, refresh]);
+    setEditing(null);
+    setError(null);
+    refresh();
+  }, [workspaceId, refresh]);
 
   const openEditor = async (slug: string) => {
     try {
@@ -73,18 +69,16 @@ export function ContextDialog({ workspaceId, open, onOpenChange }: ContextDialog
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <FileText className="h-4 w-4 text-primary" strokeWidth={1} />
-            Context
-          </DialogTitle>
-          <DialogDescription>
-            Files your agent can reference on demand. Not injected automatically — fetched when
-            relevant.
-          </DialogDescription>
-        </DialogHeader>
+    <div className="flex flex-col gap-4 p-5 h-full">
+      <div className="flex flex-col gap-1">
+        <h2 className="flex items-center gap-2 text-lg font-semibold">
+          <FileText className="h-5 w-5 text-primary" strokeWidth={1} />
+          Context
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Files your agent can reference on demand. Not injected automatically — fetched when relevant.
+        </p>
+      </div>
 
         {error && <p className="text-xs text-destructive">{error}</p>}
 
@@ -153,7 +147,7 @@ export function ContextDialog({ workspaceId, open, onOpenChange }: ContextDialog
               </Button>
             </div>
 
-            <ScrollArea className="max-h-[28rem]">
+            <ScrollArea className="flex-1 min-h-0">
               <div className="flex flex-col gap-1.5 pr-2">
                 {files.length === 0 && (
                   <p className="py-8 text-center text-sm text-muted-foreground">
@@ -194,6 +188,19 @@ export function ContextDialog({ workspaceId, open, onOpenChange }: ContextDialog
             </ScrollArea>
           </div>
         )}
+        <p className="mt-3 border-t border-border/50 pt-3 text-center text-xs text-muted-foreground">
+          Plain Markdown files in <code className="font-mono">.superconsole/</code> —{" "}
+          open in Obsidian, VS Code, or any editor. Committed to git automatically.
+        </p>
+    </div>
+  );
+}
+
+export function ContextDialog({ workspaceId, open, onOpenChange }: ContextDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl h-[80vh] flex flex-col p-0 overflow-hidden">
+        {open && <ContextView workspaceId={workspaceId} />}
       </DialogContent>
     </Dialog>
   );

@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import {
@@ -294,17 +295,25 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  // Track which workspaces have already had their default tab opened so that
+  // React StrictMode double-invocations don't create duplicate tabs.
+  const initializedWsRef = useRef<Set<number>>(new Set());
+
   const openWorkspace = useCallback(
     (id: number, defaultCli: string, runMode?: string) => {
       setOpenedIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
       setTabsByWs((prev) => {
-        if ((prev[id] ?? []).length === 0) {
+        const tabs = prev[id] ?? [];
+        if (tabs.length === 0 && !initializedWsRef.current.has(id)) {
+          // Mark as initialized immediately to prevent double-open from StrictMode
+          initializedWsRef.current.add(id);
           if (runMode === "chat") {
             queueMicrotask(() => openChatPicker(id));
           } else {
             queueMicrotask(() => openTab(id, defaultCli));
           }
         }
+        // If tabs exist, do nothing — user may have multiple tabs intentionally
         return prev;
       });
     },
