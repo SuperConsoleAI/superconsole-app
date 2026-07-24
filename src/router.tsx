@@ -11,7 +11,7 @@ import {
   useSearch,
 } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
-import { Anchor } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 import { api, type Agent } from "@/lib/api";
 import { InboxView } from "@/components/InboxView";
