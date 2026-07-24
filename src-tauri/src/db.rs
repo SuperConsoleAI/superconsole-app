@@ -120,7 +120,7 @@ pub struct SessionFeedItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRow {
-    pub id: String,              // local ULID
+    pub id: String, // local ULID
     pub workspace_id: i64,
     pub name: String,
     pub description: String,
@@ -129,8 +129,8 @@ pub struct AgentRow {
     pub default_cli: String,
     pub default_provider: String,
     pub default_model: String,
-    pub skills: String,       // comma-separated skill names
-    pub connectors: String,   // comma-separated connector service ids
+    pub skills: String,     // comma-separated skill names
+    pub connectors: String, // comma-separated connector service ids
     pub is_active: bool,
     pub agent_id: Option<String>, // Turso cloud ULID
     pub last_run: Option<String>,
@@ -147,9 +147,9 @@ pub struct AgentRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionLogFile {
-    pub id: String,                // ULID
+    pub id: String, // ULID
     pub workspace_id: i64,
-    pub file_path: String,         // relative: .superconsole/sessions/...
+    pub file_path: String, // relative: .superconsole/sessions/...
     pub agent_id: Option<String>,
     pub session_id: Option<String>,
     pub date: String,
@@ -158,7 +158,7 @@ pub struct SessionLogFile {
     pub cost_usd: f64,
     pub tokens: i64,
     pub summary: String,
-    pub cloud_id: Option<String>,  // Turso row id once synced
+    pub cloud_id: Option<String>, // Turso row id once synced
     pub created_at: String,
 }
 
@@ -171,7 +171,7 @@ pub struct CatalogSkillEntry {
     pub name: String,
     pub description: String,
     pub category: String,
-    pub tags: String,          // comma-separated
+    pub tags: String, // comma-separated
     pub github_url: String,
     pub readme: String,
     pub author: String,
@@ -513,11 +513,20 @@ impl Db {
             ("hook_ids", "TEXT NOT NULL DEFAULT '[]'"),
             ("rule_ids", "TEXT NOT NULL DEFAULT '[]'"),
         ] {
-            if conn.prepare(&format!("SELECT {} FROM installed_plugins_cache LIMIT 1", col)).is_err() {
-                let _ = conn.execute_batch(&format!("ALTER TABLE installed_plugins_cache ADD COLUMN {} {};", col, decl));
+            if conn
+                .prepare(&format!(
+                    "SELECT {} FROM installed_plugins_cache LIMIT 1",
+                    col
+                ))
+                .is_err()
+            {
+                let _ = conn.execute_batch(&format!(
+                    "ALTER TABLE installed_plugins_cache ADD COLUMN {} {};",
+                    col, decl
+                ));
             }
         }
-        
+
         for (col, decl) in [
             ("agent_ids", "TEXT NOT NULL DEFAULT '[]'"),
             ("hook_ids", "TEXT NOT NULL DEFAULT '[]'"),
@@ -532,11 +541,17 @@ impl Db {
             ("connector_auth", "TEXT NOT NULL DEFAULT '[]'"),
             ("featured", "INTEGER NOT NULL DEFAULT 0"),
         ] {
-            if conn.prepare(&format!("SELECT {} FROM plugins_cache LIMIT 1", col)).is_err() {
-                let _ = conn.execute_batch(&format!("ALTER TABLE plugins_cache ADD COLUMN {} {};", col, decl));
+            if conn
+                .prepare(&format!("SELECT {} FROM plugins_cache LIMIT 1", col))
+                .is_err()
+            {
+                let _ = conn.execute_batch(&format!(
+                    "ALTER TABLE plugins_cache ADD COLUMN {} {};",
+                    col, decl
+                ));
             }
         }
-        
+
         // Ensure catalog cache tables exist
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS plugins_cache (
@@ -627,8 +642,9 @@ impl Db {
                 icon_url TEXT NOT NULL DEFAULT '',
                 scope TEXT NOT NULL DEFAULT '',
                 install_count INTEGER NOT NULL DEFAULT 0
-            );"
-        ).map_err(|e| e.to_string())?;
+            );",
+        )
+        .map_err(|e| e.to_string())?;
 
         // Alterations for plugins_cache
         for (col, decl) in [
@@ -636,15 +652,26 @@ impl Db {
             ("agents_url", "TEXT NOT NULL DEFAULT '[]'"),
             ("mcp_url", "TEXT NOT NULL DEFAULT '[]'"),
         ] {
-            if conn.prepare(&format!("SELECT {} FROM plugins_cache LIMIT 1", col)).is_err() {
-                let _ = conn.execute_batch(&format!("ALTER TABLE plugins_cache ADD COLUMN {} {};", col, decl));
+            if conn
+                .prepare(&format!("SELECT {} FROM plugins_cache LIMIT 1", col))
+                .is_err()
+            {
+                let _ = conn.execute_batch(&format!(
+                    "ALTER TABLE plugins_cache ADD COLUMN {} {};",
+                    col, decl
+                ));
             }
         }
 
         // Project settings: default session, lifecycle scripts, repo/description.
         // All defaulted so existing rows keep current behaviour.
-        if conn.prepare("SELECT author FROM project_skills LIMIT 1").is_err() {
-            let _ = conn.execute_batch("ALTER TABLE project_skills ADD COLUMN author TEXT NOT NULL DEFAULT '';");
+        if conn
+            .prepare("SELECT author FROM project_skills LIMIT 1")
+            .is_err()
+        {
+            let _ = conn.execute_batch(
+                "ALTER TABLE project_skills ADD COLUMN author TEXT NOT NULL DEFAULT '';",
+            );
         }
 
         for (col, decl) in [
@@ -1087,11 +1114,8 @@ impl Db {
                 .prepare(&format!("SELECT {} FROM jobs LIMIT 1", col))
                 .is_ok();
             if !exists {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE jobs ADD COLUMN {} {};",
-                    col, decl
-                ))
-                .map_err(|e| e.to_string())?;
+                conn.execute_batch(&format!("ALTER TABLE jobs ADD COLUMN {} {};", col, decl))
+                    .map_err(|e| e.to_string())?;
             }
         }
 
@@ -1129,39 +1153,32 @@ impl Db {
         // Phase 24 addendum — columns added after initial agents table release.
         // Existing DBs already have the table; ALTER TABLE guards bring them up to date.
         for (col, decl) in [
-            ("skills",           "TEXT NOT NULL DEFAULT ''"),
-            ("connectors",       "TEXT NOT NULL DEFAULT ''"),
+            ("skills", "TEXT NOT NULL DEFAULT ''"),
+            ("connectors", "TEXT NOT NULL DEFAULT ''"),
             ("default_run_mode", "TEXT NOT NULL DEFAULT 'cli'"),
         ] {
             let exists = conn
                 .prepare(&format!("SELECT {} FROM agents LIMIT 1", col))
                 .is_ok();
             if !exists {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE agents ADD COLUMN {} {};",
-                    col, decl,
-                ))
-                .map_err(|e| e.to_string())?;
+                conn.execute_batch(&format!("ALTER TABLE agents ADD COLUMN {} {};", col, decl,))
+                    .map_err(|e| e.to_string())?;
             }
         }
-
 
         // Phase 24 — agent_id attribution columns.
         // NULL = user / manually triggered; non-NULL = run by a named agent.
         for (table, _col) in [
             ("session_history", "agent_id TEXT"),
-            ("chat_sessions",   "agent_id TEXT"),
-            ("jobs",            "agent_id TEXT"),
+            ("chat_sessions", "agent_id TEXT"),
+            ("jobs", "agent_id TEXT"),
         ] {
             let exists = conn
                 .prepare(&format!("SELECT agent_id FROM {} LIMIT 1", table))
                 .is_ok();
             if !exists {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE {} ADD COLUMN agent_id TEXT;",
-                    table
-                ))
-                .map_err(|e| e.to_string())?;
+                conn.execute_batch(&format!("ALTER TABLE {} ADD COLUMN agent_id TEXT;", table))
+                    .map_err(|e| e.to_string())?;
             }
         }
 
@@ -1171,8 +1188,8 @@ impl Db {
         // current_attempt: tracks how many attempts have fired for the current run.
         // All defaulted so existing jobs continue running unchanged.
         for (col, decl) in [
-            ("exit_condition",  "TEXT"),
-            ("max_attempts",    "INTEGER NOT NULL DEFAULT 1"),
+            ("exit_condition", "TEXT"),
+            ("max_attempts", "INTEGER NOT NULL DEFAULT 1"),
             ("current_attempt", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             let exists = conn
@@ -1271,7 +1288,8 @@ impl Db {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn add_organization(&self, name: &str) -> Result<Organization, String> {
@@ -1301,7 +1319,8 @@ impl Db {
         let rows = stmt
             .query_map([], Self::workspace_from_row)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn add_workspace(
@@ -1466,7 +1485,8 @@ impl Db {
         let rows = stmt
             .query_map([workspace_id], Self::job_from_row)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn due_jobs(&self, now: &str) -> Result<Vec<Job>, String> {
@@ -1477,7 +1497,8 @@ impl Db {
         let rows = stmt
             .query_map([now], Self::job_from_row)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn get_job(&self, id: i64) -> Result<Job, String> {
@@ -1554,7 +1575,12 @@ impl Db {
         .map_err(|e| e.to_string())
     }
 
-    pub fn set_job_enabled(&self, id: i64, enabled: bool, next_run: Option<&str>) -> Result<(), String> {
+    pub fn set_job_enabled(
+        &self,
+        id: i64,
+        enabled: bool,
+        next_run: Option<&str>,
+    ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "UPDATE jobs SET enabled = ?1, next_run = ?2 WHERE id = ?3",
@@ -1564,7 +1590,12 @@ impl Db {
         Ok(())
     }
 
-    pub fn mark_job_ran(&self, id: i64, last_run: &str, next_run: Option<&str>) -> Result<(), String> {
+    pub fn mark_job_ran(
+        &self,
+        id: i64,
+        last_run: &str,
+        next_run: Option<&str>,
+    ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "UPDATE jobs SET last_run = ?1, next_run = ?2, current_attempt = 0 WHERE id = ?3",
@@ -1600,7 +1631,10 @@ impl Db {
     pub fn set_job_next_run_relative(&self, job_id: i64, seconds: i64) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            &format!("UPDATE jobs SET next_run = datetime('now', '+{} seconds') WHERE id = ?1", seconds),
+            &format!(
+                "UPDATE jobs SET next_run = datetime('now', '+{} seconds') WHERE id = ?1",
+                seconds
+            ),
             [job_id],
         )
         .map_err(|e| e.to_string())?;
@@ -1610,11 +1644,9 @@ impl Db {
     /// Get the status of an inbox item (for inbox_approved exit condition).
     pub fn get_inbox_status(&self, inbox_id: i64) -> Result<String, String> {
         let conn = self.0.lock().unwrap();
-        conn.query_row(
-            "SELECT status FROM inbox WHERE id = ?1",
-            [inbox_id],
-            |r| r.get(0),
-        )
+        conn.query_row("SELECT status FROM inbox WHERE id = ?1", [inbox_id], |r| {
+            r.get(0)
+        })
         .map_err(|e| e.to_string())
     }
 
@@ -1646,7 +1678,11 @@ impl Db {
 
     /// Overwrite the trigger_config JSON for a job.
     /// Used by the email polling loop to persist last_checked timestamps.
-    pub fn update_job_trigger_config(&self, job_id: i64, trigger_config: &str) -> Result<(), String> {
+    pub fn update_job_trigger_config(
+        &self,
+        job_id: i64,
+        trigger_config: &str,
+    ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "UPDATE jobs SET trigger_config = ?1 WHERE id = ?2",
@@ -1690,13 +1726,18 @@ impl Db {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn unread_count(&self) -> Result<i64, String> {
         let conn = self.0.lock().unwrap();
-        conn.query_row("SELECT COUNT(*) FROM inbox WHERE status = 'unread'", [], |r| r.get(0))
-            .map_err(|e| e.to_string())
+        conn.query_row(
+            "SELECT COUNT(*) FROM inbox WHERE status = 'unread'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
     }
 
     pub fn mark_inbox_read(&self, id: i64) -> Result<(), String> {
@@ -1765,7 +1806,8 @@ impl Db {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn rename_session_log(&self, id: i64, label: Option<&str>) -> Result<(), String> {
@@ -1789,8 +1831,9 @@ impl Db {
     /// Aggregate usage_events for a CLI session → update session_history row.
     pub fn finalize_cli_session_cost(&self, session_id: &str) {
         let conn = self.0.lock().unwrap();
-        let result: rusqlite::Result<(i64, i64, i64, f64, String, String, String)> = conn.query_row(
-            "SELECT
+        let result: rusqlite::Result<(i64, i64, i64, f64, String, String, String)> = conn
+            .query_row(
+                "SELECT
                 COALESCE(SUM(tokens_prompt), 0),
                 COALESCE(SUM(tokens_completion), 0),
                 COALESCE(SUM(tokens_reasoning), 0),
@@ -1799,9 +1842,19 @@ impl Db {
                 COALESCE(MAX(provider), ''),
                 ''
              FROM usage_events WHERE session_id = ?",
-            [session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
-        );
+                [session_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            );
         if let Ok((tp, tc, tr, cost, model, provider, _)) = result {
             let _ = conn.execute(
                 "UPDATE session_history SET
@@ -1833,7 +1886,14 @@ impl Db {
                provider = ?5,
                updated_at = datetime('now')
              WHERE id = ?6",
-            rusqlite::params![tokens_prompt, tokens_completion, cost_usd, model, provider, session_id],
+            rusqlite::params![
+                tokens_prompt,
+                tokens_completion,
+                cost_usd,
+                model,
+                provider,
+                session_id
+            ],
         );
     }
 
@@ -1857,7 +1917,10 @@ impl Db {
     }
 
     /// List user-initiated CLI + chat sessions (job_id IS NULL) for the Sessions page.
-    pub fn list_user_sessions(&self, workspace_id: Option<i64>) -> Result<Vec<SessionFeedItem>, String> {
+    pub fn list_user_sessions(
+        &self,
+        workspace_id: Option<i64>,
+    ) -> Result<Vec<SessionFeedItem>, String> {
         let conn = self.0.lock().unwrap();
         let mut items: Vec<SessionFeedItem> = Vec::new();
 
@@ -1986,25 +2049,36 @@ impl Db {
         let conn = self.0.lock().unwrap();
         // Find job_id for inbox item, then look up job's last_run_session_id
         let job_id: Option<i64> = conn
-            .query_row("SELECT job_id FROM inbox WHERE id = ?1", [inbox_id], |r| r.get(0))
+            .query_row("SELECT job_id FROM inbox WHERE id = ?1", [inbox_id], |r| {
+                r.get(0)
+            })
             .unwrap_or(None);
-        let Some(jid) = job_id else { return Ok(None); };
+        let Some(jid) = job_id else {
+            return Ok(None);
+        };
         let session_id: Option<String> = conn
-            .query_row("SELECT last_run_session_id FROM jobs WHERE id = ?1", [jid], |r| r.get(0))
+            .query_row(
+                "SELECT last_run_session_id FROM jobs WHERE id = ?1",
+                [jid],
+                |r| r.get(0),
+            )
             .unwrap_or(None);
-        let Some(sid) = session_id else { return Ok(None); };
+        let Some(sid) = session_id else {
+            return Ok(None);
+        };
         // Try CLI session first
-        let cli_item = conn.query_row(
-            "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
+        let cli_item = conn
+            .query_row(
+                "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                     sh.last_output, sh.started_at, sh.started_at,
                     sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd
              FROM session_history sh
              JOIN workspaces w ON w.id = sh.workspace_id
              WHERE sh.session_id = ?1",
-            [&sid],
-            Self::session_feed_cli_from_row,
-        )
-        .ok();
+                [&sid],
+                Self::session_feed_cli_from_row,
+            )
+            .ok();
         if cli_item.is_some() {
             return Ok(cli_item);
         }
@@ -2076,8 +2150,10 @@ impl Db {
 
     pub fn get_setting(&self, key: &str) -> Option<String> {
         let conn = self.0.lock().unwrap();
-        conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
-            .ok()
+        conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+            r.get(0)
+        })
+        .ok()
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
@@ -2262,7 +2338,10 @@ impl Db {
         )
         .map_err(|e| e.to_string())?;
         conn.query_row(
-            &format!("{} WHERE workspace_id = ?1 AND name = ?2", Self::AGENT_SELECT),
+            &format!(
+                "{} WHERE workspace_id = ?1 AND name = ?2",
+                Self::AGENT_SELECT
+            ),
             rusqlite::params![workspace_id, name],
             Self::agent_from_row,
         )
@@ -2270,7 +2349,12 @@ impl Db {
     }
 
     /// Toggle the active flag for an agent (pauses/resumes scheduled runs).
-    pub fn set_agent_active(&self, workspace_id: i64, name: &str, is_active: bool) -> Result<(), String> {
+    pub fn set_agent_active(
+        &self,
+        workspace_id: i64,
+        name: &str,
+        is_active: bool,
+    ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "UPDATE agents SET is_active = ?1, updated_at = datetime('now')
@@ -2292,13 +2376,17 @@ impl Db {
         let rows = stmt
             .query_map([workspace_id], Self::agent_from_row)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn get_agent_row_by_name(&self, workspace_id: i64, name: &str) -> Result<AgentRow, String> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            &format!("{} WHERE workspace_id = ?1 AND name = ?2", Self::AGENT_SELECT),
+            &format!(
+                "{} WHERE workspace_id = ?1 AND name = ?2",
+                Self::AGENT_SELECT
+            ),
             rusqlite::params![workspace_id, name],
             Self::agent_from_row,
         )
@@ -2375,7 +2463,10 @@ impl Db {
                 )
                 .map_err(|e| e.to_string())?;
             let rows: Vec<SessionFeedItem> = stmt
-                .query_map(rusqlite::params![workspace_id, agent_name], Self::session_feed_cli_from_row)
+                .query_map(
+                    rusqlite::params![workspace_id, agent_name],
+                    Self::session_feed_cli_from_row,
+                )
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect();
@@ -2399,7 +2490,10 @@ impl Db {
                 )
                 .map_err(|e| e.to_string())?;
             let rows: Vec<SessionFeedItem> = stmt
-                .query_map(rusqlite::params![workspace_id, agent_name], Self::session_feed_chat_from_row)
+                .query_map(
+                    rusqlite::params![workspace_id, agent_name],
+                    Self::session_feed_chat_from_row,
+                )
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect();
@@ -2421,10 +2515,23 @@ impl Db {
                  cost_usd, cache_hit_rate, estimated, synced, started_at, ended_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,0,?16,?17)",
             rusqlite::params![
-                ev.id, ev.project_id, ev.org_id, ev.user_id, ev.session_id, ev.model,
-                ev.provider, ev.cli, ev.tokens_prompt, ev.tokens_prompt_cached,
-                ev.tokens_completion, ev.tokens_reasoning, ev.cost_usd, ev.cache_hit_rate,
-                ev.estimated as i64, ev.started_at, ev.ended_at,
+                ev.id,
+                ev.project_id,
+                ev.org_id,
+                ev.user_id,
+                ev.session_id,
+                ev.model,
+                ev.provider,
+                ev.cli,
+                ev.tokens_prompt,
+                ev.tokens_prompt_cached,
+                ev.tokens_completion,
+                ev.tokens_reasoning,
+                ev.cost_usd,
+                ev.cache_hit_rate,
+                ev.estimated as i64,
+                ev.started_at,
+                ev.ended_at,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -2464,7 +2571,8 @@ impl Db {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn mark_usage_synced(&self, ids: &[String]) -> Result<(), String> {
@@ -2696,9 +2804,7 @@ impl Db {
         credentials_encrypted: &str,
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
-        let ts = chrono::Utc::now()
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
+        let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         conn.execute(
             "INSERT INTO connectors_cache
                  (scope, scope_id, service, status, credentials_encrypted, synced_at)
@@ -2713,7 +2819,12 @@ impl Db {
         Ok(())
     }
 
-    pub fn set_project_org(&self, project_id: &str, org_id: &str, synced_at: &str) -> Result<(), String> {
+    pub fn set_project_org(
+        &self,
+        project_id: &str,
+        org_id: &str,
+        synced_at: &str,
+    ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "INSERT INTO project_org_cache (project_id, org_id, synced_at) VALUES (?1, ?2, ?3)
@@ -2801,7 +2912,8 @@ impl Db {
         let rows = stmt
             .query_map([project_id], Self::chat_session_from_row)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn add_chat_message(
@@ -2859,13 +2971,18 @@ impl Db {
         let rows = stmt
             .query_map([session_id], Self::chat_message_from_row)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn rename_chat_session(&self, id: &str, name: &str) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         let trimmed = name.trim();
-        let value: Option<&str> = if trimmed.is_empty() { None } else { Some(trimmed) };
+        let value: Option<&str> = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        };
         conn.execute(
             "UPDATE chat_sessions SET name = ?2 WHERE id = ?1",
             rusqlite::params![id, value],
@@ -2910,8 +3027,11 @@ impl Db {
             )
             .map_err(|_| "chat session not found".to_string())?;
 
-        conn.execute("DELETE FROM chat_messages WHERE session_id = ?1", [session_id])
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM chat_messages WHERE session_id = ?1",
+            [session_id],
+        )
+        .map_err(|e| e.to_string())?;
 
         for msg in messages {
             conn.execute(
@@ -3036,7 +3156,12 @@ impl Db {
         .map(|v| v != 0)
     }
 
-    pub fn set_skill_active(&self, workspace_id: i64, name: &str, active: bool) -> Result<(), String> {
+    pub fn set_skill_active(
+        &self,
+        workspace_id: i64,
+        name: &str,
+        active: bool,
+    ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "UPDATE project_skills SET active = ?1, updated_at = datetime('now')
@@ -3056,10 +3181,10 @@ impl Db {
         )
         .map_err(|e| e.to_string())?;
         if let Some(pid) = pid {
-                let _ = conn.execute(
-                    "DELETE FROM skill_index_cache WHERE project_id = ?1 AND skill_name = ?2",
-                    (pid, name),
-                );
+            let _ = conn.execute(
+                "DELETE FROM skill_index_cache WHERE project_id = ?1 AND skill_name = ?2",
+                (pid, name),
+            );
         }
         Ok(())
     }
@@ -3175,7 +3300,15 @@ impl Db {
              ON CONFLICT(workspace_id, category, slug) DO UPDATE SET
                 title = excluded.title, summary = excluded.summary, tags = excluded.tags,
                 file_path = excluded.file_path, updated_at = excluded.updated_at",
-            rusqlite::params![workspace_id, category, slug, title, summary, tags, file_path],
+            rusqlite::params![
+                workspace_id,
+                category,
+                slug,
+                title,
+                summary,
+                tags,
+                file_path
+            ],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -3249,7 +3382,9 @@ impl Db {
                 "INSERT INTO memory_index_cache
                     (project_id, category, slug, title, summary, tags, synced_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![project_id, m.category, m.slug, m.title, m.summary, m.tags, synced_at],
+                rusqlite::params![
+                    project_id, m.category, m.slug, m.title, m.summary, m.tags, synced_at
+                ],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -3388,14 +3523,19 @@ impl Db {
     ) -> Result<(), String> {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM wiki_index_cache WHERE project_id = ?1", [project_id])
-            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM wiki_index_cache WHERE project_id = ?1",
+            [project_id],
+        )
+        .map_err(|e| e.to_string())?;
         for p in pages {
             tx.execute(
                 "INSERT INTO wiki_index_cache
                     (project_id, slug, title, summary, tags, content, synced_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![project_id, p.slug, p.title, p.summary, p.tags, p.content, synced_at],
+                rusqlite::params![
+                    project_id, p.slug, p.title, p.summary, p.tags, p.content, synced_at
+                ],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -3448,8 +3588,17 @@ impl Db {
                 agent_name, model, cost_usd, tokens, summary)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             rusqlite::params![
-                id, workspace_id, file_path, agent_id, session_id, date,
-                agent_name, model, cost_usd, tokens, summary
+                id,
+                workspace_id,
+                file_path,
+                agent_id,
+                session_id,
+                date,
+                agent_name,
+                model,
+                cost_usd,
+                tokens,
+                summary
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -3590,9 +3739,16 @@ impl Db {
                author=excluded.author, stars=excluded.stars,
                synced_at=excluded.synced_at",
             rusqlite::params![
-                entry.id, entry.name, entry.description, entry.category,
-                entry.tags, entry.github_url, entry.readme, entry.author,
-                entry.stars, entry.synced_at
+                entry.id,
+                entry.name,
+                entry.description,
+                entry.category,
+                entry.tags,
+                entry.github_url,
+                entry.readme,
+                entry.author,
+                entry.stars,
+                entry.synced_at
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -3644,12 +3800,12 @@ impl Db {
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         let id = ulid::Ulid::new().to_string();
-        
+
         let _ = conn.execute(
             "DELETE FROM installed_plugins_cache WHERE scope = ?1 AND scope_id = ?2 AND plugin_id = ?3",
             rusqlite::params![scope, scope_id, &entry.id],
         );
-        
+
         conn.execute(
             "INSERT INTO installed_plugins_cache (
                 id, scope, scope_id, plugin_id, version,
@@ -3661,12 +3817,22 @@ impl Db {
                 ?13, ?14, ?15, ?16, ?17, ?18
             )",
             rusqlite::params![
-                id, scope, scope_id, &entry.id, &entry.version,
-                &entry.skill_ids, &entry.agent_ids, &entry.mcp_ids, &entry.command_ids, &entry.hook_ids, &entry.rule_ids, &entry.connector_ids,
-                &entry.skills_url.clone().unwrap_or_else(|| "[]".into()), 
-                &entry.agents_url.clone().unwrap_or_else(|| "[]".into()), 
-                &entry.mcp_url.clone().unwrap_or_else(|| "[]".into()), 
-                &entry.commands_url.clone().unwrap_or_else(|| "[]".into()), 
+                id,
+                scope,
+                scope_id,
+                &entry.id,
+                &entry.version,
+                &entry.skill_ids,
+                &entry.agent_ids,
+                &entry.mcp_ids,
+                &entry.command_ids,
+                &entry.hook_ids,
+                &entry.rule_ids,
+                &entry.connector_ids,
+                &entry.skills_url.clone().unwrap_or_else(|| "[]".into()),
+                &entry.agents_url.clone().unwrap_or_else(|| "[]".into()),
+                &entry.mcp_url.clone().unwrap_or_else(|| "[]".into()),
+                &entry.commands_url.clone().unwrap_or_else(|| "[]".into()),
                 &entry.hooks_url.clone().unwrap_or_else(|| "[]".into()),
                 &entry.rules_url
             ],
@@ -3706,7 +3872,12 @@ impl Db {
         }
     }
 
-    pub fn remove_installed_plugin(&self, scope: &str, scope_id: &str, plugin_id: &str) -> Result<(), String> {
+    pub fn remove_installed_plugin(
+        &self,
+        scope: &str,
+        scope_id: &str,
+        plugin_id: &str,
+    ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "DELETE FROM installed_plugins_cache WHERE scope = ?1 AND scope_id = ?2 AND plugin_id = ?3",
@@ -3776,7 +3947,10 @@ impl Db {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins_cache WHERE name LIKE ?1 OR description LIKE ?1 ORDER BY name").unwrap();
         let q = format!("%{}%", query);
-        stmt.query_map([&q], Self::map_plugin_cache).unwrap().filter_map(|r| r.ok()).collect()
+        stmt.query_map([&q], Self::map_plugin_cache)
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
     }
 
     fn map_plugin_cache(row: &rusqlite::Row) -> rusqlite::Result<PluginCacheEntry> {
@@ -3824,9 +3998,24 @@ impl Db {
         let mut stmt = conn.prepare("SELECT id, name, description, category, auth_type, oauth_url, api_key_fields, docs_url, icon_url, scope, install_count FROM connector_catalog_cache ORDER BY name").unwrap();
         stmt.query_map([], |r| {
             Ok(ConnectorCatalogEntry {
-                id: r.get(0)?, name: r.get(1)?, description: r.get(2)?, category: r.get(3)?, auth_type: r.get(4)?, oauth_url: r.get(5)?, api_key_fields: r.get(6)?, docs_url: r.get(7)?, icon_url: r.get(8)?, scope: r.get(9)?, install_count: r.get(10)?, synced_at: None, created_at: None
+                id: r.get(0)?,
+                name: r.get(1)?,
+                description: r.get(2)?,
+                category: r.get(3)?,
+                auth_type: r.get(4)?,
+                oauth_url: r.get(5)?,
+                api_key_fields: r.get(6)?,
+                docs_url: r.get(7)?,
+                icon_url: r.get(8)?,
+                scope: r.get(9)?,
+                install_count: r.get(10)?,
+                synced_at: None,
+                created_at: None,
             })
-        }).unwrap().filter_map(|r| r.ok()).collect()
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
     }
 
     pub fn upsert_mcp_catalog(&self, e: &McpCatalogEntry) -> Result<(), String> {
@@ -3840,14 +4029,40 @@ impl Db {
 
     pub fn list_mcp_catalog(&self, category: Option<&str>) -> Vec<McpCatalogEntry> {
         let conn = self.0.lock().unwrap();
-        let sql = if category.is_some() { "SELECT id, name, description, author, category, type, url, command, args, env, required_env_vars, github_url, icon_url, docs_url, install_count FROM mcp_catalog_cache WHERE category = ? ORDER BY name" } else { "SELECT id, name, description, author, category, type, url, command, args, env, required_env_vars, github_url, icon_url, docs_url, install_count FROM mcp_catalog_cache ORDER BY name" };
+        let sql = if category.is_some() {
+            "SELECT id, name, description, author, category, type, url, command, args, env, required_env_vars, github_url, icon_url, docs_url, install_count FROM mcp_catalog_cache WHERE category = ? ORDER BY name"
+        } else {
+            "SELECT id, name, description, author, category, type, url, command, args, env, required_env_vars, github_url, icon_url, docs_url, install_count FROM mcp_catalog_cache ORDER BY name"
+        };
         let mut stmt = conn.prepare(sql).unwrap();
-        let iter = if let Some(c) = category { stmt.query_map([c], Self::map_mcp) } else { stmt.query_map([], Self::map_mcp) };
+        let iter = if let Some(c) = category {
+            stmt.query_map([c], Self::map_mcp)
+        } else {
+            stmt.query_map([], Self::map_mcp)
+        };
         iter.unwrap().filter_map(|r| r.ok()).collect()
     }
 
     fn map_mcp(r: &rusqlite::Row) -> rusqlite::Result<McpCatalogEntry> {
-        Ok(McpCatalogEntry { id: r.get(0)?, name: r.get(1)?, description: r.get(2)?, author: r.get(3)?, category: r.get(4)?, r#type: r.get(5)?, url: r.get(6)?, command: r.get(7)?, args: r.get(8)?, env: r.get(9)?, required_env_vars: r.get(10)?, github_url: r.get(11)?, icon_url: r.get(12)?, docs_url: r.get(13)?, install_count: r.get(14)?, synced_at: None, created_at: None })
+        Ok(McpCatalogEntry {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            description: r.get(2)?,
+            author: r.get(3)?,
+            category: r.get(4)?,
+            r#type: r.get(5)?,
+            url: r.get(6)?,
+            command: r.get(7)?,
+            args: r.get(8)?,
+            env: r.get(9)?,
+            required_env_vars: r.get(10)?,
+            github_url: r.get(11)?,
+            icon_url: r.get(12)?,
+            docs_url: r.get(13)?,
+            install_count: r.get(14)?,
+            synced_at: None,
+            created_at: None,
+        })
     }
 
     pub fn upsert_commands_catalog(&self, e: &CommandsCatalogEntry) -> Result<(), String> {
@@ -3863,8 +4078,24 @@ impl Db {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, name, slash, description, author, category, github_url, content, icon_url, install_count FROM commands_catalog_cache ORDER BY name").unwrap();
         stmt.query_map([], |r| {
-            Ok(CommandsCatalogEntry { id: r.get(0)?, name: r.get(1)?, slash: r.get(2)?, description: r.get(3)?, author: r.get(4)?, category: r.get(5)?, github_url: r.get(6)?, content: r.get(7)?, icon_url: r.get(8)?, install_count: r.get(9)?, synced_at: None, created_at: None })
-        }).unwrap().filter_map(|r| r.ok()).collect()
+            Ok(CommandsCatalogEntry {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                slash: r.get(2)?,
+                description: r.get(3)?,
+                author: r.get(4)?,
+                category: r.get(5)?,
+                github_url: r.get(6)?,
+                content: r.get(7)?,
+                icon_url: r.get(8)?,
+                install_count: r.get(9)?,
+                synced_at: None,
+                created_at: None,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
     }
 
     pub fn upsert_hooks_catalog(&self, e: &HooksCatalogEntry) -> Result<(), String> {
@@ -3878,16 +4109,35 @@ impl Db {
 
     pub fn list_hooks_catalog(&self, hook_type: Option<&str>) -> Vec<HooksCatalogEntry> {
         let conn = self.0.lock().unwrap();
-        let sql = if hook_type.is_some() { "SELECT id, name, description, author, hook_type, github_url, content, icon_url, install_count FROM hooks_catalog_cache WHERE hook_type = ? ORDER BY name" } else { "SELECT id, name, description, author, hook_type, github_url, content, icon_url, install_count FROM hooks_catalog_cache ORDER BY name" };
+        let sql = if hook_type.is_some() {
+            "SELECT id, name, description, author, hook_type, github_url, content, icon_url, install_count FROM hooks_catalog_cache WHERE hook_type = ? ORDER BY name"
+        } else {
+            "SELECT id, name, description, author, hook_type, github_url, content, icon_url, install_count FROM hooks_catalog_cache ORDER BY name"
+        };
         let mut stmt = conn.prepare(sql).unwrap();
-        let iter = if let Some(t) = hook_type { stmt.query_map([t], Self::map_hooks) } else { stmt.query_map([], Self::map_hooks) };
+        let iter = if let Some(t) = hook_type {
+            stmt.query_map([t], Self::map_hooks)
+        } else {
+            stmt.query_map([], Self::map_hooks)
+        };
         iter.unwrap().filter_map(|r| r.ok()).collect()
     }
 
     fn map_hooks(r: &rusqlite::Row) -> rusqlite::Result<HooksCatalogEntry> {
-        Ok(HooksCatalogEntry { id: r.get(0)?, name: r.get(1)?, description: r.get(2)?, author: r.get(3)?, hook_type: r.get(4)?, github_url: r.get(5)?, content: r.get(6)?, icon_url: r.get(7)?, install_count: r.get(8)?, synced_at: None, created_at: None })
+        Ok(HooksCatalogEntry {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            description: r.get(2)?,
+            author: r.get(3)?,
+            hook_type: r.get(4)?,
+            github_url: r.get(5)?,
+            content: r.get(6)?,
+            icon_url: r.get(7)?,
+            install_count: r.get(8)?,
+            synced_at: None,
+            created_at: None,
+        })
     }
-
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
@@ -3993,7 +4243,6 @@ pub struct HooksCatalogEntry {
     pub synced_at: Option<String>,
     pub created_at: Option<String>,
 }
-
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 #[serde(rename_all = "camelCase")]

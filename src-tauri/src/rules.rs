@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
@@ -40,9 +40,13 @@ fn parse_frontmatter(content: &str) -> RuleFrontmatter {
                     let val = v.trim();
                     match key.as_str() {
                         "name" => fm.name = val.trim_matches('"').trim_matches('\'').to_string(),
-                        "description" => fm.description = val.trim_matches('"').trim_matches('\'').to_string(),
+                        "description" => {
+                            fm.description = val.trim_matches('"').trim_matches('\'').to_string()
+                        }
                         "always_apply" => fm.always_apply = val.to_lowercase() == "true",
-                        "author" => fm.author = Some(val.trim_matches('"').trim_matches('\'').to_string()),
+                        "author" => {
+                            fm.author = Some(val.trim_matches('"').trim_matches('\'').to_string())
+                        }
                         _ => {}
                     }
                 }
@@ -90,7 +94,11 @@ pub fn list_rules(ws_path: &str) -> Vec<RuleFile> {
                     let fm = parse_frontmatter(&content);
                     out.push(RuleFile {
                         slug: slug.to_string(),
-                        name: if fm.name.is_empty() { slug.to_string() } else { fm.name },
+                        name: if fm.name.is_empty() {
+                            slug.to_string()
+                        } else {
+                            fm.name
+                        },
                         description: fm.description,
                         content,
                         always_apply: fm.always_apply,
@@ -130,7 +138,12 @@ pub fn write_rule(ws_path: &str, slug: &str, content: &str) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn tauri_write_rule(app: AppHandle, workspace_id: i64, slug: String, content: String) -> Result<(), String> {
+pub fn tauri_write_rule(
+    app: AppHandle,
+    workspace_id: i64,
+    slug: String,
+    content: String,
+) -> Result<(), String> {
     let ws = app.state::<Db>().get_workspace(workspace_id)?;
     write_rule(&ws.path, &slug, &content)
 }

@@ -461,7 +461,12 @@ fn clean_description(d: &str) -> String {
     let first = d.split(". ").next().unwrap_or(&d).trim().to_string();
     let mut s = first.trim_end_matches('.').to_string();
     if s.chars().count() > 140 {
-        s = s.chars().take(140).collect::<String>().trim_end().to_string();
+        s = s
+            .chars()
+            .take(140)
+            .collect::<String>()
+            .trim_end()
+            .to_string();
     }
     s
 }
@@ -644,7 +649,9 @@ pub async fn detect_repo_agents(
         tree.iter()
             .filter(|p| {
                 let lp = p.to_lowercase();
-                p.starts_with("skills/") && lp.ends_with(".md") && p["skills/".len()..].find('/').is_none()
+                p.starts_with("skills/")
+                    && lp.ends_with(".md")
+                    && p["skills/".len()..].find('/').is_none()
             })
             .cloned()
             .collect()
@@ -701,8 +708,8 @@ pub async fn detect_repo_agents(
                 files.extend(install_skills.iter().cloned());
                 files.extend(m.files.iter().cloned());
                 files.truncate(10); // max 10 files
-                // Name must match the repo (single agent); multiple agents are
-                // namespaced under the repo name.
+                                    // Name must match the repo (single agent); multiple agents are
+                                    // namespaced under the repo name.
                 let agent_name = if manifest_count <= 1 || m.name.is_empty() {
                     repo_name.clone()
                 } else {
@@ -710,7 +717,8 @@ pub async fn detect_repo_agents(
                 };
                 let mut skills = skill_display_names(&display_skills);
                 skills.truncate(20); // store at most 20 skill names in the catalog
-                CatalogAgentInput { name: sanitize_agent_name(&agent_name),
+                CatalogAgentInput {
+                    name: sanitize_agent_name(&agent_name),
                     description: clean_description(&m.description),
                     category: m.category,
                     image_url: if m.image.is_empty() {
@@ -739,7 +747,8 @@ pub async fn detect_repo_agents(
         files.truncate(10);
         let mut skills = skill_display_names(&skill_name_paths);
         skills.truncate(20);
-        vec![CatalogAgentInput { name: sanitize_agent_name(&repo_name),
+        vec![CatalogAgentInput {
+            name: sanitize_agent_name(&repo_name),
             description: String::new(),
             category: String::new(),
             image_url: owner_avatar.clone(),
@@ -749,7 +758,9 @@ pub async fn detect_repo_agents(
             repo: repo.clone(),
             git_ref: git_ref.clone(),
             base_path: String::new(),
-            files, author: String::new() }]
+            files,
+            author: String::new(),
+        }]
     };
 
     Ok(inputs)
@@ -786,7 +797,8 @@ pub async fn install_catalog_agent(ws_path: &str, id: &str) -> Result<(), String
         .into_iter()
         .next()
         .ok_or_else(|| format!("agent '{}' not found in catalog", id))?;
-    let input = CatalogAgentInput { name: cloud::cell_text(&row, 0),
+    let input = CatalogAgentInput {
+        name: cloud::cell_text(&row, 0),
         description: cloud::cell_text(&row, 1),
         category: String::new(),
         image_url: String::new(),
@@ -796,7 +808,9 @@ pub async fn install_catalog_agent(ws_path: &str, id: &str) -> Result<(), String
         repo: cloud::cell_text(&row, 4),
         git_ref: cloud::cell_text(&row, 5),
         base_path: cloud::cell_text(&row, 6),
-        files: parse_json_list(&cloud::cell_text(&row, 7)), author: String::new() };
+        files: parse_json_list(&cloud::cell_text(&row, 7)),
+        author: String::new(),
+    };
     install_input(ws_path, &input).await
 }
 
@@ -1094,7 +1108,8 @@ async fn install_input(ws_path: &str, input: &CatalogAgentInput) -> Result<(), S
         readme: None,
     };
     std::fs::create_dir_all(&agent_folder).map_err(|e| e.to_string())?;
-    std::fs::write(agent_folder.join("agent.md"), build_agent_md(&agent)).map_err(|e| e.to_string())?;
+    std::fs::write(agent_folder.join("agent.md"), build_agent_md(&agent))
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -1166,7 +1181,9 @@ pub async fn push_agent_to_cloud(
     last_run: Option<&str>,
 ) {
     let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else { return };
+    let Ok(cfg) = cloud::turso_config() else {
+        return;
+    };
     let client = reqwest::Client::new();
     if ensure_agent_index_table(&client, &cfg).await.is_err() {
         return;
@@ -1220,13 +1237,11 @@ pub async fn push_agent_to_cloud(
 }
 
 /// Delete one agent's Turso row after a local delete.
-pub async fn delete_agent_from_cloud(
-    app: &tauri::AppHandle,
-    project_id: Option<&str>,
-    name: &str,
-) {
+pub async fn delete_agent_from_cloud(app: &tauri::AppHandle, project_id: Option<&str>, name: &str) {
     let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else { return };
+    let Ok(cfg) = cloud::turso_config() else {
+        return;
+    };
     let client = reqwest::Client::new();
     if ensure_agent_index_table(&client, &cfg).await.is_err() {
         return;
@@ -1249,7 +1264,19 @@ pub async fn fetch_cloud_agents(
     client: &reqwest::Client,
     cfg: &cloud::TursoConfig,
     project_id: &str,
-) -> Vec<(String, String, String, String, String, String, String, String, String, bool, Option<String>)> {
+) -> Vec<(
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    bool,
+    Option<String>,
+)> {
     // Returns: (name, description, schedule, run_mode, cli, provider, model, skills, connectors, is_active, last_run)
     if ensure_agent_index_table(client, cfg).await.is_err() {
         return Vec::new();
@@ -1270,17 +1297,17 @@ pub async fn fetch_cloud_agents(
         .iter()
         .map(|row| {
             (
-                cloud::cell_text(row, 0),           // name
-                cloud::cell_opt(row, 1).unwrap_or_default(), // description
-                cloud::cell_opt(row, 2).unwrap_or_default(), // schedule
-                cloud::cell_opt(row, 3).unwrap_or_else(|| "cli".to_string()), // run_mode
-                cloud::cell_opt(row, 4).unwrap_or_else(|| "claude".to_string()), // cli
+                cloud::cell_text(row, 0),                                           // name
+                cloud::cell_opt(row, 1).unwrap_or_default(),                        // description
+                cloud::cell_opt(row, 2).unwrap_or_default(),                        // schedule
+                cloud::cell_opt(row, 3).unwrap_or_else(|| "cli".to_string()),       // run_mode
+                cloud::cell_opt(row, 4).unwrap_or_else(|| "claude".to_string()),    // cli
                 cloud::cell_opt(row, 5).unwrap_or_else(|| "anthropic".to_string()), // provider
-                cloud::cell_opt(row, 6).unwrap_or_default(), // model
-                cloud::cell_opt(row, 7).unwrap_or_default(), // skills
-                cloud::cell_opt(row, 8).unwrap_or_default(), // connectors
-                cloud::cell_text(row, 9) == "1",    // is_active
-                cloud::cell_opt(row, 10),            // last_run
+                cloud::cell_opt(row, 6).unwrap_or_default(),                        // model
+                cloud::cell_opt(row, 7).unwrap_or_default(),                        // skills
+                cloud::cell_opt(row, 8).unwrap_or_default(),                        // connectors
+                cloud::cell_text(row, 9) == "1",                                    // is_active
+                cloud::cell_opt(row, 10),                                           // last_run
             )
         })
         .collect()

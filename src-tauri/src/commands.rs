@@ -153,7 +153,11 @@ pub fn all(app: &AppHandle, ws_path: &str) -> Vec<SlashCommand> {
             }
         }
     };
-    push(scan_dir(&project_dir(ws_path), "superconsole", COMMANDS_DIR));
+    push(scan_dir(
+        &project_dir(ws_path),
+        "superconsole",
+        COMMANDS_DIR,
+    ));
     if let Ok(dir) = global_dir(app) {
         push(scan_dir(&dir, "global", "commands"));
     }
@@ -186,8 +190,7 @@ pub fn resolve(app: &AppHandle, ws_path: &str, message: &str) -> Option<String> 
     for (dir, _) in dirs {
         for cmd in scan_dir(&dir, "", "") {
             if cmd.slash == slash {
-                let content =
-                    std::fs::read_to_string(dir.join(format!("{}.md", cmd.name))).ok()?;
+                let content = std::fs::read_to_string(dir.join(format!("{}.md", cmd.name))).ok()?;
                 let body = parse(&cmd.name, &content).body;
                 return Some(if rest.is_empty() {
                     body

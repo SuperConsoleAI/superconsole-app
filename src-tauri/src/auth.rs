@@ -427,9 +427,8 @@ fn run_callback(
         let header =
             tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
                 .unwrap();
-        let _ = request.respond(
-            tiny_http::Response::from_string(callback_html(msg)).with_header(header),
-        );
+        let _ = request
+            .respond(tiny_http::Response::from_string(callback_html(msg)).with_header(header));
     };
 
     if let Some(err) = params.get("error") {

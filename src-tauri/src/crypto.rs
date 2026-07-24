@@ -57,7 +57,9 @@ fn aes_decrypt(key: &[u8; 32], encoded: &str) -> Result<Vec<u8>, String> {
     let (nonce_bytes, ct) = raw.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    cipher.decrypt(nonce, ct).map_err(|_| "decryption failed".to_string())
+    cipher
+        .decrypt(nonce, ct)
+        .map_err(|_| "decryption failed".to_string())
 }
 
 // ── Global key (backward-compat, keychain-cached) ────────────────────────────

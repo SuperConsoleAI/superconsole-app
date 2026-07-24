@@ -85,8 +85,7 @@ pub fn run_hook(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ =
-            std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
     }
 
     // Run with a 10-second wall-clock timeout using a thread.
@@ -131,15 +130,8 @@ pub fn run_hook(
 
 /// Run before-mcp hook; returns true if the tool execution should proceed,
 /// false if the hook exited non-zero (safety gate). Always non-blocking.
-pub fn run_before_mcp_hook(
-    workspace_path: &str,
-    tool_name: &str,
-    tool_input_json: &str,
-) -> bool {
-    let hook_path = format!(
-        "{}/.superconsole/hooks/before-mcp.sh",
-        workspace_path
-    );
+pub fn run_before_mcp_hook(workspace_path: &str, tool_name: &str, tool_input_json: &str) -> bool {
+    let hook_path = format!("{}/.superconsole/hooks/before-mcp.sh", workspace_path);
     if !std::path::Path::new(&hook_path).exists() {
         return true; // no hook → proceed
     }
@@ -229,11 +221,7 @@ pub fn read_hook(workspace_path: &str, hook_type_key: &str) -> Result<String, St
 }
 
 /// Write a hook script, creating the hooks directory if needed.
-pub fn write_hook(
-    workspace_path: &str,
-    hook_type_key: &str,
-    content: &str,
-) -> Result<(), String> {
+pub fn write_hook(workspace_path: &str, hook_type_key: &str, content: &str) -> Result<(), String> {
     let filename = hook_filename(hook_type_key)?;
     let hooks_dir = format!("{}/.superconsole/hooks", workspace_path);
     std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;

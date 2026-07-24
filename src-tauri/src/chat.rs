@@ -123,7 +123,7 @@ async fn compact_messages(
 
     let split_at = messages.len() / 2;
     let to_prune = &messages[..split_at];
-    let to_keep  = &messages[split_at..];
+    let to_keep = &messages[split_at..];
 
     // Layer 1: collect messages to prune (skip system — that's the SuperConsole harness)
     let history_text = to_prune
@@ -172,7 +172,11 @@ async fn compact_messages(
     };
     let log_entry = format!("\n\n## Compacted at {}\n\n{}\n\n---", timestamp, summary);
     // Never fail compaction because of log write failure
-    std::fs::write(&session_log_path, format!("{}{}{}", existing, header, log_entry)).ok();
+    std::fs::write(
+        &session_log_path,
+        format!("{}{}{}", existing, header, log_entry),
+    )
+    .ok();
 
     // Upsert session log metadata so it's discoverable in SessionsView + autocomplete
     {
@@ -278,10 +282,14 @@ pub(crate) fn build_system_prompt(app: &AppHandle, workspace_id: i64) -> String 
         let mut hook_env = std::collections::HashMap::new();
         let total_len: usize = sections.iter().map(|s| s.len()).sum();
         hook_env.insert("SUPERCONSOLE_PROMPT_LENGTH".into(), total_len.to_string());
-        let hook_out = crate::hooks::run_hook(&path, crate::hooks::HookType::BeforePrompt, &hook_env);
+        let hook_out =
+            crate::hooks::run_hook(&path, crate::hooks::HookType::BeforePrompt, &hook_env);
         let trimmed = hook_out.trim();
         if !trimmed.is_empty() {
-            sections.push(format!("# Additional context (from before-prompt hook)\n\n{}", trimmed));
+            sections.push(format!(
+                "# Additional context (from before-prompt hook)\n\n{}",
+                trimmed
+            ));
         }
     }
 
@@ -331,9 +339,10 @@ pub async fn chat_send(
             let bare = model.split_once('/').map(|(_, m)| m).unwrap_or(&model);
             bare.replace('.', "-")
         }
-        "openai" | "gemini" => {
-            model.split_once('/').map(|(_, m)| m.to_string()).unwrap_or(model)
-        }
+        "openai" | "gemini" => model
+            .split_once('/')
+            .map(|(_, m)| m.to_string())
+            .unwrap_or(model),
         _ => model,
     };
     let creds = crate::llm::resolve_provider_credentials(&app, workspace_id, &provider);
@@ -354,13 +363,22 @@ pub async fn chat_send(
             let original_count = messages.len();
             // Clone so we can fall back if compaction fails
             let fallback = messages.clone();
-            match compact_messages(messages, &provider, &model, &app, workspace_id,
+            match compact_messages(
+                messages,
+                &provider,
+                &model,
+                &app,
+                workspace_id,
                 "auto", // auto-compact during chat_send has no canonical session_id
                 &{
                     let db = app.state::<crate::db::Db>();
-                    db.get_workspace(workspace_id).map(|w| w.path).unwrap_or_default()
+                    db.get_workspace(workspace_id)
+                        .map(|w| w.path)
+                        .unwrap_or_default()
                 },
-            ).await {
+            )
+            .await
+            {
                 Ok(compacted) => {
                     let after = compacted.len();
                     let _ = app.emit(
@@ -423,14 +441,30 @@ pub async fn chat_send(
     let reasoning = reasoning.filter(|r| !r.is_empty() && r != "off");
     let result = if let (true, Some(ctx)) = (tools_supported, ctx) {
         run_tool_loop(
-            &app, &request_id, &provider, &model, &system, &messages, key.as_deref(),
-            base_url.as_deref(), &ctx, tool_mode.as_deref(), reasoning.as_deref(),
+            &app,
+            &request_id,
+            &provider,
+            &model,
+            &system,
+            &messages,
+            key.as_deref(),
+            base_url.as_deref(),
+            &ctx,
+            tool_mode.as_deref(),
+            reasoning.as_deref(),
         )
         .await
     } else {
         stream(
-            &app, &request_id, &provider, &model, &system, &messages, key.as_deref(),
-            base_url.as_deref(), reasoning.as_deref(),
+            &app,
+            &request_id,
+            &provider,
+            &model,
+            &system,
+            &messages,
+            key.as_deref(),
+            base_url.as_deref(),
+            reasoning.as_deref(),
         )
         .await
     };
@@ -458,7 +492,12 @@ pub async fn chat_send(
             t(usage.prompt + usage.cached, p_in) + t(usage.completion + usage.reasoning, p_out)
         }
         None => crate::usage::estimate_cost(
-            &model, &provider, usage.prompt, usage.cached, usage.completion, usage.reasoning,
+            &model,
+            &provider,
+            usage.prompt,
+            usage.cached,
+            usage.completion,
+            usage.reasoning,
         ),
     };
 
@@ -467,7 +506,9 @@ pub async fn chat_send(
     if usage.total() > 0 {
         let project_id = {
             let db = app.state::<Db>();
-            db.get_workspace(workspace_id).ok().and_then(|w| w.project_id)
+            db.get_workspace(workspace_id)
+                .ok()
+                .and_then(|w| w.project_id)
         };
         if let Some(project_id) = project_id {
             let cache_total = usage.prompt + usage.cached;
@@ -482,7 +523,11 @@ pub async fn chat_send(
                 tokens_completion: usage.completion,
                 tokens_reasoning: usage.reasoning,
                 cost_usd: cost,
-                cache_hit_rate: if cache_total > 0 { usage.cached as f64 / cache_total as f64 } else { 0.0 },
+                cache_hit_rate: if cache_total > 0 {
+                    usage.cached as f64 / cache_total as f64
+                } else {
+                    0.0
+                },
                 ..Default::default()
             };
             crate::usage::record_usage(&app, ev);
@@ -598,7 +643,10 @@ async fn run_tool_loop(
         let req = build_turn_request(
             &client, provider, model, system, &messages, &tools, key, base_url, reasoning,
         )?;
-        let resp = req.send().await.map_err(|e| format!("request failed: {}", e))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("request failed: {}", e))?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
@@ -633,7 +681,9 @@ async fn run_tool_loop(
             }
             for call in &turn.tool_calls {
                 let input: Value = serde_json::from_str(&call.args).unwrap_or_else(|_| json!({}));
-                content.push(json!({"type": "tool_use", "id": call.id, "name": call.name, "input": input}));
+                content.push(
+                    json!({"type": "tool_use", "id": call.id, "name": call.name, "input": input}),
+                );
             }
             messages.push(json!({"role": "assistant", "content": content}));
             let result_blocks: Vec<Value> = results
@@ -682,9 +732,14 @@ async fn stream(
     reasoning: Option<&str>,
 ) -> Result<TurnUsage, String> {
     let client = reqwest::Client::new();
-    let req = build_request(&client, provider, model, system, messages, key, base_url, reasoning)?;
+    let req = build_request(
+        &client, provider, model, system, messages, key, base_url, reasoning,
+    )?;
 
-    let resp = req.send().await.map_err(|e| format!("request failed: {}", e))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {}", e))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -733,9 +788,9 @@ fn parse_sse_line(provider: &str, line: &str) -> Option<Sse> {
 
     match provider {
         "anthropic" => match v["type"].as_str() {
-            Some("content_block_delta") => {
-                Some(Sse::Token(v["delta"]["text"].as_str().unwrap_or("").to_string()))
-            }
+            Some("content_block_delta") => Some(Sse::Token(
+                v["delta"]["text"].as_str().unwrap_or("").to_string(),
+            )),
             Some("message_stop") => Some(Sse::Done),
             _ => None,
         },
@@ -817,7 +872,11 @@ fn build_request(
             let contents: Vec<Value> = messages
                 .iter()
                 .map(|m| {
-                    let role = if m.role == "assistant" { "model" } else { "user" };
+                    let role = if m.role == "assistant" {
+                        "model"
+                    } else {
+                        "user"
+                    };
                     json!({ "role": role, "parts": [{ "text": m.content }] })
                 })
                 .collect();
@@ -944,14 +1003,21 @@ async fn collect_turn(
         if !t.is_empty() {
             let _ = app.emit(
                 "chat-token",
-                ChatToken { request_id: request_id.to_string(), content: t.to_string() },
+                ChatToken {
+                    request_id: request_id.to_string(),
+                    content: t.to_string(),
+                },
             );
         }
     };
 
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
         if is_cancelled(app, request_id) {
-            return Ok(TurnResult { text, tool_calls: finalize(tools), usage });
+            return Ok(TurnResult {
+                text,
+                tool_calls: finalize(tools),
+                usage,
+            });
         }
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(pos) = buffer.find('\n') {
@@ -964,14 +1030,22 @@ async fn collect_turn(
                 continue;
             }
             if payload == "[DONE]" {
-                return Ok(TurnResult { text, tool_calls: finalize(tools), usage });
+                return Ok(TurnResult {
+                    text,
+                    tool_calls: finalize(tools),
+                    usage,
+                });
             }
             let Ok(v) = serde_json::from_str::<Value>(payload) else {
                 continue;
             };
             if provider == "anthropic" {
                 // Usage arrives on message_start (input/cache) + message_delta (output).
-                if let Some(u) = v.get("message").and_then(|m| m.get("usage")).or_else(|| v.get("usage")) {
+                if let Some(u) = v
+                    .get("message")
+                    .and_then(|m| m.get("usage"))
+                    .or_else(|| v.get("usage"))
+                {
                     if let Some(n) = u["input_tokens"].as_i64() {
                         usage.prompt = n;
                     }
@@ -1014,7 +1088,11 @@ async fn collect_turn(
                         }
                     }
                     Some("message_stop") => {
-                        return Ok(TurnResult { text, tool_calls: finalize(tools), usage });
+                        return Ok(TurnResult {
+                            text,
+                            tool_calls: finalize(tools),
+                            usage,
+                        });
                     }
                     _ => {}
                 }
@@ -1022,7 +1100,9 @@ async fn collect_turn(
                 // OpenAI-compatible usage (final chunk, needs stream_options).
                 if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
                     if let Some(n) = u["prompt_tokens"].as_i64() {
-                        let cached = u["prompt_tokens_details"]["cached_tokens"].as_i64().unwrap_or(0);
+                        let cached = u["prompt_tokens_details"]["cached_tokens"]
+                            .as_i64()
+                            .unwrap_or(0);
                         usage.cached = cached;
                         usage.prompt = (n - cached).max(0);
                     }
@@ -1041,7 +1121,11 @@ async fn collect_turn(
                 if let Some(calls) = delta["tool_calls"].as_array() {
                     for c in calls {
                         let idx = c["index"].as_i64().unwrap_or(0);
-                        let entry = tools.entry(idx).or_insert((String::new(), String::new(), String::new()));
+                        let entry = tools.entry(idx).or_insert((
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                        ));
                         if let Some(id) = c["id"].as_str() {
                             if !id.is_empty() {
                                 entry.0 = id.to_string();
@@ -1061,13 +1145,21 @@ async fn collect_turn(
                     // Don't return yet: the usage chunk (stream_options) arrives
                     // after finish_reason on OpenAI. Keep reading until [DONE].
                     if provider == "anthropic" {
-                        return Ok(TurnResult { text, tool_calls: finalize(tools), usage });
+                        return Ok(TurnResult {
+                            text,
+                            tool_calls: finalize(tools),
+                            usage,
+                        });
                     }
                 }
             }
         }
     }
-    Ok(TurnResult { text, tool_calls: finalize(tools), usage })
+    Ok(TurnResult {
+        text,
+        tool_calls: finalize(tools),
+        usage,
+    })
 }
 
 fn finalize(tools: std::collections::BTreeMap<i64, (String, String, String)>) -> Vec<ToolCall> {
@@ -1077,7 +1169,11 @@ fn finalize(tools: std::collections::BTreeMap<i64, (String, String, String)>) ->
         .map(|(id, name, args)| ToolCall {
             id,
             name,
-            args: if args.trim().is_empty() { "{}".into() } else { args },
+            args: if args.trim().is_empty() {
+                "{}".into()
+            } else {
+                args
+            },
         })
         .collect()
 }
@@ -1096,7 +1192,8 @@ pub async fn compact_chat_session(
     let (messages, workspace_path) = {
         let db = app.state::<crate::db::Db>();
         let messages = db.list_chat_messages(&session_id)?;
-        let path = db.get_workspace(workspace_id)
+        let path = db
+            .get_workspace(workspace_id)
             .map(|w| w.path)
             .unwrap_or_default();
         (messages, path)
@@ -1106,7 +1203,10 @@ pub async fn compact_chat_session(
     // Convert DB ChatMessage -> ChatMsg (the streaming type used by compact_messages)
     let chat_msgs: Vec<ChatMsg> = messages
         .into_iter()
-        .map(|m| ChatMsg { role: m.role, content: m.content })
+        .map(|m| ChatMsg {
+            role: m.role,
+            content: m.content,
+        })
         .collect();
 
     // Strip the vendor prefix that OpenRouter uses (e.g. "anthropic/claude-sonnet-4")
@@ -1115,16 +1215,23 @@ pub async fn compact_chat_session(
             let b = model.split_once('/').map(|(_, m)| m).unwrap_or(&model);
             b.replace('.', "-")
         }
-        "openai" | "gemini" => {
-            model.split_once('/').map(|(_, m)| m.to_string()).unwrap_or(model.clone())
-        }
+        "openai" | "gemini" => model
+            .split_once('/')
+            .map(|(_, m)| m.to_string())
+            .unwrap_or(model.clone()),
         _ => model.clone(),
     };
 
     let compacted = compact_messages(
-        chat_msgs, &provider, &bare_model, &app, workspace_id,
-        &session_id, &workspace_path,
-    ).await?;
+        chat_msgs,
+        &provider,
+        &bare_model,
+        &app,
+        workspace_id,
+        &session_id,
+        &workspace_path,
+    )
+    .await?;
     let messages_after = compacted.len();
 
     {
@@ -1132,5 +1239,8 @@ pub async fn compact_chat_session(
         db.replace_chat_messages_with_compacted(&session_id, &compacted)?;
     }
 
-    Ok(CompactResult { messages_before, messages_after })
+    Ok(CompactResult {
+        messages_before,
+        messages_after,
+    })
 }

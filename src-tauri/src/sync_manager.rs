@@ -111,20 +111,22 @@ async fn sync_connectors(
             }
             "SELECT service, status, credentials_encrypted FROM account_connectors WHERE user_id = ?"
         }
-        "org" => "SELECT service, status, credentials_encrypted FROM org_connectors WHERE org_id = ?",
+        "org" => {
+            "SELECT service, status, credentials_encrypted FROM org_connectors WHERE org_id = ?"
+        }
         "project" => {
             "SELECT service, status, credentials_encrypted FROM connectors WHERE project_id = ?"
         }
         _ => return,
     };
-    let result = match cloud::turso_execute(client, cfg, sql, vec![Some(scope_id.to_string())]).await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("superconsole sync connectors ({}): {}", scope, e);
-            return;
-        }
-    };
+    let result =
+        match cloud::turso_execute(client, cfg, sql, vec![Some(scope_id.to_string())]).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("superconsole sync connectors ({}): {}", scope, e);
+                return;
+            }
+        };
 
     let connectors: Vec<CachedConnector> = rows(&result)
         .iter()
@@ -148,8 +150,7 @@ async fn sync_skills(
     project_id: &str,
     synced_at: &str,
 ) {
-    let cloud_skills =
-        crate::skills::fetch_cloud_skills(client, cfg, project_id).await;
+    let cloud_skills = crate::skills::fetch_cloud_skills(client, cfg, project_id).await;
     let skills: Vec<CachedSkill> = cloud_skills
         .into_iter()
         .map(|(skill_name, tags, scope, active)| CachedSkill {
@@ -175,7 +176,14 @@ async fn sync_org_skills(
     let refs = crate::skills::fetch_cloud_org_skills(client, cfg, org_id).await;
     let skills: Vec<CachedOrgSkill> = refs
         .into_iter()
-        .map(|(skill_name, tags, skill_catalog_id, author)| CachedOrgSkill { skill_name, tags, skill_catalog_id, author })
+        .map(
+            |(skill_name, tags, skill_catalog_id, author)| CachedOrgSkill {
+                skill_name,
+                tags,
+                skill_catalog_id,
+                author,
+            },
+        )
         .collect();
     let db = app.state::<Db>();
     let _ = db.replace_cached_org_skills(org_id, &skills, synced_at);

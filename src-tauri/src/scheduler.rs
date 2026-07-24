@@ -38,7 +38,11 @@ pub fn next_run(schedule: &str) -> Result<String, String> {
     parsed
         .upcoming(Local)
         .next()
-        .map(|dt| dt.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S").to_string())
+        .map(|dt| {
+            dt.with_timezone(&Utc)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
         .ok_or_else(|| "Schedule has no upcoming runs".into())
 }
 
@@ -93,7 +97,9 @@ pub async fn check_exit_condition(
 
         "inbox_approved" => {
             if let Some(id) = inbox_item_id {
-                db.get_inbox_status(id).map(|s| s == "approved").unwrap_or(false)
+                db.get_inbox_status(id)
+                    .map(|s| s == "approved")
+                    .unwrap_or(false)
             } else {
                 false
             }
@@ -117,10 +123,27 @@ pub async fn check_exit_condition(
                 Ok(ws) => (ws.default_provider.clone(), ws.default_model.clone()),
                 Err(_) => ("anthropic".to_string(), "claude-haiku-4-5".to_string()),
             };
-            let model = if model.is_empty() { "claude-haiku-4-5".to_string() } else { model };
+            let model = if model.is_empty() {
+                "claude-haiku-4-5".to_string()
+            } else {
+                model
+            };
             let system = "You are a quality scorer. Reply with only a number.";
-            match crate::llm::one_shot_completion(app, workspace_id, &provider, &model, system, &score_prompt).await {
-                Ok(s) => s.trim().parse::<f64>().map(|n| n >= threshold).unwrap_or(false),
+            match crate::llm::one_shot_completion(
+                app,
+                workspace_id,
+                &provider,
+                &model,
+                system,
+                &score_prompt,
+            )
+            .await
+            {
+                Ok(s) => s
+                    .trim()
+                    .parse::<f64>()
+                    .map(|n| n >= threshold)
+                    .unwrap_or(false),
                 Err(e) => {
                     eprintln!("Loop: llm_score error: {}", e);
                     false
@@ -163,7 +186,10 @@ pub async fn exec_in_workspace(
 
     // Ad-hoc triggers (HTTP / Telegram) carry no job and keep the cli path.
     let job = job_id.and_then(|jid| app.state::<Db>().get_job(jid).ok());
-    let mut run_mode = job.as_ref().map(|j| j.run_mode.clone()).unwrap_or_else(|| "cli".into());
+    let mut run_mode = job
+        .as_ref()
+        .map(|j| j.run_mode.clone())
+        .unwrap_or_else(|| "cli".into());
     let run_config: serde_json::Value = job
         .as_ref()
         .and_then(|j| serde_json::from_str(&j.run_config).ok())
@@ -183,7 +209,10 @@ pub async fn exec_in_workspace(
             // Agent→Auto: prepend router instructions so the router picks the
             // best execution approach, then run via chat.
             if let Ok(router) = crate::agents::read_agent(&ws.path, "router") {
-                command = format!("{}\n\nAgent instructions:\n{}", router.instructions, command);
+                command = format!(
+                    "{}\n\nAgent instructions:\n{}",
+                    router.instructions, command
+                );
             }
             run_mode = "chat".to_string();
         } else {
@@ -200,13 +229,27 @@ pub async fn exec_in_workspace(
     // them on demand via MCP tools at runtime.
     command = with_available_resources(&command);
 
-    run_and_record(app, &ws, &run_mode, &run_config, &command, title_suffix, job_id, None).await
+    run_and_record(
+        app,
+        &ws,
+        &run_mode,
+        &run_config,
+        &command,
+        title_suffix,
+        job_id,
+        None,
+    )
+    .await
 }
 
 /// Run a file-defined agent directly (manual "Run now"), using the agent's
 /// default CLI/provider/model from the local `agents` row if available,
 /// falling back to workspace defaults. Stamps `agent_id` on the session row.
-pub async fn exec_agent(app: &AppHandle, workspace_id: i64, agent: &crate::agents::Agent) -> Result<String, String> {
+pub async fn exec_agent(
+    app: &AppHandle,
+    workspace_id: i64,
+    agent: &crate::agents::Agent,
+) -> Result<String, String> {
     let ws = {
         let db = app.state::<Db>();
         db.get_workspace(workspace_id)?
@@ -311,9 +354,15 @@ async fn run_and_record(
             {
                 let mut hook_env = std::collections::HashMap::new();
                 hook_env.insert("SUPERCONSOLE_COMMAND".into(), command_for_hook.clone());
-                hook_env.insert("SUPERCONSOLE_WORKSPACE_NAME".into(),
-                    ws_path_for_hook.split('/').last().unwrap_or("").to_string());
-                crate::hooks::run_hook(&ws_path_for_hook, crate::hooks::HookType::BeforeShell, &hook_env);
+                hook_env.insert(
+                    "SUPERCONSOLE_WORKSPACE_NAME".into(),
+                    ws_path_for_hook.split('/').last().unwrap_or("").to_string(),
+                );
+                crate::hooks::run_hook(
+                    &ws_path_for_hook,
+                    crate::hooks::HookType::BeforeShell,
+                    &hook_env,
+                );
             }
             cmd.output()
         })
@@ -382,17 +431,36 @@ async fn run_and_record(
             None
         };
 
-        let _ = app.emit("inbox-new", InboxNew { workspace_id, title: title.clone() });
+        let _ = app.emit(
+            "inbox-new",
+            InboxNew {
+                workspace_id,
+                title: title.clone(),
+            },
+        );
 
         let condition_met = check_exit_condition(
-            &condition, &body, &ws.path, inbox_item_id, &db, app, workspace_id,
-        ).await;
+            &condition,
+            &body,
+            &ws.path,
+            inbox_item_id,
+            &db,
+            app,
+            workspace_id,
+        )
+        .await;
 
         if condition_met {
             // Done — write to inbox (skip if inbox_approved already wrote it).
             if inbox_item_id.is_none() {
                 db.add_inbox_item(workspace_id, job_id, &title, &body)?;
-                let _ = app.emit("inbox-new", InboxNew { workspace_id, title: title.clone() });
+                let _ = app.emit(
+                    "inbox-new",
+                    InboxNew {
+                        workspace_id,
+                        title: title.clone(),
+                    },
+                );
             }
             db.reset_job_attempt(job.id)?;
             notify_and_telegram(app, ws, &title, &body).await;
@@ -403,7 +471,13 @@ async fn run_and_record(
                 max, body
             );
             db.add_inbox_item(workspace_id, job_id, &title, &failed_output)?;
-            let _ = app.emit("inbox-new", InboxNew { workspace_id, title: title.clone() });
+            let _ = app.emit(
+                "inbox-new",
+                InboxNew {
+                    workspace_id,
+                    title: title.clone(),
+                },
+            );
             db.reset_job_attempt(job.id)?;
             eprintln!("Loop: job {} gave up after {} attempts", job.id, max);
         } else {
@@ -418,7 +492,13 @@ async fn run_and_record(
         // No exit condition — run-once behavior (existing, unchanged).
         let db = app.state::<Db>();
         db.add_inbox_item(workspace_id, job_id, &title, &body)?;
-        let _ = app.emit("inbox-new", InboxNew { workspace_id, title: title.clone() });
+        let _ = app.emit(
+            "inbox-new",
+            InboxNew {
+                workspace_id,
+                title: title.clone(),
+            },
+        );
         notify_and_telegram(app, ws, &title, &body).await;
     }
 
@@ -434,7 +514,10 @@ async fn notify_and_telegram(app: &AppHandle, ws: &Workspace, title: &str, body:
     {
         let client = reqwest::Client::new();
         crate::remote::notify_telegram_topic(
-            &client, &token, &chat_id, &thread_id,
+            &client,
+            &token,
+            &chat_id,
+            &thread_id,
             &format!("{}\n\n{}", title, body),
         )
         .await;

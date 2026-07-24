@@ -159,11 +159,7 @@ pub fn write_context_file(
 }
 
 #[tauri::command]
-pub fn delete_context_file(
-    app: AppHandle,
-    workspace_id: i64,
-    slug: String,
-) -> Result<(), String> {
+pub fn delete_context_file(app: AppHandle, workspace_id: i64, slug: String) -> Result<(), String> {
     let ws = app.state::<Db>().get_workspace(workspace_id)?;
     let slug = slugify(&slug);
     let file = context_file(&ws.path, &slug);

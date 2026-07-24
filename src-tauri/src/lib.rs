@@ -1,5 +1,4 @@
 mod agents;
-mod git;
 mod auth;
 mod chat;
 mod cli_sessions;
@@ -10,26 +9,29 @@ mod context;
 mod crypto;
 mod db;
 mod files;
+mod git;
 mod hooks;
 mod llm;
+mod mcp;
+mod mcp_server;
 mod memory;
+mod plugins;
 mod pty;
 mod remote;
+mod rules;
 mod scheduler;
 mod session_logs;
 mod skills;
-mod mcp;
-mod mcp_server;
-mod plugins;
 mod sync_manager;
 mod team;
 mod usage;
 mod wiki;
-mod rules;
 
 use auth::AuthState;
 
-use db::{AgentRow, ChatMessage, Db, InboxItem, Job, Organization, SessionFeedItem, SessionLog, Workspace};
+use db::{
+    AgentRow, ChatMessage, Db, InboxItem, Job, Organization, SessionFeedItem, SessionLog, Workspace,
+};
 use files::FileEntry;
 use pty::{SessionInfo, SessionManager};
 use std::path::Path;
@@ -86,10 +88,7 @@ async fn add_workspace(
 }
 
 #[tauri::command]
-fn scaffold_superconsole_dir(
-    db: State<Db>,
-    workspace_id: i64,
-) -> Result<Vec<String>, String> {
+fn scaffold_superconsole_dir(db: State<Db>, workspace_id: i64) -> Result<Vec<String>, String> {
     let ws = db.get_workspace(workspace_id)?;
     files::scaffold_superconsole_dir(&ws.path)
 }
@@ -105,11 +104,7 @@ fn add_organization(db: State<Db>, name: String) -> Result<Organization, String>
 }
 
 #[tauri::command]
-fn remove_workspace(
-    db: State<Db>,
-    sessions: State<SessionManager>,
-    id: i64,
-) -> Result<(), String> {
+fn remove_workspace(db: State<Db>, sessions: State<SessionManager>, id: i64) -> Result<(), String> {
     pty::stop_workspace_sessions(&sessions, id);
     db.remove_workspace(id)
 }
@@ -188,7 +183,11 @@ async fn start_session(
 }
 
 #[tauri::command]
-fn write_session(sessions: State<SessionManager>, session_id: String, data: String) -> Result<(), String> {
+fn write_session(
+    sessions: State<SessionManager>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
     pty::write_session(&sessions, &session_id, &data)
 }
 
@@ -203,7 +202,9 @@ fn get_usage(app: AppHandle, level: String, id: String) -> Result<serde_json::Va
         _ => return Err("invalid usage level".into()),
     };
     let db = app.state::<Db>();
-    Ok(db.get_usage_row(table, &id).unwrap_or_else(|| crate::usage::zero_row(&id)))
+    Ok(db
+        .get_usage_row(table, &id)
+        .unwrap_or_else(|| crate::usage::zero_row(&id)))
 }
 
 #[tauri::command]
@@ -217,7 +218,11 @@ fn resize_session(
 }
 
 #[tauri::command]
-fn stop_session(db: State<Db>, sessions: State<SessionManager>, session_id: String) -> Result<(), String> {
+fn stop_session(
+    db: State<Db>,
+    sessions: State<SessionManager>,
+    session_id: String,
+) -> Result<(), String> {
     let _ = db.close_session_log(&session_id);
     db.finalize_cli_session_cost(&session_id);
     pty::stop_session(&sessions, &session_id)
@@ -329,7 +334,12 @@ fn read_file(db: State<Db>, workspace_id: i64, rel: String) -> Result<String, St
 }
 
 #[tauri::command]
-fn write_file(db: State<Db>, workspace_id: i64, rel: String, content: String) -> Result<(), String> {
+fn write_file(
+    db: State<Db>,
+    workspace_id: i64,
+    rel: String,
+    content: String,
+) -> Result<(), String> {
     let ws = db.get_workspace(workspace_id)?;
     files::write_file(&ws.path, &rel, &content)
 }
@@ -539,7 +549,11 @@ async fn delete_catalog_agent(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn install_catalog_agent(app: AppHandle, workspace_id: i64, id: String) -> Result<(), String> {
+async fn install_catalog_agent(
+    app: AppHandle,
+    workspace_id: i64,
+    id: String,
+) -> Result<(), String> {
     let ws_path = app.state::<Db>().get_workspace(workspace_id)?.path;
     agents::install_catalog_agent(&ws_path, &id).await
 }
@@ -650,7 +664,11 @@ async fn upsert_agent_metadata(
 
 /// Delete an agent metadata row (does NOT delete the agent.md file).
 #[tauri::command]
-async fn delete_agent_metadata(app: AppHandle, workspace_id: i64, name: String) -> Result<(), String> {
+async fn delete_agent_metadata(
+    app: AppHandle,
+    workspace_id: i64,
+    name: String,
+) -> Result<(), String> {
     let project_id = {
         let db = app.state::<Db>();
         db.delete_agent_row(workspace_id, &name)?;
@@ -662,7 +680,12 @@ async fn delete_agent_metadata(app: AppHandle, workspace_id: i64, name: String) 
 
 /// Toggle an agent's active flag (pauses/resumes scheduled runs).
 #[tauri::command]
-fn set_agent_active(db: State<Db>, workspace_id: i64, name: String, is_active: bool) -> Result<(), String> {
+fn set_agent_active(
+    db: State<Db>,
+    workspace_id: i64,
+    name: String,
+    is_active: bool,
+) -> Result<(), String> {
     db.set_agent_active(workspace_id, &name, is_active)
 }
 
@@ -707,7 +730,10 @@ fn list_session_history(db: State<Db>, workspace_id: i64) -> Result<Vec<SessionL
 }
 
 #[tauri::command]
-fn list_user_sessions(db: State<Db>, workspace_id: Option<i64>) -> Result<Vec<SessionFeedItem>, String> {
+fn list_user_sessions(
+    db: State<Db>,
+    workspace_id: Option<i64>,
+) -> Result<Vec<SessionFeedItem>, String> {
     db.list_user_sessions(workspace_id)
 }
 
@@ -717,7 +743,10 @@ fn list_job_sessions(db: State<Db>, job_id: i64) -> Result<Vec<SessionFeedItem>,
 }
 
 #[tauri::command]
-fn list_all_job_sessions(db: State<Db>, workspace_id: Option<i64>) -> Result<Vec<SessionFeedItem>, String> {
+fn list_all_job_sessions(
+    db: State<Db>,
+    workspace_id: Option<i64>,
+) -> Result<Vec<SessionFeedItem>, String> {
     db.list_all_job_sessions(workspace_id)
 }
 
@@ -750,8 +779,8 @@ fn set_setting(db: State<Db>, key: String, value: String) -> Result<(), String> 
 fn list_slash_commands(app: AppHandle, workspace_id: i64) -> Result<Vec<String>, String> {
     let ws = app.state::<Db>().get_workspace(workspace_id)?;
     let mut commands: Vec<String> = vec![
-        "/clear", "/compact", "/config", "/cost", "/help", "/init", "/memory",
-        "/model", "/resume", "/review", "/status",
+        "/clear", "/compact", "/config", "/cost", "/help", "/init", "/memory", "/model", "/resume",
+        "/review", "/status",
     ]
     .into_iter()
     .map(String::from)
@@ -809,7 +838,13 @@ fn add_chat_message(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<ChatMessage, String> {
-    db.add_chat_message(&session_id, &role, &content, provider.as_deref(), model.as_deref())
+    db.add_chat_message(
+        &session_id,
+        &role,
+        &content,
+        provider.as_deref(),
+        model.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -914,11 +949,19 @@ async fn generate_commit_message(app: &AppHandle, workspace_id: i64) -> String {
         let Ok(ws) = db.get_workspace(workspace_id) else {
             return "Update files".to_string();
         };
-        let p = if ws.default_provider.is_empty() { "anthropic".to_string() } else { ws.default_provider.clone() };
-        let m = if ws.default_model.is_empty() { "claude-haiku-4-5".to_string() } else { ws.default_model.clone() };
+        let p = if ws.default_provider.is_empty() {
+            "anthropic".to_string()
+        } else {
+            ws.default_provider.clone()
+        };
+        let m = if ws.default_model.is_empty() {
+            "claude-haiku-4-5".to_string()
+        } else {
+            ws.default_model.clone()
+        };
         // Check if a key is configured before even trying
-        let has_key = p == "local" ||
-            llm::resolve_provider_credentials(app, workspace_id, &p)
+        let has_key = p == "local"
+            || llm::resolve_provider_credentials(app, workspace_id, &p)
                 .map(|c| c.api_key.is_some())
                 .unwrap_or(false);
         (ws.path, p, m, has_key)
@@ -941,7 +984,10 @@ async fn generate_commit_message(app: &AppHandle, workspace_id: i64) -> String {
     }
 
     // Build a compact prompt (cap at 50 files to keep it small)
-    let files = diff.files_changed.iter().take(50)
+    let files = diff
+        .files_changed
+        .iter()
+        .take(50)
         .map(|f| format!("{} {}", f.status, f.path))
         .collect::<Vec<_>>()
         .join("\n");
@@ -961,7 +1007,13 @@ async fn generate_commit_message(app: &AppHandle, workspace_id: i64) -> String {
     .await
     .ok()
     .and_then(|r| r.ok())
-    .and_then(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) })
+    .and_then(|s| {
+        if s.trim().is_empty() {
+            None
+        } else {
+            Some(s.trim().to_string())
+        }
+    })
     .unwrap_or(fallback)
 }
 
@@ -969,7 +1021,9 @@ async fn generate_commit_message(app: &AppHandle, workspace_id: i64) -> String {
 fn smart_fallback_message(diff: &git::GitDiff) -> String {
     let total = diff.total_files;
     // Find the most common directory touched
-    let dirs: Vec<&str> = diff.files_changed.iter()
+    let dirs: Vec<&str> = diff
+        .files_changed
+        .iter()
         .filter_map(|f| f.path.split('/').next())
         .collect();
     let main_area = dirs.first().copied().unwrap_or("files");
@@ -1006,10 +1060,7 @@ async fn git_diff_summary(db: State<'_, Db>, workspace_id: i64) -> Result<git::G
 }
 
 #[tauri::command]
-async fn git_generate_commit_message(
-    app: AppHandle,
-    workspace_id: i64,
-) -> Result<String, String> {
+async fn git_generate_commit_message(app: AppHandle, workspace_id: i64) -> Result<String, String> {
     Ok(generate_commit_message(&app, workspace_id).await)
 }
 
@@ -1050,25 +1101,25 @@ async fn git_commit_and_push(
     // Run all blocking git shell calls off the async runtime
     let msg = message.clone();
     let path = ws_path.clone();
-    let (branch, pr_url) = tokio::task::spawn_blocking(move || -> Result<(String, Option<String>), String> {
-        let status = git::git_status(&path)?;
-        git::git_commit(&path, &msg)?;
-        let pr_url = if create_pr {
-            git::git_push_and_get_pr_url(
-                &path,
-                &status.branch,
-                pr_title.as_deref().unwrap_or(&msg),
-                pr_body.as_deref().unwrap_or(""),
-            )?
-        } else {
-            git::git_push(&path).ok();
-            None
-        };
-        Ok((status.branch, pr_url))
-    })
-    .await
-    .map_err(|e| e.to_string())??
-    ;
+    let (branch, pr_url) =
+        tokio::task::spawn_blocking(move || -> Result<(String, Option<String>), String> {
+            let status = git::git_status(&path)?;
+            git::git_commit(&path, &msg)?;
+            let pr_url = if create_pr {
+                git::git_push_and_get_pr_url(
+                    &path,
+                    &status.branch,
+                    pr_title.as_deref().unwrap_or(&msg),
+                    pr_body.as_deref().unwrap_or(""),
+                )?
+            } else {
+                git::git_push(&path).ok();
+                None
+            };
+            Ok((status.branch, pr_url))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
 
     Ok(GitPushResult { branch, pr_url })
 }
@@ -1117,7 +1168,10 @@ fn open_webview_devtools(app: AppHandle, label: String) -> Result<(), String> {
         #[cfg(debug_assertions)]
         _webview.open_devtools();
         #[cfg(not(debug_assertions))]
-        println!("Devtools not available in release build for webview {}", label);
+        println!(
+            "Devtools not available in release build for webview {}",
+            label
+        );
         Ok(())
     } else {
         Err(format!("Webview {} not found", label))
@@ -1133,11 +1187,7 @@ fn list_hooks_cmd(db: State<Db>, workspace_id: i64) -> Result<Vec<hooks::HookFil
 }
 
 #[tauri::command]
-fn read_hook_cmd(
-    db: State<Db>,
-    workspace_id: i64,
-    hook_type: String,
-) -> Result<String, String> {
+fn read_hook_cmd(db: State<Db>, workspace_id: i64, hook_type: String) -> Result<String, String> {
     let ws = db.get_workspace(workspace_id)?;
     hooks::read_hook(&ws.path, &hook_type)
 }
@@ -1154,11 +1204,7 @@ fn write_hook_cmd(
 }
 
 #[tauri::command]
-fn delete_hook_cmd(
-    db: State<Db>,
-    workspace_id: i64,
-    hook_type: String,
-) -> Result<(), String> {
+fn delete_hook_cmd(db: State<Db>, workspace_id: i64, hook_type: String) -> Result<(), String> {
     let ws = db.get_workspace(workspace_id)?;
     hooks::delete_hook(&ws.path, &hook_type)
 }
@@ -1180,6 +1226,7 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

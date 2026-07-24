@@ -27,21 +27,112 @@ pub struct ModelPricing {
 
 const PRICING: &[ModelPricing] = &[
     // Anthropic
-    ModelPricing { model: "claude-sonnet-4-6", provider: "anthropic", prompt_per_1m: 3.0, cached_per_1m: 0.30, completion_per_1m: 15.0, reasoning_per_1m: 15.0 },
-    ModelPricing { model: "claude-sonnet-4-5", provider: "anthropic", prompt_per_1m: 3.0, cached_per_1m: 0.30, completion_per_1m: 15.0, reasoning_per_1m: 15.0 },
-    ModelPricing { model: "claude-3-5-sonnet", provider: "anthropic", prompt_per_1m: 3.0, cached_per_1m: 0.30, completion_per_1m: 15.0, reasoning_per_1m: 15.0 },
-    ModelPricing { model: "claude-3-5-haiku", provider: "anthropic", prompt_per_1m: 0.80, cached_per_1m: 0.08, completion_per_1m: 4.0, reasoning_per_1m: 4.0 },
-    ModelPricing { model: "claude-opus-4", provider: "anthropic", prompt_per_1m: 15.0, cached_per_1m: 1.50, completion_per_1m: 75.0, reasoning_per_1m: 75.0 },
+    ModelPricing {
+        model: "claude-sonnet-4-6",
+        provider: "anthropic",
+        prompt_per_1m: 3.0,
+        cached_per_1m: 0.30,
+        completion_per_1m: 15.0,
+        reasoning_per_1m: 15.0,
+    },
+    ModelPricing {
+        model: "claude-sonnet-4-5",
+        provider: "anthropic",
+        prompt_per_1m: 3.0,
+        cached_per_1m: 0.30,
+        completion_per_1m: 15.0,
+        reasoning_per_1m: 15.0,
+    },
+    ModelPricing {
+        model: "claude-3-5-sonnet",
+        provider: "anthropic",
+        prompt_per_1m: 3.0,
+        cached_per_1m: 0.30,
+        completion_per_1m: 15.0,
+        reasoning_per_1m: 15.0,
+    },
+    ModelPricing {
+        model: "claude-3-5-haiku",
+        provider: "anthropic",
+        prompt_per_1m: 0.80,
+        cached_per_1m: 0.08,
+        completion_per_1m: 4.0,
+        reasoning_per_1m: 4.0,
+    },
+    ModelPricing {
+        model: "claude-opus-4",
+        provider: "anthropic",
+        prompt_per_1m: 15.0,
+        cached_per_1m: 1.50,
+        completion_per_1m: 75.0,
+        reasoning_per_1m: 75.0,
+    },
     // OpenAI
-    ModelPricing { model: "gpt-4o", provider: "openai", prompt_per_1m: 2.50, cached_per_1m: 1.25, completion_per_1m: 10.0, reasoning_per_1m: 10.0 },
-    ModelPricing { model: "gpt-4o-mini", provider: "openai", prompt_per_1m: 0.15, cached_per_1m: 0.075, completion_per_1m: 0.60, reasoning_per_1m: 0.60 },
-    ModelPricing { model: "o1", provider: "openai", prompt_per_1m: 15.0, cached_per_1m: 7.50, completion_per_1m: 60.0, reasoning_per_1m: 60.0 },
-    ModelPricing { model: "o3-mini", provider: "openai", prompt_per_1m: 1.10, cached_per_1m: 0.55, completion_per_1m: 4.40, reasoning_per_1m: 4.40 },
-    ModelPricing { model: "gpt-5.3-codex", provider: "openai", prompt_per_1m: 1.25, cached_per_1m: 0.125, completion_per_1m: 10.0, reasoning_per_1m: 10.0 },
+    ModelPricing {
+        model: "gpt-4o",
+        provider: "openai",
+        prompt_per_1m: 2.50,
+        cached_per_1m: 1.25,
+        completion_per_1m: 10.0,
+        reasoning_per_1m: 10.0,
+    },
+    ModelPricing {
+        model: "gpt-4o-mini",
+        provider: "openai",
+        prompt_per_1m: 0.15,
+        cached_per_1m: 0.075,
+        completion_per_1m: 0.60,
+        reasoning_per_1m: 0.60,
+    },
+    ModelPricing {
+        model: "o1",
+        provider: "openai",
+        prompt_per_1m: 15.0,
+        cached_per_1m: 7.50,
+        completion_per_1m: 60.0,
+        reasoning_per_1m: 60.0,
+    },
+    ModelPricing {
+        model: "o3-mini",
+        provider: "openai",
+        prompt_per_1m: 1.10,
+        cached_per_1m: 0.55,
+        completion_per_1m: 4.40,
+        reasoning_per_1m: 4.40,
+    },
+    ModelPricing {
+        model: "gpt-5.3-codex",
+        provider: "openai",
+        prompt_per_1m: 1.25,
+        cached_per_1m: 0.125,
+        completion_per_1m: 10.0,
+        reasoning_per_1m: 10.0,
+    },
     // Google
-    ModelPricing { model: "gemini-2.0-flash", provider: "google", prompt_per_1m: 0.10, cached_per_1m: 0.025, completion_per_1m: 0.40, reasoning_per_1m: 0.40 },
-    ModelPricing { model: "gemini-2.5-pro", provider: "google", prompt_per_1m: 1.25, cached_per_1m: 0.31, completion_per_1m: 10.0, reasoning_per_1m: 10.0 },
-    ModelPricing { model: "gemini-1.5-pro", provider: "google", prompt_per_1m: 1.25, cached_per_1m: 0.31, completion_per_1m: 5.0, reasoning_per_1m: 5.0 },
+    ModelPricing {
+        model: "gemini-2.0-flash",
+        provider: "google",
+        prompt_per_1m: 0.10,
+        cached_per_1m: 0.025,
+        completion_per_1m: 0.40,
+        reasoning_per_1m: 0.40,
+    },
+    ModelPricing {
+        model: "gemini-2.5-pro",
+        provider: "google",
+        prompt_per_1m: 1.25,
+        cached_per_1m: 0.31,
+        completion_per_1m: 10.0,
+        reasoning_per_1m: 10.0,
+    },
+    ModelPricing {
+        model: "gemini-1.5-pro",
+        provider: "google",
+        prompt_per_1m: 1.25,
+        cached_per_1m: 0.31,
+        completion_per_1m: 5.0,
+        reasoning_per_1m: 5.0,
+    },
 ];
 
 /// Best-effort prefix match on model name (+ provider when given). Returns the
@@ -55,7 +146,12 @@ fn pricing_for(model: &str, provider: &str) -> (f64, f64, f64, f64) {
         .or_else(|| PRICING.iter().find(|e| m.starts_with(e.model)))
         .or_else(|| PRICING.iter().find(|e| m.contains(e.model)));
     match hit {
-        Some(e) => (e.prompt_per_1m, e.cached_per_1m, e.completion_per_1m, e.reasoning_per_1m),
+        Some(e) => (
+            e.prompt_per_1m,
+            e.cached_per_1m,
+            e.completion_per_1m,
+            e.reasoning_per_1m,
+        ),
         None => (3.0, 0.30, 15.0, 15.0),
     }
 }
@@ -160,15 +256,19 @@ fn add_f(row: &mut Value, key: &str, delta: f64) {
 
 /// Increment numeric fields of a nested map entry `map[key]`, creating it from
 /// zeros if absent. `extra` sets non-numeric fields (e.g. provider/name) once.
-fn bump_map(row: &mut Value, map: &str, key: &str, fields: &[(&str, f64)], extra: &[(&str, Value)]) {
-    let entry = row[map]
-        .as_object_mut()
-        .and_then(|m| {
-            if !m.contains_key(key) {
-                m.insert(key.to_string(), json!({}));
-            }
-            m.get_mut(key)
-        });
+fn bump_map(
+    row: &mut Value,
+    map: &str,
+    key: &str,
+    fields: &[(&str, f64)],
+    extra: &[(&str, Value)],
+) {
+    let entry = row[map].as_object_mut().and_then(|m| {
+        if !m.contains_key(key) {
+            m.insert(key.to_string(), json!({}));
+        }
+        m.get_mut(key)
+    });
     if let Some(e) = entry {
         for (f, d) in fields {
             let cur = e[*f].as_f64().unwrap_or(0.0);
@@ -205,7 +305,12 @@ fn bump_window(row: &mut Value, win: &str, key: &str, cutoff_key: &str, fields: 
         arr.push(b);
     }
     arr.retain(|b| b["date"].as_str().map(|d| d >= cutoff_key).unwrap_or(false));
-    arr.sort_by(|a, b| a["date"].as_str().unwrap_or("").cmp(b["date"].as_str().unwrap_or("")));
+    arr.sort_by(|a, b| {
+        a["date"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["date"].as_str().unwrap_or(""))
+    });
 }
 
 /// Fold one event into a row. `level` selects which by_* maps to update:
@@ -219,7 +324,11 @@ pub fn apply_event(row: &mut Value, ev: &UsageEvent, level: &str, project_name: 
     let reasoning = ev.tokens_reasoning;
     let cost = ev.cost_usd;
     let total_tokens = prompt + cached + completion + reasoning;
-    let cache_hit = if ev.cache_hit_rate > 0.0 || cached > 0 { 1 } else { 0 };
+    let cache_hit = if ev.cache_hit_rate > 0.0 || cached > 0 {
+        1
+    } else {
+        0
+    };
 
     // Lifetime counters.
     add_i(row, "tokens_prompt_lifetime", prompt);
@@ -253,10 +362,36 @@ pub fn apply_event(row: &mut Value, ev: &UsageEvent, level: &str, project_name: 
         ("sessions", 1.0),
     ];
     let now = Utc::now();
-    bump_window(row, "usage_24h", &t.format("%Y-%m-%dT%H").to_string(), &(now - Duration::hours(24)).format("%Y-%m-%dT%H").to_string(), win_fields);
-    bump_window(row, "usage_7d", &t.format("%Y-%m-%d").to_string(), &(now - Duration::days(7)).format("%Y-%m-%d").to_string(), win_fields);
-    bump_window(row, "usage_30d", &t.format("%Y-%m-%d").to_string(), &(now - Duration::days(30)).format("%Y-%m-%d").to_string(), win_fields);
-    bump_window(row, "usage_12m", &t.format("%Y-%m").to_string(), &(now - Duration::days(365)).format("%Y-%m").to_string(), win_fields);
+    bump_window(
+        row,
+        "usage_24h",
+        &t.format("%Y-%m-%dT%H").to_string(),
+        &(now - Duration::hours(24))
+            .format("%Y-%m-%dT%H")
+            .to_string(),
+        win_fields,
+    );
+    bump_window(
+        row,
+        "usage_7d",
+        &t.format("%Y-%m-%d").to_string(),
+        &(now - Duration::days(7)).format("%Y-%m-%d").to_string(),
+        win_fields,
+    );
+    bump_window(
+        row,
+        "usage_30d",
+        &t.format("%Y-%m-%d").to_string(),
+        &(now - Duration::days(30)).format("%Y-%m-%d").to_string(),
+        win_fields,
+    );
+    bump_window(
+        row,
+        "usage_12m",
+        &t.format("%Y-%m").to_string(),
+        &(now - Duration::days(365)).format("%Y-%m").to_string(),
+        win_fields,
+    );
 
     // Heatmap (365 days), pruned by date.
     let day = t.format("%Y-%m-%d").to_string();
@@ -284,21 +419,52 @@ pub fn apply_event(row: &mut Value, ev: &UsageEvent, level: &str, project_name: 
             row,
             "by_model",
             &key,
-            &[("tokens_prompt", (prompt + cached) as f64), ("tokens_completion", completion as f64), ("cost_usd", cost), ("sessions", 1.0)],
+            &[
+                ("tokens_prompt", (prompt + cached) as f64),
+                ("tokens_completion", completion as f64),
+                ("cost_usd", cost),
+                ("sessions", 1.0),
+            ],
             &[("provider", json!(provider))],
         );
     }
     if !provider.is_empty() {
-        bump_map(row, "by_provider", &provider, &[("cost_usd", cost), ("sessions", 1.0), ("tokens", total_tokens as f64)], &[]);
+        bump_map(
+            row,
+            "by_provider",
+            &provider,
+            &[
+                ("cost_usd", cost),
+                ("sessions", 1.0),
+                ("tokens", total_tokens as f64),
+            ],
+            &[],
+        );
     }
 
     match level {
         "project" => {
             if !cli.is_empty() {
-                bump_map(row, "by_cli", &cli, &[("sessions", 1.0), ("cost_usd", cost)], &[]);
+                bump_map(
+                    row,
+                    "by_cli",
+                    &cli,
+                    &[("sessions", 1.0), ("cost_usd", cost)],
+                    &[],
+                );
             }
             if let Some(uid) = ev.user_id.as_deref() {
-                bump_map(row, "by_member", uid, &[("sessions", 1.0), ("cost_usd", cost), ("tokens", total_tokens as f64)], &[]);
+                bump_map(
+                    row,
+                    "by_member",
+                    uid,
+                    &[
+                        ("sessions", 1.0),
+                        ("cost_usd", cost),
+                        ("tokens", total_tokens as f64),
+                    ],
+                    &[],
+                );
             }
         }
         "org" => {
@@ -306,13 +472,27 @@ pub fn apply_event(row: &mut Value, ev: &UsageEvent, level: &str, project_name: 
                 row,
                 "by_project",
                 &ev.project_id,
-                &[("cost_usd", cost), ("sessions", 1.0), ("tokens", total_tokens as f64)],
+                &[
+                    ("cost_usd", cost),
+                    ("sessions", 1.0),
+                    ("tokens", total_tokens as f64),
+                ],
                 &[("name", json!(project_name.unwrap_or("")))],
             );
         }
         "account" => {
             if let Some(org) = ev.org_id.as_deref() {
-                bump_map(row, "by_org", org, &[("cost_usd", cost), ("sessions", 1.0), ("tokens", total_tokens as f64)], &[]);
+                bump_map(
+                    row,
+                    "by_org",
+                    org,
+                    &[
+                        ("cost_usd", cost),
+                        ("sessions", 1.0),
+                        ("tokens", total_tokens as f64),
+                    ],
+                    &[],
+                );
             }
         }
         _ => {}
@@ -365,8 +545,16 @@ pub async fn ensure_usage_tables(
     let cols = INT_COLS
         .iter()
         .map(|c| format!("{} INTEGER NOT NULL DEFAULT 0", c))
-        .chain(REAL_COLS.iter().map(|c| format!("{} REAL NOT NULL DEFAULT 0", c)))
-        .chain(JSON_COLS.iter().map(|c| format!("{} TEXT NOT NULL DEFAULT '{{}}'", c)))
+        .chain(
+            REAL_COLS
+                .iter()
+                .map(|c| format!("{} REAL NOT NULL DEFAULT 0", c)),
+        )
+        .chain(
+            JSON_COLS
+                .iter()
+                .map(|c| format!("{} TEXT NOT NULL DEFAULT '{{}}'", c)),
+        )
         .collect::<Vec<_>>()
         .join(", ");
     for table in ["project_usage", "org_usage", "account_usage"] {
@@ -476,20 +664,42 @@ async fn push_one(
 /// Push an event's delta to the shared Turso totals (project -> org -> account)
 /// and mirror locally. Marks the event synced only if every level succeeded.
 pub async fn push_event_to_cloud(app: &AppHandle, ev: &UsageEvent) {
-    let Ok(cfg) = cloud::turso_config() else { return };
+    let Ok(cfg) = cloud::turso_config() else {
+        return;
+    };
     let client = reqwest::Client::new();
     if ensure_usage_tables(&client, &cfg).await.is_err() {
         return;
     }
     let mut ok = true;
     if !ev.project_id.is_empty() {
-        ok &= push_one(app, &client, &cfg, "project_usage", &ev.project_id, ev, "project", None).await;
+        ok &= push_one(
+            app,
+            &client,
+            &cfg,
+            "project_usage",
+            &ev.project_id,
+            ev,
+            "project",
+            None,
+        )
+        .await;
     }
     if let Some(org) = ev.org_id.clone() {
         ok &= push_one(app, &client, &cfg, "org_usage", &org, ev, "org", None).await;
     }
     if let Some(uid) = ev.user_id.clone() {
-        ok &= push_one(app, &client, &cfg, "account_usage", &uid, ev, "account", None).await;
+        ok &= push_one(
+            app,
+            &client,
+            &cfg,
+            "account_usage",
+            &uid,
+            ev,
+            "account",
+            None,
+        )
+        .await;
     }
     if ok {
         let db = app.state::<Db>();

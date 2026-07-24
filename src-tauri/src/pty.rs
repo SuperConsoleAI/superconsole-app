@@ -97,7 +97,11 @@ pub fn parse_env_vars_json(json: &str) -> Vec<(String, String)> {
             if key.is_empty() {
                 return None;
             }
-            let value = v.get("value").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let value = v
+                .get("value")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             Some((key, value))
         })
         .collect()
@@ -315,8 +319,15 @@ pub fn start_session(
         let mut hook_env = std::collections::HashMap::new();
         hook_env.insert("SUPERCONSOLE_SESSION_ID".into(), session_id.to_string());
         hook_env.insert("SUPERCONSOLE_CLI".into(), cli.to_string());
-        hook_env.insert("SUPERCONSOLE_WORKSPACE_NAME".into(), workspace_path.split('/').last().unwrap_or("").to_string());
-        crate::hooks::run_hook(workspace_path, crate::hooks::HookType::SessionStart, &hook_env);
+        hook_env.insert(
+            "SUPERCONSOLE_WORKSPACE_NAME".into(),
+            workspace_path.split('/').last().unwrap_or("").to_string(),
+        );
+        crate::hooks::run_hook(
+            workspace_path,
+            crate::hooks::HookType::SessionStart,
+            &hook_env,
+        );
     }
 
     let app_handle = app.clone();
@@ -337,11 +348,12 @@ pub fn start_session(
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
                     tail.push_str(&data);
                     if tail.len() > 6000 {
-                        tail = tail.chars().skip(tail.chars().count().saturating_sub(4000)).collect();
+                        tail = tail
+                            .chars()
+                            .skip(tail.chars().count().saturating_sub(4000))
+                            .collect();
                     }
-                    if !auth_error_reported
-                        && !providers.is_empty()
-                        && looks_like_auth_error(&data)
+                    if !auth_error_reported && !providers.is_empty() && looks_like_auth_error(&data)
                     {
                         auth_error_reported = true;
                         let _ = app_handle.emit(
@@ -398,9 +410,15 @@ pub fn start_session(
             let mut hook_env = std::collections::HashMap::new();
             hook_env.insert("SUPERCONSOLE_SESSION_ID".into(), sid.clone());
             hook_env.insert("SUPERCONSOLE_CLI".into(), cli_name.clone());
-            hook_env.insert("SUPERCONSOLE_WORKSPACE_NAME".into(),
-                ws_path_for_hook.split('/').last().unwrap_or("").to_string());
-            crate::hooks::run_hook(&ws_path_for_hook, crate::hooks::HookType::SessionEnd, &hook_env);
+            hook_env.insert(
+                "SUPERCONSOLE_WORKSPACE_NAME".into(),
+                ws_path_for_hook.split('/').last().unwrap_or("").to_string(),
+            );
+            crate::hooks::run_hook(
+                &ws_path_for_hook,
+                crate::hooks::HookType::SessionEnd,
+                &hook_env,
+            );
         }
         let _ = app_handle.emit("pty-exit", PtyExit { session_id: sid });
     });
@@ -428,9 +446,7 @@ pub fn detect_context_files(workspace: &Path) -> Vec<String> {
 
 pub fn write_session(manager: &SessionManager, session_id: &str, data: &str) -> Result<(), String> {
     let mut sessions = manager.0.lock().unwrap();
-    let session = sessions
-        .get_mut(session_id)
-        .ok_or("No active session")?;
+    let session = sessions.get_mut(session_id).ok_or("No active session")?;
     session
         .writer
         .write_all(data.as_bytes())

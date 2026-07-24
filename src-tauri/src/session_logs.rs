@@ -37,14 +37,17 @@ fn log_file_path(ws_path: &str, date: &str, slug: &str) -> std::path::PathBuf {
 
 /// Trim summary to at most 120 lines.
 fn trim_summary(summary: &str) -> String {
-    summary
-        .lines()
-        .take(120)
-        .collect::<Vec<_>>()
-        .join("\n")
+    summary.lines().take(120).collect::<Vec<_>>().join("\n")
 }
 
-fn build_log_md(date: &str, agent_name: &str, model: &str, cost_usd: f64, tokens: i64, summary: &str) -> String {
+fn build_log_md(
+    date: &str,
+    agent_name: &str,
+    model: &str,
+    cost_usd: f64,
+    tokens: i64,
+    summary: &str,
+) -> String {
     format!(
         "---\ndate: {}\nagent: {}\nmodel: {}\ncost: ${:.4}\ntokens: {}\n---\n\n{}\n",
         date,
@@ -90,13 +93,11 @@ async fn ensure_session_logs_table(
     Ok(())
 }
 
-async fn push_log_to_cloud(
-    app: &AppHandle,
-    project_id: Option<&str>,
-    log: &SessionLogFile,
-) {
+async fn push_log_to_cloud(app: &AppHandle, project_id: Option<&str>, log: &SessionLogFile) {
     let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else { return };
+    let Ok(cfg) = cloud::turso_config() else {
+        return;
+    };
     let client = reqwest::Client::new();
     if ensure_session_logs_table(&client, &cfg).await.is_err() {
         return;
@@ -154,7 +155,13 @@ pub async fn save_session_log(
         .trim()
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())
@@ -172,7 +179,10 @@ pub async fn save_session_log(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let file = log_file_path(&ws_path, &date, &slug_clean);
     if file.exists() {
-        return Err(format!("A log file for '{}' on {} already exists", slug_clean, date));
+        return Err(format!(
+            "A log file for '{}' on {} already exists",
+            slug_clean, date
+        ));
     }
     let md = build_log_md(&date, &agent_name, &model, cost_usd, tokens, &summary);
     std::fs::write(&file, &md).map_err(|e| e.to_string())?;
@@ -201,19 +211,12 @@ pub async fn save_session_log(
 }
 
 #[tauri::command]
-pub fn list_session_logs(
-    app: AppHandle,
-    workspace_id: i64,
-) -> Result<Vec<SessionLogFile>, String> {
+pub fn list_session_logs(app: AppHandle, workspace_id: i64) -> Result<Vec<SessionLogFile>, String> {
     Ok(app.state::<Db>().list_session_logs(workspace_id))
 }
 
 #[tauri::command]
-pub fn delete_session_log(
-    app: AppHandle,
-    workspace_id: i64,
-    id: String,
-) -> Result<(), String> {
+pub fn delete_session_log(app: AppHandle, workspace_id: i64, id: String) -> Result<(), String> {
     let db = app.state::<Db>();
 
     // Find the file path so we can delete the file too

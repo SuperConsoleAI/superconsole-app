@@ -21,8 +21,7 @@ use tauri::{AppHandle, Manager};
 use ulid::Ulid;
 
 const MEMORY_DIR: &str = ".superconsole/memory";
-pub const MEMORY_CATEGORIES: &[&str] =
-    &["preferences", "decisions", "facts", "patterns", "recent"];
+pub const MEMORY_CATEGORIES: &[&str] = &["preferences", "decisions", "facts", "patterns", "recent"];
 const RECENT_LIMIT: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,7 +103,9 @@ fn one_line_summary(body: &str) -> String {
 }
 
 fn parse_tags(line: &str) -> Vec<String> {
-    let rest = line.trim_start_matches(|c: char| c != ':').trim_start_matches(':');
+    let rest = line
+        .trim_start_matches(|c: char| c != ':')
+        .trim_start_matches(':');
     rest.split(|c: char| c.is_whitespace() || c == ',')
         .map(|t| t.trim().trim_start_matches('#').to_string())
         .filter(|t| !t.is_empty())
@@ -162,21 +163,34 @@ fn parse_file(category: &str, content: &str) -> Vec<MemoryEntry> {
 }
 
 fn serialize_entry(e: &MemoryEntry) -> String {
-    let date = if e.date.is_empty() { today() } else { e.date.clone() };
+    let date = if e.date.is_empty() {
+        today()
+    } else {
+        e.date.clone()
+    };
     let mut out = format!("## [{}] {}\n", date, e.title);
     if !e.body.trim().is_empty() {
         out.push_str(e.body.trim());
         out.push('\n');
     }
     if !e.tags.is_empty() {
-        let tags = e.tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" ");
+        let tags = e
+            .tags
+            .iter()
+            .map(|t| format!("#{}", t))
+            .collect::<Vec<_>>()
+            .join(" ");
         out.push_str(&format!("Tags: {}\n", tags));
     }
     out
 }
 
 fn serialize_file(entries: &[MemoryEntry]) -> String {
-    entries.iter().map(serialize_entry).collect::<Vec<_>>().join("\n")
+    entries
+        .iter()
+        .map(serialize_entry)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn read_category(ws_path: &str, category: &str) -> Vec<MemoryEntry> {
@@ -197,12 +211,19 @@ fn write_category(ws_path: &str, category: &str, entries: &[MemoryEntry]) -> Res
 fn reindex(db: &Db, workspace_id: i64, entries: &[MemoryEntry]) {
     for e in entries {
         let _ = db.upsert_memory_entry(
-            workspace_id, &e.category, &e.slug, &e.title, &e.summary, &e.tags.join(","),
+            workspace_id,
+            &e.category,
+            &e.slug,
+            &e.title,
+            &e.summary,
+            &e.tags.join(","),
             &rel_path(&e.category),
         );
     }
-    let live: std::collections::HashSet<(String, String)> =
-        entries.iter().map(|e| (e.category.clone(), e.slug.clone())).collect();
+    let live: std::collections::HashSet<(String, String)> = entries
+        .iter()
+        .map(|e| (e.category.clone(), e.slug.clone()))
+        .collect();
     for row in db.list_memory_entries(workspace_id) {
         if !live.contains(&(row.category.clone(), row.slug.clone())) {
             let _ = db.delete_memory_entry(workspace_id, &row.category, &row.slug);
@@ -301,7 +322,12 @@ pub fn list_memory(app: AppHandle, workspace_id: i64) -> Result<Vec<MemoryEntry>
                     date: String::new(),
                     body: c.summary.clone(),
                     summary: c.summary,
-                    tags: c.tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+                    tags: c
+                        .tags
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
                     source: "cloud".into(),
                 });
             }
@@ -360,7 +386,11 @@ pub async fn write_memory(
         date: today(),
         summary: one_line_summary(&body),
         body: body.trim().to_string(),
-        tags: tags.into_iter().map(|t| t.trim().trim_start_matches('#').to_string()).filter(|t| !t.is_empty()).collect(),
+        tags: tags
+            .into_iter()
+            .map(|t| t.trim().trim_start_matches('#').to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
         source: "file".into(),
     };
 
@@ -375,7 +405,12 @@ pub async fn write_memory(
     reindex(&app.state::<Db>(), workspace_id, &all_entries(&ws_path));
 
     push_memory_to_cloud(
-        &app, project_id.as_deref(), &category, &slug, &entry.title, &entry.summary,
+        &app,
+        project_id.as_deref(),
+        &category,
+        &slug,
+        &entry.title,
+        &entry.summary,
         &entry.tags.join(","),
     )
     .await;
@@ -398,7 +433,8 @@ pub async fn delete_memory(
     let mut entries = read_category(&ws_path, &category);
     entries.retain(|e| e.slug != slug);
     write_category(&ws_path, &category, &entries)?;
-    app.state::<Db>().delete_memory_entry(workspace_id, &category, &slug)?;
+    app.state::<Db>()
+        .delete_memory_entry(workspace_id, &category, &slug)?;
     delete_memory_from_cloud(&app, project_id.as_deref(), &category, &slug).await;
     Ok(())
 }
@@ -475,7 +511,12 @@ pub fn list_org_memory(app: AppHandle, org_id: String) -> Result<Vec<OrgMemoryEn
             slug: m.slug,
             title: m.title,
             body: m.body,
-            tags: m.tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            tags: m
+                .tags
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
         })
         .collect())
 }
@@ -528,16 +569,16 @@ pub async fn write_org_memory(
         slug,
         title: title.trim().to_string(),
         body: body.trim().to_string(),
-        tags: tag_csv.split(',').map(|s| s.to_string()).filter(|s| !s.is_empty()).collect(),
+        tags: tag_csv
+            .split(',')
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
     })
 }
 
 #[tauri::command]
-pub async fn delete_org_memory(
-    app: AppHandle,
-    org_id: String,
-    slug: String,
-) -> Result<(), String> {
+pub async fn delete_org_memory(app: AppHandle, org_id: String, slug: String) -> Result<(), String> {
     let cfg = cloud::turso_config().map_err(|_| "Cloud is not configured")?;
     let client = reqwest::Client::new();
     require_org_manager(&app, &client, &cfg, &org_id).await?;
@@ -584,7 +625,11 @@ pub fn memory_context(app: &AppHandle, workspace_id: i64) -> String {
         ));
     }
 
-    if let Some(org_id) = ws.project_id.as_deref().and_then(|pid| db.get_project_org(pid)) {
+    if let Some(org_id) = ws
+        .project_id
+        .as_deref()
+        .and_then(|pid| db.get_project_org(pid))
+    {
         let org_mem = db.get_cached_org_memory(&org_id);
         if !org_mem.is_empty() {
             let facts: Vec<String> = org_mem
@@ -645,7 +690,9 @@ async fn push_memory_to_cloud(
     tags: &str,
 ) {
     let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else { return };
+    let Ok(cfg) = cloud::turso_config() else {
+        return;
+    };
     let client = reqwest::Client::new();
     if ensure_memory_index_table(&client, &cfg).await.is_err() {
         return;
@@ -683,7 +730,9 @@ async fn delete_memory_from_cloud(
     slug: &str,
 ) {
     let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else { return };
+    let Ok(cfg) = cloud::turso_config() else {
+        return;
+    };
     let client = reqwest::Client::new();
     if ensure_memory_index_table(&client, &cfg).await.is_err() {
         return;

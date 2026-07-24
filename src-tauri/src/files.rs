@@ -51,7 +51,12 @@ pub fn read_env_file(workspace: &str) -> Result<Vec<EnvEntry>, String> {
         let value = value_part.trim_matches('"').trim_matches('\'').to_string();
         let key = key.trim().to_string();
         let is_secret = key_is_secret(&key);
-        entries.push(EnvEntry { key, value, comment, is_secret });
+        entries.push(EnvEntry {
+            key,
+            value,
+            comment,
+            is_secret,
+        });
     }
     Ok(entries)
 }
@@ -107,16 +112,25 @@ pub fn delete_env_entry(workspace: &str, key: &str) -> Result<(), String> {
 
 fn resolve(workspace: &str, rel: &str) -> Result<PathBuf, String> {
     let rel_path = Path::new(rel);
-    if rel_path
-        .components()
-        .any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
-    {
+    if rel_path.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
         return Err("Invalid path".into());
     }
     Ok(Path::new(workspace).join(rel_path))
 }
 
-const SKIP_DIRS: &[&str] = &["node_modules", ".git", "target", "dist", ".next", "__pycache__"];
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    ".next",
+    "__pycache__",
+];
 
 pub fn list_dir(workspace: &str, rel: &str) -> Result<Vec<FileEntry>, String> {
     let dir = resolve(workspace, rel)?;
@@ -134,7 +148,11 @@ pub fn list_dir(workspace: &str, rel: &str) -> Result<Vec<FileEntry>, String> {
             } else {
                 format!("{}/{}", rel, name)
             };
-            Some(FileEntry { name, rel_path, is_dir })
+            Some(FileEntry {
+                name,
+                rel_path,
+                is_dir,
+            })
         })
         .collect();
     entries.sort_by_key(|e| (!e.is_dir, e.name.to_lowercase()));
@@ -226,7 +244,10 @@ pub fn scaffold_superconsole_dir(workspace_path: &str) -> Result<Vec<String>, St
         (".superconsole/memory/recent.md", MEMORY_RECENT),
         (".superconsole/context/about.md", CONTEXT_ABOUT),
         (".superconsole/rules/minimal-code.mdc", RULE_MINIMAL_CODE),
-        (".superconsole/rules/no-destructive-ops.mdc", RULE_NO_DESTRUCTIVE),
+        (
+            ".superconsole/rules/no-destructive-ops.mdc",
+            RULE_NO_DESTRUCTIVE,
+        ),
         (".superconsole/hooks/session-end.sh", HOOK_SESSION_END),
         (".superconsole/hooks/before-prompt.sh", HOOK_BEFORE_PROMPT),
         (".superconsole/agents/router/agent.md", AGENT_ROUTER),
@@ -445,4 +466,3 @@ Rules:
 
 After completing any task successfully, call memory_write to record what worked in patterns category. Keep it to 2 sentences max.
 "#;
-

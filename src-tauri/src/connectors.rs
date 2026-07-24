@@ -36,68 +36,140 @@ const REGISTRY: &[Def] = &[
     Def {
         service: "gmail",
         fields: &[
-            Field { key: "api_key", env: "GMAIL_API_KEY", secret: true },
-            Field { key: "email", env: "GMAIL_EMAIL", secret: false },
+            Field {
+                key: "api_key",
+                env: "GMAIL_API_KEY",
+                secret: true,
+            },
+            Field {
+                key: "email",
+                env: "GMAIL_EMAIL",
+                secret: false,
+            },
         ],
     },
     Def {
         service: "google_drive",
-        fields: &[Field { key: "api_key", env: "GOOGLE_DRIVE_API_KEY", secret: true }],
+        fields: &[Field {
+            key: "api_key",
+            env: "GOOGLE_DRIVE_API_KEY",
+            secret: true,
+        }],
     },
     Def {
         service: "shopify",
         fields: &[
-            Field { key: "api_key", env: "SHOPIFY_API_KEY", secret: true },
-            Field { key: "shop_domain", env: "SHOPIFY_SHOP_DOMAIN", secret: false },
+            Field {
+                key: "api_key",
+                env: "SHOPIFY_API_KEY",
+                secret: true,
+            },
+            Field {
+                key: "shop_domain",
+                env: "SHOPIFY_SHOP_DOMAIN",
+                secret: false,
+            },
         ],
     },
     Def {
         service: "beehiiv",
         fields: &[
-            Field { key: "api_key", env: "BEEHIIV_API_KEY", secret: true },
-            Field { key: "publication_id", env: "BEEHIIV_PUBLICATION_ID", secret: false },
+            Field {
+                key: "api_key",
+                env: "BEEHIIV_API_KEY",
+                secret: true,
+            },
+            Field {
+                key: "publication_id",
+                env: "BEEHIIV_PUBLICATION_ID",
+                secret: false,
+            },
         ],
     },
     Def {
         service: "convertkit",
-        fields: &[Field { key: "api_key", env: "CONVERTKIT_API_KEY", secret: true }],
+        fields: &[Field {
+            key: "api_key",
+            env: "CONVERTKIT_API_KEY",
+            secret: true,
+        }],
     },
     Def {
         service: "stripe",
-        fields: &[Field { key: "api_key", env: "STRIPE_API_KEY", secret: true }],
+        fields: &[Field {
+            key: "api_key",
+            env: "STRIPE_API_KEY",
+            secret: true,
+        }],
     },
     Def {
         service: "buffer",
-        fields: &[Field { key: "access_token", env: "BUFFER_ACCESS_TOKEN", secret: true }],
+        fields: &[Field {
+            key: "access_token",
+            env: "BUFFER_ACCESS_TOKEN",
+            secret: true,
+        }],
     },
     Def {
         service: "ga4",
         fields: &[
-            Field { key: "api_secret", env: "GA4_API_SECRET", secret: true },
-            Field { key: "measurement_id", env: "GA4_MEASUREMENT_ID", secret: false },
+            Field {
+                key: "api_secret",
+                env: "GA4_API_SECRET",
+                secret: true,
+            },
+            Field {
+                key: "measurement_id",
+                env: "GA4_MEASUREMENT_ID",
+                secret: false,
+            },
         ],
     },
     Def {
         service: "turso",
         fields: &[
-            Field { key: "auth_token", env: "TURSO_AUTH_TOKEN", secret: true },
-            Field { key: "url", env: "TURSO_DATABASE_URL", secret: false },
+            Field {
+                key: "auth_token",
+                env: "TURSO_AUTH_TOKEN",
+                secret: true,
+            },
+            Field {
+                key: "url",
+                env: "TURSO_DATABASE_URL",
+                secret: false,
+            },
         ],
     },
     Def {
         service: "supabase",
         fields: &[
-            Field { key: "service_role_key", env: "SUPABASE_SERVICE_ROLE_KEY", secret: true },
-            Field { key: "url", env: "SUPABASE_URL", secret: false },
+            Field {
+                key: "service_role_key",
+                env: "SUPABASE_SERVICE_ROLE_KEY",
+                secret: true,
+            },
+            Field {
+                key: "url",
+                env: "SUPABASE_URL",
+                secret: false,
+            },
         ],
     },
     Def {
         service: "notion",
-        fields: &[Field { key: "api_key", env: "NOTION_API_KEY", secret: true }],
+        fields: &[Field {
+            key: "api_key",
+            env: "NOTION_API_KEY",
+            secret: true,
+        }],
     },
     Def {
         service: "airtable",
-        fields: &[Field { key: "api_key", env: "AIRTABLE_API_KEY", secret: true }],
+        fields: &[Field {
+            key: "api_key",
+            env: "AIRTABLE_API_KEY",
+            secret: true,
+        }],
     },
     Def {
         service: "telegram",
@@ -105,34 +177,70 @@ const REGISTRY: &[Def] = &[
         // chat_id + thread_id: project routing target
         // allowed_user_ids: comma-separated Telegram user IDs; empty = anyone
         fields: &[
-            Field { key: "bot_token", env: "TELEGRAM_BOT_TOKEN", secret: true },
-            Field { key: "chat_id", env: "TELEGRAM_CHAT_ID", secret: false },
-            Field { key: "thread_id", env: "TELEGRAM_THREAD_ID", secret: false },
-            Field { key: "allowed_user_ids", env: "TELEGRAM_ALLOWED_USER_IDS", secret: false },
+            Field {
+                key: "bot_token",
+                env: "TELEGRAM_BOT_TOKEN",
+                secret: true,
+            },
+            Field {
+                key: "chat_id",
+                env: "TELEGRAM_CHAT_ID",
+                secret: false,
+            },
+            Field {
+                key: "thread_id",
+                env: "TELEGRAM_THREAD_ID",
+                secret: false,
+            },
+            Field {
+                key: "allowed_user_ids",
+                env: "TELEGRAM_ALLOWED_USER_IDS",
+                secret: false,
+            },
         ],
     },
     Def {
         service: "slack",
-        fields: &[Field { key: "bot_token", env: "SLACK_BOT_TOKEN", secret: true }],
+        fields: &[Field {
+            key: "bot_token",
+            env: "SLACK_BOT_TOKEN",
+            secret: true,
+        }],
     },
     Def {
         service: "github",
-        fields: &[Field { key: "token", env: "GITHUB_TOKEN", secret: true }],
+        fields: &[Field {
+            key: "token",
+            env: "GITHUB_TOKEN",
+            secret: true,
+        }],
     },
     Def {
         service: "linear",
-        fields: &[Field { key: "api_key", env: "LINEAR_API_KEY", secret: true }],
+        fields: &[Field {
+            key: "api_key",
+            env: "LINEAR_API_KEY",
+            secret: true,
+        }],
     },
     Def {
         service: "web_search",
-        fields: &[Field { key: "api_key", env: "TAVILY_API_KEY", secret: true }],
+        fields: &[Field {
+            key: "api_key",
+            env: "TAVILY_API_KEY",
+            secret: true,
+        }],
     },
     // Composio — 1000+ tools via a single API key + MCP server.
     // Injected as COMPOSIO_API_KEY into every PTY session where connected.
     // Same scope-based HKDF encryption as all other connectors.
     Def {
         service: "composio",
-        fields: &[Field { key: "api_key", env: "COMPOSIO_API_KEY", secret: true }],
+        fields: &[Field {
+            key: "api_key",
+            env: "COMPOSIO_API_KEY",
+            secret: true,
+        }],
     },
 ];
 
@@ -249,7 +357,10 @@ fn view_from_blob(def: &Def, status: Option<String>, blob: &Map<String, Value>) 
 }
 
 #[tauri::command]
-pub async fn list_connectors(scope: String, scope_id: String) -> Result<Vec<ConnectorView>, String> {
+pub async fn list_connectors(
+    scope: String,
+    scope_id: String,
+) -> Result<Vec<ConnectorView>, String> {
     let (table, id_col, _) = scope_table(&scope)?;
     let cfg = cloud::turso_config()?;
     let client = reqwest::Client::new();
@@ -341,14 +452,25 @@ pub async fn set_connector(
 
     // Service-specific required-field checks (surface friendly errors before hitting the DB).
     if service == "telegram" {
-        let has_chat = blob.get("chat_id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
-        let has_bot = blob.get("bot_token").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        let has_chat = blob
+            .get("chat_id")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        let has_bot = blob
+            .get("bot_token")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
         // At org scope, bot_token is required. At project scope, chat_id is required.
         if scope == "org" && !has_bot {
             return Err("Telegram: Bot Token is required at org level.".to_string());
         }
         if scope == "project" && !has_chat {
-            return Err("Telegram: Chat ID is required. Use the Detect → button to auto-fill it.".to_string());
+            return Err(
+                "Telegram: Chat ID is required. Use the Detect → button to auto-fill it."
+                    .to_string(),
+            );
         }
         let _ = has_bot; // may be absent at project scope (Option A)
     }
@@ -438,12 +560,10 @@ pub async fn set_connector(
                         oid
                     }
                     None => {
-                        return Err(
-                            "Connector save failed: project not found in cloud. \
+                        return Err("Connector save failed: project not found in cloud. \
                              Open Settings → Project, select this workspace to sync it, \
                              then try again."
-                                .to_string(),
-                        );
+                            .to_string());
                     }
                 }
             };
@@ -490,7 +610,6 @@ pub async fn set_connector(
     }
     Ok("ok".to_string())
 }
-
 
 #[tauri::command]
 pub async fn delete_connector(
@@ -582,7 +701,8 @@ pub fn project_telegram_bots(db: &Db) -> Vec<(String, i64, String, String, Vec<S
         let Some(project_id) = ws.project_id.clone() else {
             continue;
         };
-        let org_id = db.get_workspace_project_id(ws.id)
+        let org_id = db
+            .get_workspace_project_id(ws.id)
             .and_then(|pid| db.get_project_org(&pid));
 
         let mut proj_bot_token = String::new();
@@ -591,7 +711,9 @@ pub fn project_telegram_bots(db: &Db) -> Vec<(String, i64, String, String, Vec<S
         let mut allowed_ids_raw = String::new();
 
         for c in db.get_cached_connectors("project", &project_id) {
-            if c.service != "telegram" { continue; }
+            if c.service != "telegram" {
+                continue;
+            }
             let blob = parse_blob(c.credentials_encrypted.as_deref(), &project_id);
             proj_bot_token = field_string(&blob, "bot_token").unwrap_or_default();
             chat_id = field_string(&blob, "chat_id").unwrap_or_default();
@@ -599,7 +721,9 @@ pub fn project_telegram_bots(db: &Db) -> Vec<(String, i64, String, String, Vec<S
             allowed_ids_raw = field_string(&blob, "allowed_user_ids").unwrap_or_default();
         }
 
-        if chat_id.is_empty() { continue; }
+        if chat_id.is_empty() {
+            continue;
+        }
 
         let token = if !proj_bot_token.is_empty() {
             proj_bot_token
@@ -616,7 +740,10 @@ pub fn project_telegram_bots(db: &Db) -> Vec<(String, i64, String, String, Vec<S
             .filter(|s| !s.is_empty())
             .collect();
 
-        if !out.iter().any(|(t, _, c, th, _)| t == &token && c == &chat_id && th == &thread_id) {
+        if !out
+            .iter()
+            .any(|(t, _, c, th, _)| t == &token && c == &chat_id && th == &thread_id)
+        {
             out.push((token, ws.id, chat_id, thread_id, allowed_ids));
         }
     }
@@ -665,7 +792,10 @@ fn connector_mcp_def(service: &str) -> Option<ConnectorMcp> {
         key: k.into(),
         command: c.into(),
         args: a.iter().map(|s| s.to_string()).collect(),
-        env: e.iter().map(|(x, y)| (x.to_string(), y.to_string())).collect(),
+        env: e
+            .iter()
+            .map(|(x, y)| (x.to_string(), y.to_string()))
+            .collect(),
     };
     match service {
         "github" => Some(m(
@@ -789,20 +919,21 @@ pub fn resolve_connector_fields(
     let def = connector_def(service)?;
     let mut found = false;
     let mut out: HashMap<String, String> = HashMap::new();
-    let merge = |scope: &str, scope_id: &str, out: &mut HashMap<String, String>, found: &mut bool| {
-        for c in db.get_cached_connectors(scope, scope_id) {
-            if c.service != service {
-                continue;
-            }
-            *found = true;
-            let blob = parse_blob(c.credentials_encrypted.as_deref(), scope_id);
-            for f in def.fields {
-                if let Some(v) = field_string(&blob, f.key) {
-                    out.insert(f.key.to_string(), v);
+    let merge =
+        |scope: &str, scope_id: &str, out: &mut HashMap<String, String>, found: &mut bool| {
+            for c in db.get_cached_connectors(scope, scope_id) {
+                if c.service != service {
+                    continue;
+                }
+                *found = true;
+                let blob = parse_blob(c.credentials_encrypted.as_deref(), scope_id);
+                for f in def.fields {
+                    if let Some(v) = field_string(&blob, f.key) {
+                        out.insert(f.key.to_string(), v);
+                    }
                 }
             }
-        }
-    };
+        };
     if let Some(uid) = user_id {
         merge("account", uid, &mut out, &mut found);
     }
@@ -870,7 +1001,11 @@ pub struct ConnectorTestResult {
 }
 
 fn ok_result(message: &str) -> ConnectorTestResult {
-    ConnectorTestResult { success: true, message: message.to_string(), details: None }
+    ConnectorTestResult {
+        success: true,
+        message: message.to_string(),
+        details: None,
+    }
 }
 
 fn ok_result_with(message: &str, details: &str) -> ConnectorTestResult {
@@ -882,7 +1017,11 @@ fn ok_result_with(message: &str, details: &str) -> ConnectorTestResult {
 }
 
 fn err_result(message: &str) -> ConnectorTestResult {
-    ConnectorTestResult { success: false, message: message.to_string(), details: None }
+    ConnectorTestResult {
+        success: false,
+        message: message.to_string(),
+        details: None,
+    }
 }
 
 async fn test_supabase(url: &str, key: &str) -> ConnectorTestResult {
@@ -1041,7 +1180,11 @@ async fn test_stripe(api_key: &str) -> ConnectorTestResult {
         .await;
     match resp {
         Ok(r) if r.status().is_success() => {
-            let mode = if api_key.starts_with("sk_live_") { "live" } else { "test" };
+            let mode = if api_key.starts_with("sk_live_") {
+                "live"
+            } else {
+                "test"
+            };
             ok_result_with("Connected to Stripe", &format!("Mode: {}", mode))
         }
         Ok(r) if r.status().as_u16() == 401 => err_result("Invalid API key"),
@@ -1156,7 +1299,10 @@ async fn test_convertkit(api_key: &str) -> ConnectorTestResult {
         return err_result("API key is required");
     }
     let resp = reqwest::Client::new()
-        .get(format!("https://api.convertkit.com/v3/account?api_key={}", api_key))
+        .get(format!(
+            "https://api.convertkit.com/v3/account?api_key={}",
+            api_key
+        ))
         .send()
         .await;
     match resp {

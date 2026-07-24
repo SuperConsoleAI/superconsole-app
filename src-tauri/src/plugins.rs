@@ -27,8 +27,8 @@ use tauri::{AppHandle, Manager};
 #[serde(rename_all = "camelCase")]
 pub struct ConnectorAuth {
     pub service: String,
-    pub auth_type: String,          // "api_key" | "oauth"
-    pub key_fields: Vec<String>,    // e.g. ["NOTION_KEY"]
+    pub auth_type: String,       // "api_key" | "oauth"
+    pub key_fields: Vec<String>, // e.g. ["NOTION_KEY"]
     pub oauth_url: Option<String>,
 }
 
@@ -99,7 +99,10 @@ pub async fn list_plugins_catalog(
             .into_iter()
             .map(|p| p.plugin_id)
             .collect();
-        return Ok(all.into_iter().map(|e| to_list_item(e, &installed)).collect());
+        return Ok(all
+            .into_iter()
+            .map(|e| to_list_item(e, &installed))
+            .collect());
     };
     let client = reqwest::Client::new();
     let result = crate::cloud::turso_execute(
@@ -108,49 +111,57 @@ pub async fn list_plugins_catalog(
         "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured FROM plugins ORDER BY name",
         vec![],
     ).await;
-    
+
     if let Ok(res) = result {
-        use crate::cloud::{cell_text, cell_opt, rows};
+        use crate::cloud::{cell_opt, cell_text, rows};
         let now = chrono::Utc::now().to_rfc3339();
-        let entries: Vec<crate::db::PluginCacheEntry> = rows(&res).iter().map(|row| crate::db::PluginCacheEntry {
-            id: cell_text(row, 0),
-            name: cell_text(row, 1),
-            description: cell_text(row, 2),
-            author: cell_text(row, 3),
-            version: cell_text(row, 4),
-            icon_url: cell_opt(row, 5),
-            docs_url: cell_opt(row, 6),
-            github_url: cell_opt(row, 7),
-            category: cell_text(row, 8),
-            scope: cell_text(row, 9),
-            skill_ids: cell_text(row, 10),
-            agent_ids: "[]".into(),
-            mcp_ids: cell_text(row, 11),
-            command_ids: cell_text(row, 12),
-            hook_ids: cell_text(row, 13),
-            connector_ids: cell_text(row, 14),
-            rule_ids: "[]".into(),
-            skills_url: cell_opt(row, 15),
-            commands_url: cell_opt(row, 16),
-            hooks_url: cell_opt(row, 17),
-            mcp_url: cell_opt(row, 18),
-            agents_url: None,
-            rules_url: None,
-            connector_auth: cell_text(row, 19),
-            featured: cell_text(row, 20) == "1",
-            synced_at: now.clone(),
-        }).collect();
-        
-        for e in &entries { let _ = db.upsert_plugin_cache(e); }
+        let entries: Vec<crate::db::PluginCacheEntry> = rows(&res)
+            .iter()
+            .map(|row| crate::db::PluginCacheEntry {
+                id: cell_text(row, 0),
+                name: cell_text(row, 1),
+                description: cell_text(row, 2),
+                author: cell_text(row, 3),
+                version: cell_text(row, 4),
+                icon_url: cell_opt(row, 5),
+                docs_url: cell_opt(row, 6),
+                github_url: cell_opt(row, 7),
+                category: cell_text(row, 8),
+                scope: cell_text(row, 9),
+                skill_ids: cell_text(row, 10),
+                agent_ids: "[]".into(),
+                mcp_ids: cell_text(row, 11),
+                command_ids: cell_text(row, 12),
+                hook_ids: cell_text(row, 13),
+                connector_ids: cell_text(row, 14),
+                rule_ids: "[]".into(),
+                skills_url: cell_opt(row, 15),
+                commands_url: cell_opt(row, 16),
+                hooks_url: cell_opt(row, 17),
+                mcp_url: cell_opt(row, 18),
+                agents_url: None,
+                rules_url: None,
+                connector_auth: cell_text(row, 19),
+                featured: cell_text(row, 20) == "1",
+                synced_at: now.clone(),
+            })
+            .collect();
+
+        for e in &entries {
+            let _ = db.upsert_plugin_cache(e);
+        }
     }
-    
+
     let all = db.list_plugins_cache(category.as_deref());
     let installed: std::collections::HashSet<String> = db
-            .list_installed_plugins(&scope, &scope_id)
-            .into_iter()
-            .map(|p| p.plugin_id)
-            .collect();
-    Ok(all.into_iter().map(|e| to_list_item(e, &installed)).collect())
+        .list_installed_plugins(&scope, &scope_id)
+        .into_iter()
+        .map(|p| p.plugin_id)
+        .collect();
+    Ok(all
+        .into_iter()
+        .map(|e| to_list_item(e, &installed))
+        .collect())
 }
 
 /// Search plugins by keyword.
@@ -163,11 +174,13 @@ pub fn search_plugins_catalog(
 ) -> Vec<PluginListItem> {
     let all = db.search_plugins_cache(&query);
     let installed: std::collections::HashSet<String> = db
-            .list_installed_plugins(&scope, &scope_id)
-            .into_iter()
-            .map(|p| p.plugin_id)
-            .collect();
-    all.into_iter().map(|e| to_list_item(e, &installed)).collect()
+        .list_installed_plugins(&scope, &scope_id)
+        .into_iter()
+        .map(|p| p.plugin_id)
+        .collect();
+    all.into_iter()
+        .map(|e| to_list_item(e, &installed))
+        .collect()
 }
 
 /// Get a single plugin by id.
@@ -181,9 +194,12 @@ pub fn get_plugin(
     let entry = db
         .get_plugin_cache(&plugin_id)
         .ok_or_else(|| format!("Plugin '{}' not found in catalog", plugin_id))?;
-    let installed = std::collections::HashSet::from([plugin_id.clone()].into_iter()
-        .filter(|id| db.is_plugin_installed(&scope, &scope_id, id))
-        .collect::<std::collections::HashSet<_>>());
+    let installed = std::collections::HashSet::from(
+        [plugin_id.clone()]
+            .into_iter()
+            .filter(|id| db.is_plugin_installed(&scope, &scope_id, id))
+            .collect::<std::collections::HashSet<_>>(),
+    );
     Ok(to_list_item(entry, &installed))
 }
 
@@ -201,10 +217,16 @@ pub async fn install_plugin(
     let (ws_path, entry) = {
         let db = app.state::<Db>();
         let ws_path = if scope == "project" {
-            let wid = scope_id.parse::<i64>().map_err(|_| "Invalid project ID".to_string())?;
+            let wid = scope_id
+                .parse::<i64>()
+                .map_err(|_| "Invalid project ID".to_string())?;
             db.get_workspace(wid)?.path
         } else {
-            app.path().app_data_dir().unwrap().to_string_lossy().to_string()
+            app.path()
+                .app_data_dir()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
         };
         let entry = db
             .get_plugin_cache(&plugin_id)
@@ -250,10 +272,16 @@ pub async fn install_plugin_from_url(
     let ws_path = {
         let db = app.state::<Db>();
         if scope == "project" {
-            let wid = scope_id.parse::<i64>().map_err(|_| "Invalid project ID".to_string())?;
+            let wid = scope_id
+                .parse::<i64>()
+                .map_err(|_| "Invalid project ID".to_string())?;
             db.get_workspace(wid)?.path
         } else {
-            app.path().app_data_dir().unwrap().to_string_lossy().to_string()
+            app.path()
+                .app_data_dir()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
         }
     };
 
@@ -310,12 +338,12 @@ pub async fn install_plugin_from_url(
             Some(format!("{}/skills", raw_base.trim_end_matches('/')))
         }),
         agents_url: manifest.agents_url.clone(),
-        commands_url: manifest.commands_url.or_else(|| {
-            Some(format!("{}/commands", raw_base.trim_end_matches('/')))
-        }),
-        hooks_url: manifest.hooks_url.or_else(|| {
-            Some(format!("{}/hooks", raw_base.trim_end_matches('/')))
-        }),
+        commands_url: manifest
+            .commands_url
+            .or_else(|| Some(format!("{}/commands", raw_base.trim_end_matches('/')))),
+        hooks_url: manifest
+            .hooks_url
+            .or_else(|| Some(format!("{}/hooks", raw_base.trim_end_matches('/')))),
         rules_url: manifest.rules_url.clone(),
         mcp_url: Some("[]".to_string()),
         connector_auth: serde_json::to_string(&manifest.connector_auth.unwrap_or_default())
@@ -332,13 +360,18 @@ pub async fn install_plugin_from_url(
 
     do_install_plugin(&app, &scope, &scope_id, &ws_path, &entry).await?;
 
-    Ok(format!("Plugin '{}' installed from {}", manifest.name, github_url))
+    Ok(format!(
+        "Plugin '{}' installed from {}",
+        manifest.name, github_url
+    ))
 }
 
 // ── Catalog read commands ─────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn list_connector_catalog(app: tauri::AppHandle) -> Result<Vec<crate::db::ConnectorCatalogEntry>, String> {
+pub async fn list_connector_catalog(
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::db::ConnectorCatalogEntry>, String> {
     let Ok(cfg) = crate::cloud::turso_config() else {
         return Ok(app.state::<crate::db::Db>().list_connector_catalog());
     };
@@ -350,32 +383,39 @@ pub async fn list_connector_catalog(app: tauri::AppHandle) -> Result<Vec<crate::
         vec![],
     ).await;
     if let Ok(res) = result {
-        use crate::cloud::{cell_text, cell_opt, rows};
+        use crate::cloud::{cell_opt, cell_text, rows};
         let now = chrono::Utc::now().to_rfc3339();
-        let entries: Vec<crate::db::ConnectorCatalogEntry> = rows(&res).iter().map(|row| crate::db::ConnectorCatalogEntry {
-            id: cell_text(row, 0),
-            name: cell_text(row, 1),
-            description: cell_text(row, 2),
-            category: cell_text(row, 3),
-            auth_type: cell_text(row, 4),
-            oauth_url: cell_opt(row, 5),
-            api_key_fields: cell_text(row, 6),
-            docs_url: cell_opt(row, 7),
-            icon_url: cell_opt(row, 8),
-            scope: cell_text(row, 9),
-            install_count: 0,
-            created_at: None,
-            synced_at: Some(now.clone()),
-        }).collect();
+        let entries: Vec<crate::db::ConnectorCatalogEntry> = rows(&res)
+            .iter()
+            .map(|row| crate::db::ConnectorCatalogEntry {
+                id: cell_text(row, 0),
+                name: cell_text(row, 1),
+                description: cell_text(row, 2),
+                category: cell_text(row, 3),
+                auth_type: cell_text(row, 4),
+                oauth_url: cell_opt(row, 5),
+                api_key_fields: cell_text(row, 6),
+                docs_url: cell_opt(row, 7),
+                icon_url: cell_opt(row, 8),
+                scope: cell_text(row, 9),
+                install_count: 0,
+                created_at: None,
+                synced_at: Some(now.clone()),
+            })
+            .collect();
         let db = app.state::<crate::db::Db>();
-        for e in &entries { let _ = db.upsert_connector_catalog(e); }
+        for e in &entries {
+            let _ = db.upsert_connector_catalog(e);
+        }
         return Ok(entries);
     }
     Ok(app.state::<crate::db::Db>().list_connector_catalog())
 }
 
 #[tauri::command]
-pub async fn list_mcp_catalog(app: tauri::AppHandle) -> Result<Vec<crate::db::McpCatalogEntry>, String> {
+pub async fn list_mcp_catalog(
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::db::McpCatalogEntry>, String> {
     let Ok(cfg) = crate::cloud::turso_config() else {
         return Ok(app.state::<crate::db::Db>().list_mcp_catalog(None));
     };
@@ -387,35 +427,41 @@ pub async fn list_mcp_catalog(app: tauri::AppHandle) -> Result<Vec<crate::db::Mc
         vec![],
     ).await;
     if let Ok(res) = result {
-
-        let entries: Vec<crate::db::McpCatalogEntry> = crate::cloud::rows(&res).iter().map(|row| crate::db::McpCatalogEntry {
-            id: crate::cloud::cell_text(row, 0),
-            name: crate::cloud::cell_text(row, 1),
-            description: crate::cloud::cell_text(row, 2),
-            author: crate::cloud::cell_text(row, 3),
-            category: crate::cloud::cell_text(row, 4),
-            r#type: crate::cloud::cell_text(row, 5),
-            url: crate::cloud::cell_opt(row, 6),
-            command: crate::cloud::cell_opt(row, 7),
-            args: crate::cloud::cell_text(row, 8),
-            env: crate::cloud::cell_text(row, 9),
-            required_env_vars: crate::cloud::cell_text(row, 10),
-            github_url: crate::cloud::cell_opt(row, 11),
-            icon_url: crate::cloud::cell_opt(row, 12),
-            docs_url: crate::cloud::cell_opt(row, 13),
-            install_count: crate::cloud::cell_text(row, 14).parse().unwrap_or(0),
-            created_at: Some(crate::cloud::cell_text(row, 15)),
-            synced_at: Some(chrono::Utc::now().to_rfc3339()),
-        }).collect();
+        let entries: Vec<crate::db::McpCatalogEntry> = crate::cloud::rows(&res)
+            .iter()
+            .map(|row| crate::db::McpCatalogEntry {
+                id: crate::cloud::cell_text(row, 0),
+                name: crate::cloud::cell_text(row, 1),
+                description: crate::cloud::cell_text(row, 2),
+                author: crate::cloud::cell_text(row, 3),
+                category: crate::cloud::cell_text(row, 4),
+                r#type: crate::cloud::cell_text(row, 5),
+                url: crate::cloud::cell_opt(row, 6),
+                command: crate::cloud::cell_opt(row, 7),
+                args: crate::cloud::cell_text(row, 8),
+                env: crate::cloud::cell_text(row, 9),
+                required_env_vars: crate::cloud::cell_text(row, 10),
+                github_url: crate::cloud::cell_opt(row, 11),
+                icon_url: crate::cloud::cell_opt(row, 12),
+                docs_url: crate::cloud::cell_opt(row, 13),
+                install_count: crate::cloud::cell_text(row, 14).parse().unwrap_or(0),
+                created_at: Some(crate::cloud::cell_text(row, 15)),
+                synced_at: Some(chrono::Utc::now().to_rfc3339()),
+            })
+            .collect();
         let db = app.state::<crate::db::Db>();
-        for e in &entries { let _ = db.upsert_mcp_catalog(e); }
+        for e in &entries {
+            let _ = db.upsert_mcp_catalog(e);
+        }
         return Ok(entries);
     }
     Ok(app.state::<crate::db::Db>().list_mcp_catalog(None))
 }
 
 #[tauri::command]
-pub async fn list_commands_catalog(app: tauri::AppHandle) -> Result<Vec<crate::db::CommandsCatalogEntry>, String> {
+pub async fn list_commands_catalog(
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::db::CommandsCatalogEntry>, String> {
     let Ok(cfg) = crate::cloud::turso_config() else {
         return Ok(app.state::<crate::db::Db>().list_commands_catalog());
     };
@@ -427,24 +473,29 @@ pub async fn list_commands_catalog(app: tauri::AppHandle) -> Result<Vec<crate::d
         vec![],
     ).await;
     if let Ok(res) = result {
-        use crate::cloud::{cell_text, cell_opt, rows};
+        use crate::cloud::{cell_opt, cell_text, rows};
         let now = chrono::Utc::now().to_rfc3339();
-        let entries: Vec<crate::db::CommandsCatalogEntry> = rows(&res).iter().map(|row| crate::db::CommandsCatalogEntry {
-            id: cell_text(row, 0),
-            name: cell_text(row, 1),
-            slash: cell_text(row, 2),
-            description: cell_text(row, 3),
-            author: cell_text(row, 4),
-            category: cell_text(row, 5),
-            github_url: cell_text(row, 6),
-            content: cell_opt(row, 7),
-            icon_url: cell_opt(row, 8),
-            install_count: 0,
-            created_at: None,
-            synced_at: Some(now.clone()),
-        }).collect();
+        let entries: Vec<crate::db::CommandsCatalogEntry> = rows(&res)
+            .iter()
+            .map(|row| crate::db::CommandsCatalogEntry {
+                id: cell_text(row, 0),
+                name: cell_text(row, 1),
+                slash: cell_text(row, 2),
+                description: cell_text(row, 3),
+                author: cell_text(row, 4),
+                category: cell_text(row, 5),
+                github_url: cell_text(row, 6),
+                content: cell_opt(row, 7),
+                icon_url: cell_opt(row, 8),
+                install_count: 0,
+                created_at: None,
+                synced_at: Some(now.clone()),
+            })
+            .collect();
         let db = app.state::<crate::db::Db>();
-        for e in &entries { let _ = db.upsert_commands_catalog(e); }
+        for e in &entries {
+            let _ = db.upsert_commands_catalog(e);
+        }
         return Ok(entries);
     }
     Ok(app.state::<crate::db::Db>().list_commands_catalog())
@@ -456,7 +507,9 @@ pub async fn list_hooks_catalog_cmd(
     hook_type: Option<String>,
 ) -> Result<Vec<crate::db::HooksCatalogEntry>, String> {
     let Ok(cfg) = crate::cloud::turso_config() else {
-        return Ok(app.state::<crate::db::Db>().list_hooks_catalog(hook_type.as_deref()));
+        return Ok(app
+            .state::<crate::db::Db>()
+            .list_hooks_catalog(hook_type.as_deref()));
     };
     let client = reqwest::Client::new();
     let result = crate::cloud::turso_execute(
@@ -466,26 +519,33 @@ pub async fn list_hooks_catalog_cmd(
         vec![],
     ).await;
     if let Ok(res) = result {
-        use crate::cloud::{cell_text, cell_opt, rows};
+        use crate::cloud::{cell_opt, cell_text, rows};
         let now = chrono::Utc::now().to_rfc3339();
-        let entries: Vec<crate::db::HooksCatalogEntry> = rows(&res).iter().map(|row| crate::db::HooksCatalogEntry {
-            id: cell_text(row, 0),
-            name: cell_text(row, 1),
-            description: cell_text(row, 2),
-            author: cell_text(row, 3),
-            hook_type: cell_text(row, 4),
-            github_url: cell_text(row, 5),
-            content: cell_opt(row, 6),
-            icon_url: cell_opt(row, 7),
-            install_count: 0,
-            created_at: None,
-            synced_at: Some(now.clone()),
-        }).collect();
+        let entries: Vec<crate::db::HooksCatalogEntry> = rows(&res)
+            .iter()
+            .map(|row| crate::db::HooksCatalogEntry {
+                id: cell_text(row, 0),
+                name: cell_text(row, 1),
+                description: cell_text(row, 2),
+                author: cell_text(row, 3),
+                hook_type: cell_text(row, 4),
+                github_url: cell_text(row, 5),
+                content: cell_opt(row, 6),
+                icon_url: cell_opt(row, 7),
+                install_count: 0,
+                created_at: None,
+                synced_at: Some(now.clone()),
+            })
+            .collect();
         let db = app.state::<crate::db::Db>();
-        for e in &entries { let _ = db.upsert_hooks_catalog(e); }
+        for e in &entries {
+            let _ = db.upsert_hooks_catalog(e);
+        }
         return Ok(entries);
     }
-    Ok(app.state::<crate::db::Db>().list_hooks_catalog(hook_type.as_deref()))
+    Ok(app
+        .state::<crate::db::Db>()
+        .list_hooks_catalog(hook_type.as_deref()))
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -539,7 +599,8 @@ async fn do_install_plugin(
     };
 
     // ── 1. Install skills ────────────────────────────────────────────────────
-    let skills: Vec<serde_json::Value> = serde_json::from_str(entry.skills_url.as_deref().unwrap_or("[]")).unwrap_or_default();
+    let skills: Vec<serde_json::Value> =
+        serde_json::from_str(entry.skills_url.as_deref().unwrap_or("[]")).unwrap_or_default();
     for skill in skills {
         let (slug, github_url) = if let Some(url_str) = skill.as_str() {
             let slug = url_str.split('/').last().unwrap_or("unknown").to_string();
@@ -552,10 +613,15 @@ async fn do_install_plugin(
             let raw_url = if github_url.contains("raw.githubusercontent.com") {
                 github_url.to_string()
             } else {
-                crate::plugins::github_url_to_raw_base(&github_url).unwrap_or_else(|_| github_url.to_string())
+                crate::plugins::github_url_to_raw_base(&github_url)
+                    .unwrap_or_else(|_| github_url.to_string())
             };
-            
-            let fetch_url = if raw_url.ends_with(".md") { raw_url } else { format!("{}/SKILL.md", raw_url.trim_end_matches('/')) };
+
+            let fetch_url = if raw_url.ends_with(".md") {
+                raw_url
+            } else {
+                format!("{}/SKILL.md", raw_url.trim_end_matches('/'))
+            };
 
             if let Ok(resp) = client.get(&fetch_url).send().await {
                 if let Ok(content) = resp.text().await {
@@ -572,10 +638,10 @@ async fn do_install_plugin(
                             &tags,
                             &skill_file,
                             "project",
-                            false,  // auto
-                            1,      // version
+                            false, // auto
+                            1,     // version
                             "plugin",
-                            true,   // active
+                            true,          // active
                             &entry.author, // author
                         );
                     }
@@ -585,10 +651,16 @@ async fn do_install_plugin(
     }
 
     // ── 2. Install commands ──────────────────────────────────────────────────
-    let commands: Vec<serde_json::Value> = serde_json::from_str(entry.commands_url.as_deref().unwrap_or("[]")).unwrap_or_default();
+    let commands: Vec<serde_json::Value> =
+        serde_json::from_str(entry.commands_url.as_deref().unwrap_or("[]")).unwrap_or_default();
     for cmd in commands {
         let (slug, github_url) = if let Some(url_str) = cmd.as_str() {
-            let slug = url_str.split('/').last().unwrap_or("unknown").trim_end_matches(".md").to_string();
+            let slug = url_str
+                .split('/')
+                .last()
+                .unwrap_or("unknown")
+                .trim_end_matches(".md")
+                .to_string();
             (slug, Some(url_str.to_string()))
         } else {
             continue;
@@ -613,10 +685,16 @@ async fn do_install_plugin(
     }
 
     // ── 3. Install hooks ─────────────────────────────────────────────────────
-    let hooks: Vec<serde_json::Value> = serde_json::from_str(entry.hooks_url.as_deref().unwrap_or("[]")).unwrap_or_default();
+    let hooks: Vec<serde_json::Value> =
+        serde_json::from_str(entry.hooks_url.as_deref().unwrap_or("[]")).unwrap_or_default();
     for hook in hooks {
         let (hook_type, github_url) = if let Some(url_str) = hook.as_str() {
-            let hook_type = url_str.split('/').last().unwrap_or("unknown").trim_end_matches(".sh").to_string();
+            let hook_type = url_str
+                .split('/')
+                .last()
+                .unwrap_or("unknown")
+                .trim_end_matches(".sh")
+                .to_string();
             (hook_type, url_str.to_string())
         } else {
             continue;
@@ -629,7 +707,8 @@ async fn do_install_plugin(
         let raw_url = if github_url.contains("raw.githubusercontent.com") {
             github_url.to_string()
         } else {
-            crate::plugins::github_url_to_raw_base(&github_url).unwrap_or_else(|_| github_url.to_string())
+            crate::plugins::github_url_to_raw_base(&github_url)
+                .unwrap_or_else(|_| github_url.to_string())
         };
         if let Ok(resp) = client.get(&raw_url).send().await {
             if let Ok(content) = resp.text().await {
@@ -639,28 +718,49 @@ async fn do_install_plugin(
     }
 
     // ── 4. Install MCPs ──────────────────────────────────────────────────────
-    let mcps: Vec<serde_json::Value> = serde_json::from_str(entry.mcp_url.as_deref().unwrap_or("[]")).unwrap_or_default();
+    let mcps: Vec<serde_json::Value> =
+        serde_json::from_str(entry.mcp_url.as_deref().unwrap_or("[]")).unwrap_or_default();
     for mcp in mcps {
         if let Some(slug) = mcp.get("id").and_then(|v| v.as_str()) {
             if let Some(typ) = mcp.get("type").and_then(|v| v.as_str()) {
                 if typ == "stdio" {
                     if let Some(cmd) = mcp.get("command").and_then(|v| v.as_str()) {
-                        let args: Vec<String> = mcp.get("args").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
-                        let env: std::collections::HashMap<String, String> = mcp.get("env").and_then(|v| v.as_object()).map(|m| m.iter().map(|(k,v)| (k.clone(), v.as_str().unwrap_or_default().to_string())).collect()).unwrap_or_default();
-                        
+                        let args: Vec<String> = mcp
+                            .get("args")
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let env: std::collections::HashMap<String, String> = mcp
+                            .get("env")
+                            .and_then(|v| v.as_object())
+                            .map(|m| {
+                                m.iter()
+                                    .map(|(k, v)| {
+                                        (k.clone(), v.as_str().unwrap_or_default().to_string())
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
                         let mcp_path = match scope {
                             "project" => std::path::Path::new(ws_path).join(".mcp.json"),
                             "org" | "account" => std::path::Path::new(ws_path).join("mcp.json"),
                             _ => return Err("Unknown scope".into()),
                         };
-                        
+
                         if let Err(e) = add_stdio_mcp_to_config(&mcp_path, slug, cmd, &args, &env) {
                             eprintln!("Failed to add MCP to config: {}", e);
                         }
-                        
+
                         // Also add to .factory/mcp.json for project
                         if scope == "project" {
-                            let droid_path = std::path::Path::new(ws_path).join(".factory").join("mcp.json");
+                            let droid_path = std::path::Path::new(ws_path)
+                                .join(".factory")
+                                .join("mcp.json");
                             let _ = add_stdio_mcp_to_config(&droid_path, slug, cmd, &args, &env);
                         }
                     }
@@ -691,9 +791,15 @@ pub fn github_url_to_raw_base(url: &str) -> Result<String, String> {
     let branch = parts[6];
     let path = parts[7..].join("/");
     if path.is_empty() {
-        Ok(format!("https://raw.githubusercontent.com/{}/{}/{}", owner, repo, branch))
+        Ok(format!(
+            "https://raw.githubusercontent.com/{}/{}/{}",
+            owner, repo, branch
+        ))
     } else {
-        Ok(format!("https://raw.githubusercontent.com/{}/{}/{}/{}", owner, repo, branch, path))
+        Ok(format!(
+            "https://raw.githubusercontent.com/{}/{}/{}/{}",
+            owner, repo, branch, path
+        ))
     }
 }
 
@@ -782,8 +888,8 @@ pub struct SubmitMcpInput {
     pub r#type: String,
     pub url: Option<String>,
     pub command: Option<String>,
-    pub args: Option<String>, // JSON array string
-    pub env: Option<String>, // JSON object string
+    pub args: Option<String>,      // JSON array string
+    pub env: Option<String>,       // JSON object string
     pub required_env_vars: String, // JSON array string
     pub github_url: Option<String>,
     pub icon_url: Option<String>,
@@ -920,11 +1026,18 @@ pub async fn submit_plugin_to_cloud(input: SubmitPluginInput) -> Result<(), Stri
     let featured_int = if input.featured { "1" } else { "0" };
 
     // Extract connector_ids from connector_auth (which is an array of objects)
-    let parsed_auth: Vec<serde_json::Value> = serde_json::from_str(&input.connector_auth).unwrap_or_default();
-    let connector_ids_arr: Vec<String> = parsed_auth.into_iter()
-        .filter_map(|v| v.get("connector_id").and_then(|id| id.as_str()).map(|s| s.to_string()))
+    let parsed_auth: Vec<serde_json::Value> =
+        serde_json::from_str(&input.connector_auth).unwrap_or_default();
+    let connector_ids_arr: Vec<String> = parsed_auth
+        .into_iter()
+        .filter_map(|v| {
+            v.get("connector_id")
+                .and_then(|id| id.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
-    let _connector_ids_json = serde_json::to_string(&connector_ids_arr).unwrap_or_else(|_| "[]".to_string());
+    let _connector_ids_json =
+        serde_json::to_string(&connector_ids_arr).unwrap_or_else(|_| "[]".to_string());
 
     crate::cloud::turso_execute(
         &client,
@@ -978,8 +1091,6 @@ pub async fn submit_plugin_to_cloud(input: SubmitPluginInput) -> Result<(), Stri
     Ok(())
 }
 
-
-
 fn add_stdio_mcp_to_config(
     path: &std::path::Path,
     slug: &str,
@@ -995,7 +1106,9 @@ fn add_stdio_mcp_to_config(
         root = serde_json::json!({});
     }
     let obj = root.as_object_mut().unwrap();
-    let servers = obj.entry("mcpServers").or_insert_with(|| serde_json::json!({}));
+    let servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
     if !servers.is_object() {
         *servers = serde_json::json!({});
     }
@@ -1006,6 +1119,9 @@ fn add_stdio_mcp_to_config(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(path, serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }

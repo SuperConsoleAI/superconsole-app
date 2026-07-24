@@ -39,7 +39,9 @@ pub async fn notify_telegram(app: &AppHandle, text: &str) {
         let db = app.state::<Db>();
         telegram_config(&db)
     };
-    let Some((token, chat_id)) = config else { return };
+    let Some((token, chat_id)) = config else {
+        return;
+    };
     if chat_id.is_empty() {
         return;
     }
@@ -80,10 +82,14 @@ async fn handle_telegram_text(app: &AppHandle, text: &str) -> String {
             db.find_workspace_by_name(ws_name)
         };
         return match ws {
-            Ok(ws) => match scheduler::exec_in_workspace(app, ws.id, command, "Telegram trigger", None).await {
-                Ok(body) => body.chars().take(3800).collect(),
-                Err(e) => format!("Error: {}", e),
-            },
+            Ok(ws) => {
+                match scheduler::exec_in_workspace(app, ws.id, command, "Telegram trigger", None)
+                    .await
+                {
+                    Ok(body) => body.chars().take(3800).collect(),
+                    Err(e) => format!("Error: {}", e),
+                }
+            }
             Err(e) => e,
         };
     }
@@ -139,7 +145,9 @@ fn spawn_new_telegram_bots(app: &AppHandle) {
         }
 
         // 3. Per-project entries \u2014 also adds project-owned bot tokens (Option B).
-        for (tok, ws_id, _chat_id, _thread_id, _allowed) in crate::connectors::project_telegram_bots(&db) {
+        for (tok, ws_id, _chat_id, _thread_id, _allowed) in
+            crate::connectors::project_telegram_bots(&db)
+        {
             if !bots.iter().any(|(t, _)| t == &tok) {
                 bots.push((tok, Some(ws_id)));
             }
@@ -265,9 +273,12 @@ fn spawn_telegram_bot(
 
                 // --- Regular message ---
                 let Some(msg) = update.message else { continue };
-                let Some(ref text) = msg.text.clone() else { continue };
+                let Some(ref text) = msg.text.clone() else {
+                    continue;
+                };
                 let chat_id_str = msg.chat.id.to_string();
-                let thread_id_str = msg.message_thread_id
+                let thread_id_str = msg
+                    .message_thread_id
                     .map(|id| id.to_string())
                     .unwrap_or_default();
                 let sender_id = msg.from.as_ref().map(|u| u.id.to_string());
@@ -285,7 +296,9 @@ fn spawn_telegram_bot(
                             saved == chat_id_str
                         }
                     };
-                    if !allowed { continue; }
+                    if !allowed {
+                        continue;
+                    }
                     let reply = handle_telegram_text(&app, text).await;
                     let _ = client
                         .post(format!("https://api.telegram.org/bot{}/sendMessage", token))
@@ -317,16 +330,28 @@ fn spawn_telegram_bot(
                 if !allowed_ids.is_empty() {
                     let sid = sender_id.clone().unwrap_or_default();
                     if !allowed_ids.contains(&sid) {
-                        send_tg_message(&client, &reply_token, &reply_chat, &reply_thread,
-                            "⛔ Not authorized.").await;
+                        send_tg_message(
+                            &client,
+                            &reply_token,
+                            &reply_chat,
+                            &reply_thread,
+                            "⛔ Not authorized.",
+                        )
+                        .await;
                         continue;
                     }
                 }
 
                 handle_telegram_message(
-                    &client, &app, ws_id, text,
-                    &reply_token, &reply_chat, &reply_thread,
-                ).await;
+                    &client,
+                    &app,
+                    ws_id,
+                    text,
+                    &reply_token,
+                    &reply_chat,
+                    &reply_thread,
+                )
+                .await;
             }
         }
     });
@@ -354,12 +379,26 @@ fn resolve_route(
 fn resolve_dm_route(db: &Db, token: &str) -> Option<(i64, String, String, String, Vec<String>)> {
     // Check project bots for a token match — use the first workspace found.
     let bots = crate::connectors::project_telegram_bots(db);
-    if let Some((_, ws_id, chat_id, thread_id, allowed_ids)) = bots.iter().find(|(t, _, _, _, _)| t == token) {
-        return Some((*ws_id, token.to_string(), chat_id.clone(), thread_id.clone(), allowed_ids.clone()));
+    if let Some((_, ws_id, chat_id, thread_id, allowed_ids)) =
+        bots.iter().find(|(t, _, _, _, _)| t == token)
+    {
+        return Some((
+            *ws_id,
+            token.to_string(),
+            chat_id.clone(),
+            thread_id.clone(),
+            allowed_ids.clone(),
+        ));
     }
     // Global setting fallback — route to any workspace.
     for ws in db.list_workspaces().unwrap_or_default() {
-        return Some((ws.id, token.to_string(), String::new(), String::new(), Vec::new()));
+        return Some((
+            ws.id,
+            token.to_string(),
+            String::new(),
+            String::new(),
+            Vec::new(),
+        ));
     }
     None
 }
@@ -395,13 +434,17 @@ pub fn get_telegram_route_for_workspace(
     workspace_id: i64,
 ) -> Option<(String, String, String)> {
     let bots = crate::connectors::project_telegram_bots(db);
-    if let Some((tok, _, chat_id, thread_id, _)) = bots.iter().find(|(_, ws, _, _, _)| *ws == workspace_id) {
+    if let Some((tok, _, chat_id, thread_id, _)) =
+        bots.iter().find(|(_, ws, _, _, _)| *ws == workspace_id)
+    {
         return Some((tok.clone(), chat_id.clone(), thread_id.clone()));
     }
     // Global fallback.
     let token = db.get_setting("telegram_token").filter(|t| !t.is_empty())?;
     let chat_id = db.get_setting("telegram_chat_id").unwrap_or_default();
-    if chat_id.is_empty() { return None; }
+    if chat_id.is_empty() {
+        return None;
+    }
     Some((token, chat_id, String::new()))
 }
 
@@ -435,7 +478,11 @@ async fn handle_telegram_message(
             return;
         }
         "/help" | "/start" => {
-            send_tg_message(client, token, chat_id, thread_id,
+            send_tg_message(
+                client,
+                token,
+                chat_id,
+                thread_id,
                 "Commands:\n\
                 /inbox           — pending approvals\n\
                 /status          — running jobs\n\
@@ -448,7 +495,8 @@ async fn handle_telegram_message(
                 \n\
                 Free text → chat with your project agent.\n\
                 Resource tokens: /skill:name /context:name /wiki:name /memory:name",
-            ).await;
+            )
+            .await;
             return;
         }
         _ => {}
@@ -456,7 +504,16 @@ async fn handle_telegram_message(
 
     if trimmed.starts_with("/agent ") {
         let agent_name = trimmed.trim_start_matches("/agent ").trim();
-        handle_run_agent(client, app, workspace_id, agent_name, token, chat_id, thread_id).await;
+        handle_run_agent(
+            client,
+            app,
+            workspace_id,
+            agent_name,
+            token,
+            chat_id,
+            thread_id,
+        )
+        .await;
         return;
     }
 
@@ -474,14 +531,27 @@ async fn handle_telegram_message(
 
     // Any other slash command → exec_in_workspace
     if trimmed.starts_with('/') {
-        match scheduler::exec_in_workspace(app, workspace_id, trimmed, "Telegram trigger", None).await {
+        match scheduler::exec_in_workspace(app, workspace_id, trimmed, "Telegram trigger", None)
+            .await
+        {
             Ok(body) => {
                 let out = tg_truncate(&body);
-                let reply = if out.trim().is_empty() { format!("✅ {}", trimmed) } else { format!("✅ {}\n\n{}", trimmed, out) };
+                let reply = if out.trim().is_empty() {
+                    format!("✅ {}", trimmed)
+                } else {
+                    format!("✅ {}\n\n{}", trimmed, out)
+                };
                 send_tg_message(client, token, chat_id, thread_id, &reply).await;
             }
             Err(e) => {
-                send_tg_message(client, token, chat_id, thread_id, &format!("❌ {} failed\n{}", trimmed, e)).await;
+                send_tg_message(
+                    client,
+                    token,
+                    chat_id,
+                    thread_id,
+                    &format!("❌ {} failed\n{}", trimmed, e),
+                )
+                .await;
             }
         }
         return;
@@ -515,14 +585,21 @@ async fn handle_inbox_command(
     };
 
     if items.is_empty() {
-        send_tg_message(client, token, chat_id, thread_id, "📭 No pending inbox items.").await;
+        send_tg_message(
+            client,
+            token,
+            chat_id,
+            thread_id,
+            "📭 No pending inbox items.",
+        )
+        .await;
         return;
     }
 
     for item in items {
         let text = format!(
-            "📬 *{}*\n{}\n\n_{}_{}", 
-            item.title, 
+            "📬 *{}*\n{}\n\n_{}_{}",
+            item.title,
             tg_truncate(&item.output),
             item.created_at,
             ""
@@ -546,8 +623,15 @@ async fn handle_status_command(
         if enabled.is_empty() {
             "📋 No active jobs.".to_string()
         } else {
-            let lines = enabled.iter()
-                .map(|j| format!("• {} — next: {}", j.name, j.next_run.as_deref().unwrap_or("manual")))
+            let lines = enabled
+                .iter()
+                .map(|j| {
+                    format!(
+                        "• {} — next: {}",
+                        j.name,
+                        j.next_run.as_deref().unwrap_or("manual")
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
             format!("📋 Jobs:\n{}", lines)
@@ -566,20 +650,35 @@ async fn handle_agents_command(
 ) {
     let ws_path = {
         let db = app.state::<Db>();
-        db.get_workspace(workspace_id).map(|w| w.path).unwrap_or_default()
+        db.get_workspace(workspace_id)
+            .map(|w| w.path)
+            .unwrap_or_default()
     };
     let agents = crate::agents::list_agents(&ws_path);
     if agents.is_empty() {
-        send_tg_message(client, token, chat_id, thread_id,
-            "No agents configured.\nCreate one in SuperConsole → Agents.").await;
+        send_tg_message(
+            client,
+            token,
+            chat_id,
+            thread_id,
+            "No agents configured.\nCreate one in SuperConsole → Agents.",
+        )
+        .await;
         return;
     }
-    let list = agents.iter()
+    let list = agents
+        .iter()
         .map(|a| format!("• {} — {}", a.name, a.description))
         .collect::<Vec<_>>()
         .join("\n");
-    send_tg_message(client, token, chat_id, thread_id,
-        &format!("🤖 Agents:\n{}\n\nRun with: /agent <name>", list)).await;
+    send_tg_message(
+        client,
+        token,
+        chat_id,
+        thread_id,
+        &format!("🤖 Agents:\n{}\n\nRun with: /agent <name>", list),
+    )
+    .await;
 }
 
 async fn handle_run_agent(
@@ -604,13 +703,31 @@ async fn handle_run_agent(
     let agent = match crate::agents::read_agent(&ws_path, agent_name) {
         Ok(a) => a,
         Err(_) => {
-            send_tg_message(client, token, chat_id, thread_id,
-                &format!("❌ Agent '{}' not found.\nSend /agents to see available agents.", agent_name)).await;
+            send_tg_message(
+                client,
+                token,
+                chat_id,
+                thread_id,
+                &format!(
+                    "❌ Agent '{}' not found.\nSend /agents to see available agents.",
+                    agent_name
+                ),
+            )
+            .await;
             return;
         }
     };
-    send_tg_message(client, token, chat_id, thread_id,
-        &format!("▶️ Running {}…\nResult will appear here when done.", agent.name)).await;
+    send_tg_message(
+        client,
+        token,
+        chat_id,
+        thread_id,
+        &format!(
+            "▶️ Running {}…\nResult will appear here when done.",
+            agent.name
+        ),
+    )
+    .await;
 
     let app2 = app.clone();
     let tok = token.to_string();
@@ -621,10 +738,26 @@ async fn handle_run_agent(
         let client2 = reqwest::Client::new();
         let result = crate::scheduler::exec_agent(&app2, workspace_id, &agent).await;
         match result {
-            Ok(body) => send_tg_message(&client2, &tok, &cid, &tid,
-                &format!("✅ {} complete\n\n{}", aname, tg_truncate(&body))).await,
-            Err(e) => send_tg_message(&client2, &tok, &cid, &tid,
-                &format!("❌ {} failed\n{}", aname, e)).await,
+            Ok(body) => {
+                send_tg_message(
+                    &client2,
+                    &tok,
+                    &cid,
+                    &tid,
+                    &format!("✅ {} complete\n\n{}", aname, tg_truncate(&body)),
+                )
+                .await
+            }
+            Err(e) => {
+                send_tg_message(
+                    &client2,
+                    &tok,
+                    &cid,
+                    &tid,
+                    &format!("❌ {} failed\n{}", aname, e),
+                )
+                .await
+            }
         }
     });
 }
@@ -649,16 +782,42 @@ async fn handle_create_task(
     let job_name = format!("telegram-{}", command.trim_start_matches('/'));
     {
         let db = app.state::<Db>();
-        let next = if cron.is_empty() { None } else { crate::scheduler::next_run(&cron).ok() };
-        let _ = db.add_job(workspace_id, &job_name, command, &cron, next.as_deref(), "cli", "{}", "cron", "{}", "[]", None, 1);
+        let next = if cron.is_empty() {
+            None
+        } else {
+            crate::scheduler::next_run(&cron).ok()
+        };
+        let _ = db.add_job(
+            workspace_id,
+            &job_name,
+            command,
+            &cron,
+            next.as_deref(),
+            "cli",
+            "{}",
+            "cron",
+            "{}",
+            "[]",
+            None,
+            1,
+        );
     }
     let schedule_str = if cron.is_empty() {
         "manual".to_string()
     } else {
         format!("{} ({})", schedule_keyword, cron)
     };
-    send_tg_message(client, token, chat_id, thread_id,
-        &format!("✅ Task created\n• Command: {}\n• Schedule: {}\n\nManage in SuperConsole → Tasks", command, schedule_str)).await;
+    send_tg_message(
+        client,
+        token,
+        chat_id,
+        thread_id,
+        &format!(
+            "✅ Task created\n• Command: {}\n• Schedule: {}\n\nManage in SuperConsole → Tasks",
+            command, schedule_str
+        ),
+    )
+    .await;
 }
 
 async fn handle_create_schedule(
@@ -672,38 +831,72 @@ async fn handle_create_schedule(
 ) {
     let parts: Vec<&str> = args.splitn(2, ' ').collect();
     if parts.len() < 2 {
-        send_tg_message(client, token, chat_id, thread_id,
-            "Usage: /schedule <command> <cron>\nExample: /schedule /ceo 0 9 * * 1").await;
+        send_tg_message(
+            client,
+            token,
+            chat_id,
+            thread_id,
+            "Usage: /schedule <command> <cron>\nExample: /schedule /ceo 0 9 * * 1",
+        )
+        .await;
         return;
     }
     let command = parts[0];
     let cron = parts[1];
     if cron.split_whitespace().count() != 5 {
-        send_tg_message(client, token, chat_id, thread_id,
-            "❌ Invalid cron. Use 5 fields: minute hour day month weekday\nExample: 0 9 * * 1").await;
+        send_tg_message(
+            client,
+            token,
+            chat_id,
+            thread_id,
+            "❌ Invalid cron. Use 5 fields: minute hour day month weekday\nExample: 0 9 * * 1",
+        )
+        .await;
         return;
     }
     let job_name = format!("telegram-{}", command.trim_start_matches('/'));
     {
         let db = app.state::<Db>();
         let next = crate::scheduler::next_run(cron).ok();
-        let _ = db.add_job(workspace_id, &job_name, command, cron, next.as_deref(), "cli", "{}", "cron", "{}", "[]", None, 1);
+        let _ = db.add_job(
+            workspace_id,
+            &job_name,
+            command,
+            cron,
+            next.as_deref(),
+            "cli",
+            "{}",
+            "cron",
+            "{}",
+            "[]",
+            None,
+            1,
+        );
     }
-    send_tg_message(client, token, chat_id, thread_id,
-        &format!("✅ Scheduled\n• Command: {}\n• Cron: {}\n\nManage in SuperConsole → Tasks", command, cron)).await;
+    send_tg_message(
+        client,
+        token,
+        chat_id,
+        thread_id,
+        &format!(
+            "✅ Scheduled\n• Command: {}\n• Cron: {}\n\nManage in SuperConsole → Tasks",
+            command, cron
+        ),
+    )
+    .await;
 }
 
 fn frequency_to_cron(freq: &str) -> String {
     match freq.to_lowercase().as_str() {
-        "hourly"    => "0 * * * *".to_string(),
-        "daily"     => "0 9 * * *".to_string(),
+        "hourly" => "0 * * * *".to_string(),
+        "daily" => "0 9 * * *".to_string(),
         "weekly" | "monday" => "0 9 * * 1".to_string(),
-        "tuesday"   => "0 9 * * 2".to_string(),
+        "tuesday" => "0 9 * * 2".to_string(),
         "wednesday" => "0 9 * * 3".to_string(),
-        "thursday"  => "0 9 * * 4".to_string(),
-        "friday"    => "0 9 * * 5".to_string(),
-        "weekdays"  => "0 9 * * 1-5".to_string(),
-        _           => String::new(),
+        "thursday" => "0 9 * * 4".to_string(),
+        "friday" => "0 9 * * 5".to_string(),
+        "weekdays" => "0 9 * * 1-5".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -715,15 +908,24 @@ async fn exec_chat_message(app: &AppHandle, workspace_id: i64, text: &str) -> St
         let ws = db.get_workspace(workspace_id);
         match ws {
             Ok(w) => {
-                let p = if w.default_provider.is_empty() { "anthropic".to_string() } else { w.default_provider.clone() };
-                let m = if w.default_model.is_empty() { "claude-sonnet-4-5".to_string() } else { w.default_model.clone() };
+                let p = if w.default_provider.is_empty() {
+                    "anthropic".to_string()
+                } else {
+                    w.default_provider.clone()
+                };
+                let m = if w.default_model.is_empty() {
+                    "claude-sonnet-4-5".to_string()
+                } else {
+                    w.default_model.clone()
+                };
                 (p, m)
             }
             Err(_) => ("anthropic".to_string(), "claude-sonnet-4-5".to_string()),
         }
     };
     let system = crate::chat::build_system_prompt(app, workspace_id);
-    match crate::llm::one_shot_completion(app, workspace_id, &provider, &model, &system, text).await {
+    match crate::llm::one_shot_completion(app, workspace_id, &provider, &model, &system, text).await
+    {
         Ok(r) => tg_truncate(&r),
         Err(e) => format!("❌ Error: {}", e),
     }
@@ -765,9 +967,17 @@ async fn send_with_approval_keyboard(
         .await;
 }
 
-async fn answer_callback_query(client: &reqwest::Client, token: &str, callback_id: &str, text: &str) {
+async fn answer_callback_query(
+    client: &reqwest::Client,
+    token: &str,
+    callback_id: &str,
+    text: &str,
+) {
     let _ = client
-        .post(format!("https://api.telegram.org/bot{}/answerCallbackQuery", token))
+        .post(format!(
+            "https://api.telegram.org/bot{}/answerCallbackQuery",
+            token
+        ))
         .json(&json!({ "callback_query_id": callback_id, "text": text }))
         .send()
         .await;
@@ -783,7 +993,10 @@ async fn edit_message_reply_markup(
     let mut params = json!({ "chat_id": chat_id, "message_id": message_id });
     params["reply_markup"] = keyboard.unwrap_or(json!({}));
     let _ = client
-        .post(format!("https://api.telegram.org/bot{}/editMessageReplyMarkup", token))
+        .post(format!(
+            "https://api.telegram.org/bot{}/editMessageReplyMarkup",
+            token
+        ))
         .json(&params)
         .send()
         .await;
@@ -799,7 +1012,9 @@ async fn handle_callback_query(
     let (chat_id, thread_id, msg_id) = match &cb.message {
         Some(m) => (
             m.chat.id.to_string(),
-            m.message_thread_id.map(|id| id.to_string()).unwrap_or_default(),
+            m.message_thread_id
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
             m.message_id,
         ),
         None => return,
@@ -813,11 +1028,30 @@ async fn handle_callback_query(
                 let db = app.state::<Db>();
                 let _ = db.set_inbox_status(inbox_id, status);
             }
-            answer_callback_query(client, token, &cb.id,
-                if approved { "✅ Approved" } else { "❌ Rejected" }).await;
+            answer_callback_query(
+                client,
+                token,
+                &cb.id,
+                if approved {
+                    "✅ Approved"
+                } else {
+                    "❌ Rejected"
+                },
+            )
+            .await;
             edit_message_reply_markup(client, token, &chat_id, msg_id, None).await;
-            send_tg_message(client, token, &chat_id, &thread_id,
-                if approved { "✅ Approved and marked in inbox." } else { "❌ Rejected and marked in inbox." }).await;
+            send_tg_message(
+                client,
+                token,
+                &chat_id,
+                &thread_id,
+                if approved {
+                    "✅ Approved and marked in inbox."
+                } else {
+                    "❌ Rejected and marked in inbox."
+                },
+            )
+            .await;
         }
     }
     // Always answer to dismiss loading spinner, even on parse failure.
@@ -837,7 +1071,13 @@ fn tg_truncate(s: &str) -> String {
     }
 }
 
-async fn send_tg_message(client: &reqwest::Client, token: &str, chat_id: &str, thread_id: &str, text: &str) {
+async fn send_tg_message(
+    client: &reqwest::Client,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+    text: &str,
+) {
     let truncated = tg_truncate(text);
     let mut params = json!({ "chat_id": chat_id, "text": truncated });
     if !thread_id.is_empty() {
@@ -854,10 +1094,15 @@ async fn send_tg_message(client: &reqwest::Client, token: &str, chat_id: &str, t
 
 /// Public alias — used by scheduler.rs to notify a project's Telegram topic
 /// when a job completes. Thin wrapper over send_tg_message.
-pub async fn notify_telegram_topic(client: &reqwest::Client, token: &str, chat_id: &str, thread_id: &str, text: &str) {
+pub async fn notify_telegram_topic(
+    client: &reqwest::Client,
+    token: &str,
+    chat_id: &str,
+    thread_id: &str,
+    text: &str,
+) {
     send_tg_message(client, token, chat_id, thread_id, text).await;
 }
-
 
 /// Detected Telegram chat info returned by the auto-detect command.
 #[derive(serde::Serialize)]
@@ -873,8 +1118,9 @@ pub struct TelegramChatDetected {
 pub async fn detect_telegram_chat(app: AppHandle) -> Result<TelegramChatDetected, String> {
     let token = {
         let db = app.state::<Db>();
-        crate::connectors::get_telegram_bot_token(&db, None)
-            .ok_or_else(|| "No Telegram bot token found. Set one in Org → Connectors → Telegram first.".to_string())?
+        crate::connectors::get_telegram_bot_token(&db, None).ok_or_else(|| {
+            "No Telegram bot token found. Set one in Org → Connectors → Telegram first.".to_string()
+        })?
     };
     let client = reqwest::Client::new();
     // Snapshot the current offset so we only see messages arriving AFTER this call.
@@ -914,7 +1160,9 @@ pub async fn detect_telegram_chat(app: AppHandle) -> Result<TelegramChatDetected
                 offset = offset.max(id + 1);
             }
             let msg = &update["message"];
-            let Some(chat_id) = msg["chat"]["id"].as_i64() else { continue };
+            let Some(chat_id) = msg["chat"]["id"].as_i64() else {
+                continue;
+            };
             let thread_id = msg["message_thread_id"].as_i64().map(|id| id.to_string());
             let chat_title = msg["chat"]["title"].as_str().map(|s| s.to_string());
             return Ok(TelegramChatDetected {
@@ -944,18 +1192,21 @@ pub fn spawn_http(app: AppHandle) {
         let server = match tiny_http::Server::http(("127.0.0.1", port)) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("superconsole http server failed to bind port {}: {}", port, e);
+                eprintln!(
+                    "superconsole http server failed to bind port {}: {}",
+                    port, e
+                );
                 return;
             }
         };
         for mut request in server.incoming_requests() {
-            let authed = request
-                .headers()
-                .iter()
-                .any(|h| {
-                    h.field.as_str().as_str().eq_ignore_ascii_case("x-superconsole-token")
-                        && h.value.as_str() == token
-                });
+            let authed = request.headers().iter().any(|h| {
+                h.field
+                    .as_str()
+                    .as_str()
+                    .eq_ignore_ascii_case("x-superconsole-token")
+                    && h.value.as_str() == token
+            });
 
             let url = request.url().to_string();
             let method = request.method().as_str().to_string();
@@ -963,7 +1214,10 @@ pub fn spawn_http(app: AppHandle) {
             let (status, body) = if url == "/health" {
                 (200, json!({ "ok": true }).to_string())
             } else if !authed {
-                (401, json!({ "error": "invalid or missing x-superconsole-token" }).to_string())
+                (
+                    401,
+                    json!({ "error": "invalid or missing x-superconsole-token" }).to_string(),
+                )
             } else if method == "GET" && url == "/workspaces" {
                 let db = app.state::<Db>();
                 match db.list_workspaces() {
@@ -978,7 +1232,10 @@ pub fn spawn_http(app: AppHandle) {
                         let ws_name = payload["workspace"].as_str().unwrap_or("");
                         let command = payload["command"].as_str().unwrap_or("");
                         if ws_name.is_empty() || command.is_empty() {
-                            (400, json!({ "error": "expected { workspace, command }" }).to_string())
+                            (
+                                400,
+                                json!({ "error": "expected { workspace, command }" }).to_string(),
+                            )
                         } else {
                             let ws = {
                                 let db = app.state::<Db>();
@@ -988,11 +1245,18 @@ pub fn spawn_http(app: AppHandle) {
                                 Ok(ws) => {
                                     let result = tauri::async_runtime::block_on(
                                         scheduler::exec_in_workspace(
-                                            &app, ws.id, command, "HTTP trigger", None,
+                                            &app,
+                                            ws.id,
+                                            command,
+                                            "HTTP trigger",
+                                            None,
                                         ),
                                     );
                                     match result {
-                                        Ok(output) => (200, json!({ "ok": true, "output": output }).to_string()),
+                                        Ok(output) => (
+                                            200,
+                                            json!({ "ok": true, "output": output }).to_string(),
+                                        ),
                                         Err(e) => (500, json!({ "error": e }).to_string()),
                                     }
                                 }
@@ -1033,7 +1297,7 @@ pub fn spawn_http(app: AppHandle) {
 
 #[derive(Debug)]
 struct EmailMeta {
-    sender:  String,
+    sender: String,
     subject: String,
 }
 
@@ -1041,18 +1305,23 @@ struct EmailMeta {
 /// Uses session_env (account→org→project cascade). Returns None if not connected.
 fn gmail_api_key_for_workspace(app: &AppHandle, workspace_id: i64) -> Option<String> {
     let env = crate::connectors::session_env(app, workspace_id);
-    let key = env.into_iter()
+    let key = env
+        .into_iter()
         .find(|(k, _)| k == "GMAIL_API_KEY")
         .map(|(_, v)| v)
         .unwrap_or_default();
-    if key.is_empty() { None } else { Some(key) }
+    if key.is_empty() {
+        None
+    } else {
+        Some(key)
+    }
 }
 
 /// Poll Gmail for messages matching `filter` received after `since_rfc3339`.
 /// Returns None on auth/network error, Some([]) if nothing new.
 async fn check_gmail_for_new_emails(
-    api_key:       &str,
-    filter:        &str,
+    api_key: &str,
+    filter: &str,
     since_rfc3339: &str,
 ) -> Option<Vec<EmailMeta>> {
     // Parse last_checked into a unix timestamp for Gmail's after: operator
@@ -1086,26 +1355,37 @@ async fn check_gmail_for_new_emails(
     let mut out = Vec::new();
     for msg in messages.iter().take(5) {
         let msg_id = msg["id"].as_str().unwrap_or_default();
-        if msg_id.is_empty() { continue; }
+        if msg_id.is_empty() {
+            continue;
+        }
 
         // Fetch message headers (sender + subject only — no body)
         let detail_resp = client
-            .get(format!("https://www.googleapis.com/gmail/v1/users/me/messages/{}", msg_id))
+            .get(format!(
+                "https://www.googleapis.com/gmail/v1/users/me/messages/{}",
+                msg_id
+            ))
             .header("Authorization", format!("Bearer {}", api_key))
-            .query(&[("format", "metadata"), ("metadataHeaders", "From"), ("metadataHeaders", "Subject")])
+            .query(&[
+                ("format", "metadata"),
+                ("metadataHeaders", "From"),
+                ("metadataHeaders", "Subject"),
+            ])
             .send()
             .await
             .ok()?;
 
-        if !detail_resp.status().is_success() { continue; }
+        if !detail_resp.status().is_success() {
+            continue;
+        }
         let detail: serde_json::Value = detail_resp.json().await.ok()?;
         let headers = detail["payload"]["headers"].as_array();
-        let mut sender  = String::new();
+        let mut sender = String::new();
         let mut subject = String::new();
         if let Some(hdrs) = headers {
             for h in hdrs {
                 match h["name"].as_str().unwrap_or("") {
-                    "From"    => sender  = h["value"].as_str().unwrap_or("").to_string(),
+                    "From" => sender = h["value"].as_str().unwrap_or("").to_string(),
                     "Subject" => subject = h["value"].as_str().unwrap_or("").to_string(),
                     _ => {}
                 }
@@ -1121,32 +1401,45 @@ async fn check_gmail_for_new_emails(
 pub async fn check_email_triggers(app: &AppHandle) {
     let db = app.state::<crate::db::Db>();
     let email_jobs = db.get_jobs_by_trigger_type("email");
-    if email_jobs.is_empty() { return; }
+    if email_jobs.is_empty() {
+        return;
+    }
 
     for job in email_jobs {
-        let config: serde_json::Value = serde_json::from_str(&job.trigger_config)
-            .unwrap_or_default();
+        let config: serde_json::Value =
+            serde_json::from_str(&job.trigger_config).unwrap_or_default();
 
-        let filter       = config["filter"].as_str().unwrap_or("").to_string();
-        let last_checked = config["last_checked"].as_str()
+        let filter = config["filter"].as_str().unwrap_or("").to_string();
+        let last_checked = config["last_checked"]
+            .as_str()
             .unwrap_or("1970-01-01T00:00:00Z")
             .to_string();
         let connector_id = config["connector"].as_str().unwrap_or("gmail").to_string();
 
         // Only Gmail supported in Phase 1; other connectors → skip gracefully
         if connector_id != "gmail" {
-            eprintln!("Email trigger: unsupported connector '{}', skipping job {}", connector_id, job.id);
+            eprintln!(
+                "Email trigger: unsupported connector '{}', skipping job {}",
+                connector_id, job.id
+            );
             continue;
         }
 
         let Some(api_key) = gmail_api_key_for_workspace(app, job.workspace_id) else {
-            eprintln!("Email trigger: no Gmail connector for workspace {}, skipping", job.workspace_id);
+            eprintln!(
+                "Email trigger: no Gmail connector for workspace {}, skipping",
+                job.workspace_id
+            );
             continue;
         };
 
         let new_emails = check_gmail_for_new_emails(&api_key, &filter, &last_checked).await;
-        let Some(emails) = new_emails else { continue; };
-        if emails.is_empty() { continue; }
+        let Some(emails) = new_emails else {
+            continue;
+        };
+        if emails.is_empty() {
+            continue;
+        }
 
         // Fire the job for each new email (one execution per email)
         for email in &emails {
@@ -1156,10 +1449,14 @@ pub async fn check_email_triggers(app: &AppHandle) {
             );
             let command = format!("{}\n\n{}", job.command, context);
             if let Err(e) = crate::scheduler::exec_in_workspace(
-                app, job.workspace_id, &command,
+                app,
+                job.workspace_id,
+                &command,
                 &format!("email: {}", job.name),
                 Some(job.id),
-            ).await {
+            )
+            .await
+            {
                 eprintln!("Email trigger: job {} exec failed: {}", job.id, e);
             }
         }

@@ -80,8 +80,10 @@ async fn handle(db: &Db, ctx: &ToolCtx, req: &Value) -> Option<Value> {
         "notifications/initialized" => None,
         "ping" => Some(result(id, json!({}))),
         "tools/list" => {
-            let tools: Vec<Value> =
-                mcp::full_catalog(db, ctx).iter().map(|s| s.to_mcp()).collect();
+            let tools: Vec<Value> = mcp::full_catalog(db, ctx)
+                .iter()
+                .map(|s| s.to_mcp())
+                .collect();
             Some(result(id, json!({"tools": tools})))
         }
         "tools/call" => {

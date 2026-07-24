@@ -21,7 +21,7 @@ pub struct GitDiff {
     pub files_changed: Vec<FileDiff>,
     pub insertions: u32,
     pub deletions: u32,
-    pub total_files: usize,  // actual total before capping
+    pub total_files: usize, // actual total before capping
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -54,8 +54,7 @@ pub fn git_status(workspace_path: &str) -> Result<GitStatus, String> {
             .to_string()
     };
 
-    let status_output = run_git(workspace_path, &["status", "--porcelain"])
-        .unwrap_or_default();
+    let status_output = run_git(workspace_path, &["status", "--porcelain"]).unwrap_or_default();
 
     let mut staged: Vec<String> = vec![];
     let mut unstaged: Vec<String> = vec![];
@@ -206,8 +205,7 @@ pub fn git_push_and_get_pr_url(
 ) -> Result<Option<String>, String> {
     git_push(workspace_path)?;
 
-    let remote_url = run_git(workspace_path, &["remote", "get-url", "origin"])
-        .unwrap_or_default();
+    let remote_url = run_git(workspace_path, &["remote", "get-url", "origin"]).unwrap_or_default();
 
     let pr_url = if remote_url.contains("github.com") {
         extract_github_repo(&remote_url).map(|repo| {

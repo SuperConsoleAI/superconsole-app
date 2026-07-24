@@ -67,9 +67,11 @@ jobs:
       - name: Patch latest.json URLs
         run: |
           cd release-assets
-          if [ -f "latest.json" ]; then
-            sed -i 's/superconsole-app/superconsole/g' latest.json
+          if [ ! -f "latest.json" ]; then
+            echo "ERROR: latest.json was not generated! This means Tauri skipped signing the bundles. Check that TAURI_PRIVATE_KEY is correctly set in this repository's secrets."
+            exit 1
           fi
+          sed -i 's/superconsole-app/superconsole/g' latest.json
           
       - name: Upload to Public Repo
         env:

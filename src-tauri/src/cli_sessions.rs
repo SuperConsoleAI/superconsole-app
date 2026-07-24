@@ -230,11 +230,9 @@ pub fn list_sessions(
 fn value_to_text(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .map(value_to_text)
-            .collect::<Vec<_>>()
-            .join("\n"),
+        serde_json::Value::Array(arr) => {
+            arr.iter().map(value_to_text).collect::<Vec<_>>().join("\n")
+        }
         _ => v.to_string(),
     }
 }
@@ -287,10 +285,7 @@ fn flatten_claude_line(v: &serde_json::Value, out: &mut Vec<CliSessionMessage>) 
                     }
                     "tool_use" => {
                         let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                        let input = block
-                            .get("input")
-                            .map(value_to_text)
-                            .unwrap_or_default();
+                        let input = block.get("input").map(value_to_text).unwrap_or_default();
                         out.push(CliSessionMessage {
                             role: "tool_use".to_string(),
                             content: format!("{}\n{}", name, input),
@@ -299,10 +294,7 @@ fn flatten_claude_line(v: &serde_json::Value, out: &mut Vec<CliSessionMessage>) 
                         });
                     }
                     "tool_result" => {
-                        let content = block
-                            .get("content")
-                            .map(value_to_text)
-                            .unwrap_or_default();
+                        let content = block.get("content").map(value_to_text).unwrap_or_default();
                         out.push(CliSessionMessage {
                             role: "tool_result".to_string(),
                             content,

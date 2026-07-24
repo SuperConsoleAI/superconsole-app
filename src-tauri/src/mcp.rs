@@ -115,7 +115,11 @@ pub struct ToolSpec {
 
 impl ToolSpec {
     fn new(name: &str, description: &str, parameters: Value) -> Self {
-        ToolSpec { name: name.into(), description: description.into(), parameters }
+        ToolSpec {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+        }
     }
     pub fn to_openai(&self) -> Value {
         json!({
@@ -299,7 +303,10 @@ fn bridge_specs() -> Vec<ToolSpec> {
         ToolSpec::new(
             "sc_search",
             "Search the catalog of available tools by keyword. Returns names + descriptions.",
-            obj(json!({"query": {"type": "string"}, "limit": {"type": "integer"}}), &["query"]),
+            obj(
+                json!({"query": {"type": "string"}, "limit": {"type": "integer"}}),
+                &["query"],
+            ),
         ),
         ToolSpec::new(
             "sc_describe",
@@ -309,7 +316,10 @@ fn bridge_specs() -> Vec<ToolSpec> {
         ToolSpec::new(
             "sc_call",
             "Execute any available tool by name with the given arguments.",
-            obj(json!({"name": {"type": "string"}, "arguments": {"type": "object"}}), &["name"]),
+            obj(
+                json!({"name": {"type": "string"}, "arguments": {"type": "object"}}),
+                &["name"],
+            ),
         ),
     ]
 }
@@ -325,7 +335,11 @@ pub fn full_catalog(db: &Db, ctx: &ToolCtx) -> Vec<ToolSpec> {
     let mut out = always_specs();
     out.extend(context_specs());
     // web_search has a dedicated tool, so keep it out of the generic passthrough.
-    let rest: Vec<String> = services.iter().filter(|s| *s != "web_search").cloned().collect();
+    let rest: Vec<String> = services
+        .iter()
+        .filter(|s| *s != "web_search")
+        .cloned()
+        .collect();
     if let Some(c) = connector_spec(&rest) {
         out.push(c);
     }
@@ -390,7 +404,10 @@ pub fn search_catalog(db: &Db, ctx: &ToolCtx, query: &str, limit: usize) -> Vec<
 }
 
 fn describe(db: &Db, ctx: &ToolCtx, name: &str) -> Option<Value> {
-    full_catalog(db, ctx).into_iter().find(|s| s.name == name).map(|s| s.to_mcp())
+    full_catalog(db, ctx)
+        .into_iter()
+        .find(|s| s.name == name)
+        .map(|s| s.to_mcp())
 }
 
 // --- connector HTTP profiles (base URL + credential injection) ---
@@ -425,7 +442,10 @@ fn http_profile(service: &str, fields: &HashMap<String, String>) -> Result<HttpP
         "notion" => HttpProfile {
             base: "https://api.notion.com".into(),
             headers: vec![
-                ("Authorization".into(), format!("Bearer {}", f(fields, "api_key"))),
+                (
+                    "Authorization".into(),
+                    format!("Bearer {}", f(fields, "api_key")),
+                ),
                 ("Notion-Version".into(), "2022-06-28".into()),
             ],
             query: vec![],
@@ -444,13 +464,19 @@ fn http_profile(service: &str, fields: &HashMap<String, String>) -> Result<HttpP
             base: f(fields, "url").trim_end_matches('/').into(),
             headers: vec![
                 ("apikey".into(), f(fields, "service_role_key").into()),
-                ("Authorization".into(), format!("Bearer {}", f(fields, "service_role_key"))),
+                (
+                    "Authorization".into(),
+                    format!("Bearer {}", f(fields, "service_role_key")),
+                ),
             ],
             query: vec![],
         },
         "turso" => HttpProfile {
             base: f(fields, "url").trim_end_matches('/').into(),
-            headers: vec![("Authorization".into(), format!("Bearer {}", f(fields, "auth_token")))],
+            headers: vec![(
+                "Authorization".into(),
+                format!("Bearer {}", f(fields, "auth_token")),
+            )],
             query: vec![],
         },
         "buffer" => HttpProfile {
@@ -465,12 +491,18 @@ fn http_profile(service: &str, fields: &HashMap<String, String>) -> Result<HttpP
         },
         "gmail" => HttpProfile {
             base: "https://gmail.googleapis.com".into(),
-            headers: vec![("Authorization".into(), format!("Bearer {}", f(fields, "api_key")))],
+            headers: vec![(
+                "Authorization".into(),
+                format!("Bearer {}", f(fields, "api_key")),
+            )],
             query: vec![],
         },
         "google_drive" => HttpProfile {
             base: "https://www.googleapis.com/drive/v3".into(),
-            headers: vec![("Authorization".into(), format!("Bearer {}", f(fields, "api_key")))],
+            headers: vec![(
+                "Authorization".into(),
+                format!("Bearer {}", f(fields, "api_key")),
+            )],
             query: vec![],
         },
         "ga4" => HttpProfile {
@@ -503,7 +535,11 @@ async fn connector_request(db: &Db, ctx: &ToolCtx, args: &Value) -> Result<Value
     let url = if path.starts_with("http://") || path.starts_with("https://") {
         path.to_string()
     } else {
-        format!("{}/{}", profile.base.trim_end_matches('/'), path.trim_start_matches('/'))
+        format!(
+            "{}/{}",
+            profile.base.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
     };
 
     let client = reqwest::Client::new();
@@ -526,7 +562,14 @@ async fn connector_request(db: &Db, ctx: &ToolCtx, args: &Value) -> Result<Value
     if let Some(q) = args["query"].as_object() {
         let pairs: Vec<(String, String)> = q
             .iter()
-            .map(|(k, v)| (k.clone(), v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string())))
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    v.as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v.to_string()),
+                )
+            })
             .collect();
         req = req.query(&pairs);
     }
@@ -534,7 +577,10 @@ async fn connector_request(db: &Db, ctx: &ToolCtx, args: &Value) -> Result<Value
         req = req.json(&args["body"]);
     }
 
-    let resp = req.send().await.map_err(|e| format!("request failed: {}", e))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {}", e))?;
     let status = resp.status().as_u16();
     let ok = resp.status().is_success();
     let text = resp.text().await.unwrap_or_default();
@@ -569,8 +615,10 @@ pub async fn execute(db: &Db, ctx: &ToolCtx, name: &str, args: Value) -> Result<
                 ctx.org_id.as_deref(),
                 ctx.project_id.as_deref(),
             );
-            let skills: Vec<String> =
-                crate::skills::workspace_skills(ws).into_iter().map(|s| s.name).collect();
+            let skills: Vec<String> = crate::skills::workspace_skills(ws)
+                .into_iter()
+                .map(|s| s.name)
+                .collect();
             let memory = crate::memory::read_all(ws).len();
             let wiki = crate::wiki::pages(ws).len();
             ok_text(json!({
@@ -584,7 +632,11 @@ pub async fn execute(db: &Db, ctx: &ToolCtx, name: &str, args: Value) -> Result<
             let content = args["content"].as_str().ok_or("content is required")?;
             let title = args["title"].as_str().unwrap_or("Agent message");
             let approval = args["requires_approval"].as_bool().unwrap_or(false);
-            let title = if approval { format!("[approval] {}", title) } else { title.to_string() };
+            let title = if approval {
+                format!("[approval] {}", title)
+            } else {
+                title.to_string()
+            };
             let id = db.add_inbox_item(ctx.workspace_id, None, &title, content)?;
             ok_text(json!({"inbox_id": id}))
         }
@@ -618,13 +670,24 @@ pub async fn execute(db: &Db, ctx: &ToolCtx, name: &str, args: Value) -> Result<
             let tokens_completion = args["tokens_out"].as_i64().unwrap_or(0);
             let model = args["model"].as_str().unwrap_or("").to_string();
             let provider = args["provider"].as_str().unwrap_or("").to_string();
-            let cost = crate::usage::estimate_cost(&model, &provider, tokens_prompt, 0, tokens_completion, 0);
+            let cost = crate::usage::estimate_cost(
+                &model,
+                &provider,
+                tokens_prompt,
+                0,
+                tokens_completion,
+                0,
+            );
             let ev = crate::db::UsageEvent {
                 project_id,
                 org_id: ctx.org_id.clone(),
                 user_id: ctx.user_id.clone(),
                 model: if model.is_empty() { None } else { Some(model) },
-                provider: if provider.is_empty() { None } else { Some(provider) },
+                provider: if provider.is_empty() {
+                    None
+                } else {
+                    Some(provider)
+                },
                 cli: Some("chat".to_string()),
                 tokens_prompt,
                 tokens_completion,
@@ -633,7 +696,11 @@ pub async fn execute(db: &Db, ctx: &ToolCtx, name: &str, args: Value) -> Result<
             };
             // The tool path has no AppHandle: persist locally now; the next
             // startup/update sync pushes the delta to the shared cloud totals.
-            db.insert_usage_event(&crate::db::UsageEvent { id: ulid::Ulid::new().to_string(), ended_at: Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()), ..ev })?;
+            db.insert_usage_event(&crate::db::UsageEvent {
+                id: ulid::Ulid::new().to_string(),
+                ended_at: Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+                ..ev
+            })?;
             ok_text(json!({"logged": true}))
         }
         "skill_list" => {
@@ -660,9 +727,15 @@ pub async fn execute(db: &Db, ctx: &ToolCtx, name: &str, args: Value) -> Result<
             let category = args["category"].as_str().unwrap_or("facts");
             let tags: Vec<String> = args["tags"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
-            ok_text(crate::memory::upsert_file(ws, category, title, content, tags)?)
+            ok_text(crate::memory::upsert_file(
+                ws, category, title, content, tags,
+            )?)
         }
         "wiki_list" => {
             let pages: Vec<Value> = crate::wiki::pages(ws)
@@ -841,8 +914,11 @@ fn merge_mcp_servers_trust(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(path, serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Pre-approve the project `.mcp.json` `superconsole` server for Claude Code so
@@ -870,8 +946,11 @@ fn claude_preapprove(ws_path: &str) -> Result<(), String> {
         }
         None => *arr = json!(["superconsole"]),
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Append paths to `.git/info/exclude` so the generated, token-bearing config
@@ -919,13 +998,19 @@ pub fn write_mcp_config(
     let _ = claude_preapprove(&ws_path);
 
     // Factory Droid: project-scoped .factory/mcp.json (auto-loaded, no prompt).
-    let droid_path = std::path::Path::new(&ws_path).join(".factory").join("mcp.json");
+    let droid_path = std::path::Path::new(&ws_path)
+        .join(".factory")
+        .join("mcp.json");
     let _ = merge_mcp_servers(&droid_path, &exe, &token);
     merge_connector_mcps(&droid_path, connector_mcps);
 
     git_exclude(
         &ws_path,
-        &[".mcp.json", ".claude/settings.local.json", ".factory/mcp.json"],
+        &[
+            ".mcp.json",
+            ".claude/settings.local.json",
+            ".factory/mcp.json",
+        ],
     );
     Ok(claude_path.to_string_lossy().to_string())
 }
@@ -981,7 +1066,9 @@ pub fn ensure_mcp_config(app: tauri::AppHandle, workspace_id: i64) -> Result<Str
 /// scope means the last-launched workspace wins on the embedded token.
 pub fn write_codex_mcp_config(ctx: &ToolCtx) -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "no HOME".to_string())?;
-    let path = std::path::Path::new(&home).join(".codex").join("config.toml");
+    let path = std::path::Path::new(&home)
+        .join(".codex")
+        .join("config.toml");
     let token = encode_session_token(ctx)?;
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
@@ -1043,7 +1130,9 @@ pub fn write_antigravity_mcp_config(ctx: &ToolCtx) -> Result<(), String> {
 pub fn args_object(v: Option<&Value>) -> Value {
     match v {
         Some(Value::Object(m)) => Value::Object(m.clone()),
-        Some(Value::String(s)) => serde_json::from_str(s).unwrap_or_else(|_| Value::Object(Map::new())),
+        Some(Value::String(s)) => {
+            serde_json::from_str(s).unwrap_or_else(|_| Value::Object(Map::new()))
+        }
         _ => Value::Object(Map::new()),
     }
 }

@@ -287,7 +287,10 @@ pub async fn delete_llm_key(
     cloud::turso_execute(
         &client,
         &cfg,
-        &format!("DELETE FROM {} WHERE {} = ? AND provider = ?", table, id_col),
+        &format!(
+            "DELETE FROM {} WHERE {} = ? AND provider = ?",
+            table, id_col
+        ),
         vec![Some(scope_id.clone()), Some(provider)],
     )
     .await?;
@@ -395,7 +398,12 @@ pub struct ProviderCredentials {
 // Look up one provider's key/base_url from the cache with project > org >
 // account precedence (highest first). Returns the first level that has a usable
 // entry. Local needs no key, so a base_url alone is enough there.
-fn lookup_provider(db: &Db, scope: &str, scope_id: &str, provider: &str) -> Option<ProviderCredentials> {
+fn lookup_provider(
+    db: &Db,
+    scope: &str,
+    scope_id: &str,
+    provider: &str,
+) -> Option<ProviderCredentials> {
     for k in db.get_cached_llm_keys(scope, scope_id) {
         if k.provider != provider {
             continue;
@@ -540,7 +548,9 @@ pub async fn one_shot_completion(
                 msgs.push(json!({ "role": "system", "content": system }));
             }
             msgs.push(json!({ "role": "user", "content": user }));
-            let mut rb = client.post(url).json(&json!({ "model": model, "messages": msgs }));
+            let mut rb = client
+                .post(url)
+                .json(&json!({ "model": model, "messages": msgs }));
             if let Some(k) = &key {
                 if !k.is_empty() {
                     rb = rb.bearer_auth(k);
@@ -550,7 +560,10 @@ pub async fn one_shot_completion(
         }
     };
 
-    let resp = req.send().await.map_err(|e| format!("request failed: {}", e))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {}", e))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -570,9 +583,17 @@ pub async fn one_shot_completion(
             .unwrap_or_default(),
         "gemini" => v["candidates"][0]["content"]["parts"]
             .as_array()
-            .map(|parts| parts.iter().filter_map(|p| p["text"].as_str()).collect::<String>())
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|p| p["text"].as_str())
+                    .collect::<String>()
+            })
             .unwrap_or_default(),
-        _ => v["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string(),
+        _ => v["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
     };
     Ok(text.trim().to_string())
 }
@@ -590,8 +611,9 @@ pub struct OpenrouterModel {
 
 // Cache the live model list (refreshed hourly) so the chat composer dropdown
 // doesn't hit the network on every open.
-static OR_MODELS_CACHE: OnceLock<std::sync::Mutex<Option<(std::time::Instant, Vec<OpenrouterModel>)>>> =
-    OnceLock::new();
+static OR_MODELS_CACHE: OnceLock<
+    std::sync::Mutex<Option<(std::time::Instant, Vec<OpenrouterModel>)>>,
+> = OnceLock::new();
 
 #[tauri::command]
 pub async fn list_openrouter_models() -> Result<Vec<OpenrouterModel>, String> {

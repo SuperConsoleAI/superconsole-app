@@ -108,7 +108,9 @@ fn parse_page(slug_fallback: &str, content: &str) -> WikiPage {
             let fm = &rest[..end];
             body = rest[end + 4..].trim().to_string();
             for line in fm.lines() {
-                let Some((k, v)) = line.split_once(':') else { continue };
+                let Some((k, v)) = line.split_once(':') else {
+                    continue;
+                };
                 let key = k.trim().to_lowercase();
                 let val = v.trim().to_string();
                 match key.as_str() {
@@ -140,7 +142,11 @@ fn parse_page(slug_fallback: &str, content: &str) -> WikiPage {
 }
 
 fn serialize_page(p: &WikiPage) -> String {
-    let updated = if p.updated.is_empty() { today() } else { p.updated.clone() };
+    let updated = if p.updated.is_empty() {
+        today()
+    } else {
+        p.updated.clone()
+    };
     let tags = p
         .tags
         .iter()
@@ -208,7 +214,12 @@ fn rebuild_index_file(ws_path: &str, pages: &[WikiPage]) -> Result<(), String> {
 fn reindex(db: &Db, workspace_id: i64, pages: &[WikiPage]) {
     for p in pages {
         let _ = db.upsert_wiki_page(
-            workspace_id, &p.slug, &p.title, &p.summary, &p.tags.join(","), &rel_path(&p.slug),
+            workspace_id,
+            &p.slug,
+            &p.title,
+            &p.summary,
+            &p.tags.join(","),
+            &rel_path(&p.slug),
         );
     }
     let live: std::collections::HashSet<String> = pages.iter().map(|p| p.slug.clone()).collect();
@@ -242,7 +253,12 @@ pub fn list_wiki(app: AppHandle, workspace_id: i64) -> Result<Vec<WikiPage>, Str
                     slug: c.slug,
                     title: c.title,
                     summary: c.summary,
-                    tags: c.tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+                    tags: c
+                        .tags
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
                     updated: String::new(),
                     body: c.content,
                     source: "cloud".into(),
@@ -311,7 +327,9 @@ pub async fn write_wiki(
         let ws = db.get_workspace(workspace_id)?;
         (ws.path, ws.project_id)
     };
-    let slug = slug.filter(|s| !s.is_empty()).unwrap_or_else(|| slugify(&title));
+    let slug = slug
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| slugify(&title));
     let clean_tags: Vec<String> = tags
         .into_iter()
         .map(|t| t.trim().to_string())
@@ -320,7 +338,11 @@ pub async fn write_wiki(
     let page = WikiPage {
         slug: slug.clone(),
         title: title.trim().to_string(),
-        summary: if summary.trim().is_empty() { one_line(&body) } else { summary.trim().to_string() },
+        summary: if summary.trim().is_empty() {
+            one_line(&body)
+        } else {
+            summary.trim().to_string()
+        },
         tags: clean_tags,
         updated: today(),
         body: body.trim().to_string(),
@@ -333,8 +355,13 @@ pub async fn write_wiki(
         resync_local(&db, workspace_id, &ws_path)?;
     }
     push_wiki_to_cloud(
-        &app, project_id.as_deref(), &page.slug, &page.title, &page.summary,
-        &page.tags.join(","), &serialize_page(&page),
+        &app,
+        project_id.as_deref(),
+        &page.slug,
+        &page.title,
+        &page.summary,
+        &page.tags.join(","),
+        &serialize_page(&page),
     )
     .await;
     Ok(page)
@@ -377,7 +404,10 @@ pub async fn seed_wiki_from_files(
 
     let mut candidates: Vec<(String, PathBuf)> = Vec::new();
     for name in ["README.md", "CLAUDE.md", "brand-voice.md", "AGENTS.md"] {
-        candidates.push((name.trim_end_matches(".md").to_string(), Path::new(&ws_path).join(name)));
+        candidates.push((
+            name.trim_end_matches(".md").to_string(),
+            Path::new(&ws_path).join(name),
+        ));
     }
     if let Ok(entries) = std::fs::read_dir(Path::new(&ws_path).join("docs")) {
         for entry in entries.flatten() {
@@ -392,7 +422,9 @@ pub async fn seed_wiki_from_files(
 
     let mut created = Vec::new();
     for (raw_title, path) in candidates {
-        let Ok(content) = std::fs::read_to_string(&path) else { continue };
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         if content.trim().is_empty() {
             continue;
         }
@@ -411,7 +443,8 @@ pub async fn seed_wiki_from_files(
             source: "file".into(),
         };
         std::fs::create_dir_all(wiki_dir(&ws_path)).map_err(|e| e.to_string())?;
-        std::fs::write(page_file(&ws_path, &slug), serialize_page(&page)).map_err(|e| e.to_string())?;
+        std::fs::write(page_file(&ws_path, &slug), serialize_page(&page))
+            .map_err(|e| e.to_string())?;
         created.push(page);
     }
 
@@ -421,7 +454,12 @@ pub async fn seed_wiki_from_files(
     };
     for p in &created {
         push_wiki_to_cloud(
-            &app, project_id.as_deref(), &p.slug, &p.title, &p.summary, &p.tags.join(","),
+            &app,
+            project_id.as_deref(),
+            &p.slug,
+            &p.title,
+            &p.summary,
+            &p.tags.join(","),
             &serialize_page(p),
         )
         .await;
@@ -506,7 +544,9 @@ async fn push_wiki_to_cloud(
     content: &str,
 ) {
     let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else { return };
+    let Ok(cfg) = cloud::turso_config() else {
+        return;
+    };
     let client = reqwest::Client::new();
     if ensure_wiki_index_table(&client, &cfg).await.is_err() {
         return;
@@ -539,7 +579,9 @@ async fn push_wiki_to_cloud(
 
 async fn delete_wiki_from_cloud(app: &AppHandle, project_id: Option<&str>, slug: &str) {
     let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else { return };
+    let Ok(cfg) = cloud::turso_config() else {
+        return;
+    };
     let client = reqwest::Client::new();
     if ensure_wiki_index_table(&client, &cfg).await.is_err() {
         return;
