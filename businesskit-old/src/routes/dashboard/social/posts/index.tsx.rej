@@ -1,9 +1,0 @@
-@@ -82,7 +82,7 @@
-   const loadingPosts = useSignal(true);
-   const syncing = useSignal(false);
-   
--  const viewMode       = useSignal<"table"|"grid2"|"grid3">("grid3");
-+  const viewMode       = useSignal<"table"|"grid1"|"grid2"|"grid3"|"grid4">("grid4");
-   const statusFilter   = useSignal("all");
-   const platformFilter = useSignal("all");
-   

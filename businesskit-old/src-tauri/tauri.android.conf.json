@@ -1,6 +1,0 @@
-{
-  "build": {
-    "devUrl": "http://localhost:5175",
-    "beforeDevCommand": "VITE_PORT=5175 npm run dev"
-  }
-}
