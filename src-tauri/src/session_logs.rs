@@ -14,10 +14,9 @@
 //
 //   [summary — max 120 lines, trimmed to that on save]
 //
-// SQLite: `session_logs` table (metadata index, no file content stored in DB).
-// Turso:  `project_session_logs` table (metadata mirror, no file path or body).
+// SQLite: `project_session_logs` table (metadata index, no file content stored in DB).
+// 3-Tier: `project_session_logs` (project), `org_session_logs` (org), `session_logs` (account).
 
-use crate::cloud::{self};
 use crate::db::{Db, SessionLogFile};
 use std::path::Path;
 use tauri::{AppHandle, Manager};
@@ -59,78 +58,6 @@ fn build_log_md(
     )
 }
 
-// ── Turso mirror (best-effort, never blocks the UI) ───────────────────────────
-
-async fn ensure_session_logs_table(
-    client: &reqwest::Client,
-    cfg: &cloud::TursoConfig,
-) -> Result<(), String> {
-    cloud::turso_execute(
-        client,
-        cfg,
-        "CREATE TABLE IF NOT EXISTS project_session_logs (\
-            id TEXT PRIMARY KEY NOT NULL, \
-            project_id TEXT NOT NULL, \
-            session_id TEXT, \
-            agent_name TEXT NOT NULL DEFAULT '', \
-            model TEXT NOT NULL DEFAULT '', \
-            date TEXT NOT NULL, \
-            cost_usd REAL NOT NULL DEFAULT 0, \
-            tokens INTEGER NOT NULL DEFAULT 0, \
-            summary TEXT NOT NULL DEFAULT '', \
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
-        vec![],
-    )
-    .await?;
-    cloud::turso_execute(
-        client,
-        cfg,
-        "CREATE INDEX IF NOT EXISTS project_session_logs_proj_idx \
-         ON project_session_logs(project_id)",
-        vec![],
-    )
-    .await?;
-    Ok(())
-}
-
-async fn push_log_to_cloud(app: &AppHandle, project_id: Option<&str>, log: &SessionLogFile) {
-    let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else {
-        return;
-    };
-    let client = reqwest::Client::new();
-    if ensure_session_logs_table(&client, &cfg).await.is_err() {
-        return;
-    }
-    let _ = cloud::turso_execute(
-        &client,
-        &cfg,
-        "INSERT INTO project_session_logs \
-           (id, project_id, session_id, agent_name, model, date, cost_usd, tokens, summary) \
-         VALUES (?,?,?,?,?,?,?,?,?) \
-         ON CONFLICT(id) DO NOTHING",
-        vec![
-            Some(log.id.clone()),
-            Some(project_id.to_string()),
-            log.session_id.clone(),
-            Some(log.agent_name.clone()),
-            Some(log.model.clone()),
-            Some(log.date.clone()),
-            Some(log.cost_usd.to_string()),
-            Some(log.tokens.to_string()),
-            Some(log.summary.clone()),
-        ],
-    )
-    .await;
-    // Trigger sync so other devices see the new row
-    if let Ok(cfg2) = cloud::turso_config() {
-        let _ = cfg2; // config already consumed above; sync is best-effort
-    }
-    let _ = &app; // retained for future sync_manager hook
-}
-
-// ── Tauri commands ─────────────────────────────────────────────────────────────
-
 #[tauri::command]
 pub async fn save_session_log(
     app: AppHandle,
@@ -143,11 +70,10 @@ pub async fn save_session_log(
     summary: String,
     slug: String,
 ) -> Result<SessionLogFile, String> {
-    // Resolve workspace path + optional project_id
-    let (ws_path, project_id) = {
+    // Resolve workspace path
+    let ws_path = {
         let db = app.state::<Db>();
-        let ws = db.get_workspace(workspace_id)?;
-        (ws.path, ws.project_id)
+        db.get_workspace(workspace_id)?.path
     };
 
     // Sanitise slug (alphanumeric + dashes)
@@ -203,9 +129,6 @@ pub async fn save_session_log(
         tokens,
         &trim_summary(&summary),
     )?;
-
-    // Mirror to Turso (best-effort, fire-and-forget)
-    push_log_to_cloud(&app, project_id.as_deref(), &log).await;
 
     Ok(log)
 }

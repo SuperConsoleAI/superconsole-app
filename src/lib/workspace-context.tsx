@@ -15,6 +15,7 @@ import {
   type SessionTab,
   type Workspace,
 } from "@/lib/api";
+import { extractCleanResumeId } from "@/lib/utils";
 
 export interface PendingNewAgent {
   agent: Agent;
@@ -135,31 +136,30 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         label: n === 1 ? baseLabel : `${baseLabel} ${n}`,
       };
       
-      if (cli !== "shell") {
-        api.updateWorkspaceCli(workspaceId, cli).catch(() => {});
-        setWorkspaces((ws) =>
-          ws.map((w) => (w.id === workspaceId ? { ...w, cli } : w)),
-        );
-      }
-      
       return { ...prev, [workspaceId]: [...tabs, tab] };
     });
+    
+    if (cli !== "shell") {
+      api.updateWorkspaceCli(workspaceId, cli).catch(() => {});
+      setWorkspaces((ws) =>
+        ws.map((w) => (w.id === workspaceId ? { ...w, cli } : w)),
+      );
+    }
+    
     setActiveTabByWs((a) => ({ ...a, [workspaceId]: tabId }));
   }, []);
 
   const openResumeTab = useCallback(
     (workspaceId: number, cli: string, resumeId: string) => {
-      const id = `${workspaceId}:${cli}:resume:${resumeId}`;
+      const cleanId = extractCleanResumeId(resumeId);
+      const id = `${workspaceId}:${cli}:resume:${cleanId ? cleanId + "-" : ""}${Date.now()}`;
       setTabsByWs((prev) => {
         const tabs = prev[workspaceId] ?? [];
-        if (tabs.some((t) => t.id === id)) {
-          return prev;
-        }
         const tab: SessionTab = {
           id,
           cli,
           label: `${cliLabel(cli)} (resumed)`,
-          resumeId,
+          resumeId: cleanId || resumeId,
         };
         return { ...prev, [workspaceId]: [...tabs, tab] };
       });
@@ -302,22 +302,28 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const openWorkspace = useCallback(
     (id: number, defaultCli: string, runMode?: string) => {
       setOpenedIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
+      let tabToActivate = "";
       setTabsByWs((prev) => {
         const tabs = prev[id] ?? [];
         if (tabs.length === 0 && !initializedWsRef.current.has(id)) {
           // Mark as initialized immediately to prevent double-open from StrictMode
           initializedWsRef.current.add(id);
-          if (runMode === "chat") {
-            queueMicrotask(() => openChatPicker(id));
-          } else {
-            queueMicrotask(() => openTab(id, defaultCli));
-          }
+          const isChat = runMode === "chat" || defaultCli === "chat";
+          const tabId = isChat ? `${id}:chat` : `${id}:${defaultCli}-${Date.now()}`;
+          tabToActivate = tabId;
+          const initialTab: SessionTab = isChat
+            ? { id: tabId, cli: "chat", label: "Chats" }
+            : { id: tabId, cli: defaultCli, label: cliLabel(defaultCli) };
+
+          return { ...prev, [id]: [initialTab] };
         }
-        // If tabs exist, do nothing — user may have multiple tabs intentionally
         return prev;
       });
+      if (tabToActivate) {
+        setActiveTabByWs((a) => (a[id] ? a : { ...a, [id]: tabToActivate }));
+      }
     },
-    [openTab, openChatPicker],
+    [],
   );
 
   const openScriptTab = useCallback(

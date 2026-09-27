@@ -7,7 +7,7 @@
 //
 // At PTY session start each field is injected as an env var per the registry
 // mapping, with project connectors overriding org connectors. Runtime injection
-// reads only the local connectors_cache, never Turso.
+// reads only the local project_connectors / org_connectors / account_connectors tables, never Turso.
 //
 // SECURITY / PRODUCTION TODO (same as auth.rs / cloud.rs): talks to Turso with
 // the repo-root .env token; move behind the Cloudflare Worker before shipping.
@@ -278,10 +278,72 @@ fn cached_user_id(db: &Db) -> Option<String> {
 fn scope_table(scope: &str) -> Result<(&'static str, &'static str, bool), String> {
     match scope {
         "account" => Ok(("account_connectors", "user_id", false)),
-        "project" => Ok(("connectors", "project_id", true)),
+        "project" => Ok(("project_connectors", "project_id", true)),
         "org" => Ok(("org_connectors", "org_id", false)),
         other => Err(format!("unknown scope '{}'", other)),
     }
+}
+
+/// Idempotent bootstrap for project-scoped connectors in Turso.
+pub async fn ensure_project_connectors_table(
+    client: &reqwest::Client,
+    cfg: &cloud::TursoConfig,
+) -> Result<(), String> {
+    cloud::turso_execute(
+        client,
+        cfg,
+        "CREATE TABLE IF NOT EXISTS project_connectors (\
+            id TEXT PRIMARY KEY NOT NULL, project_id TEXT NOT NULL, service TEXT NOT NULL, \
+            credentials_encrypted TEXT, scope TEXT NOT NULL DEFAULT 'project', \
+            status TEXT NOT NULL DEFAULT 'disconnected', \
+            connected_by TEXT, updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+        vec![],
+    )
+    .await?;
+    cloud::turso_execute(
+        client,
+        cfg,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_connectors_project_service \
+         ON project_connectors (project_id, service)",
+        vec![],
+    )
+    .await?;
+    // Auto-migrate from legacy connectors table if present in Turso
+    let _ = cloud::turso_execute(
+        client,
+        cfg,
+        "INSERT OR IGNORE INTO project_connectors (id, project_id, service, credentials_encrypted, scope, status, connected_by, updated_at) \
+         SELECT id, project_id, service, credentials_encrypted, scope, status, connected_by, updated_at FROM connectors",
+        vec![],
+    )
+    .await;
+    Ok(())
+}
+
+/// Idempotent bootstrap for org-scoped connectors in Turso.
+pub async fn ensure_org_connectors_table(
+    client: &reqwest::Client,
+    cfg: &cloud::TursoConfig,
+) -> Result<(), String> {
+    cloud::turso_execute(
+        client,
+        cfg,
+        "CREATE TABLE IF NOT EXISTS org_connectors (\
+            id TEXT PRIMARY KEY NOT NULL, org_id TEXT NOT NULL, service TEXT NOT NULL, \
+            credentials_encrypted TEXT, status TEXT NOT NULL DEFAULT 'disconnected', \
+            connected_by TEXT, updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+        vec![],
+    )
+    .await?;
+    cloud::turso_execute(
+        client,
+        cfg,
+        "CREATE UNIQUE INDEX IF NOT EXISTS org_connectors_org_service_unq \
+         ON org_connectors (org_id, service)",
+        vec![],
+    )
+    .await?;
+    Ok(())
 }
 
 /// Idempotent bootstrap for account-scoped connectors so the feature works
@@ -309,6 +371,20 @@ pub async fn ensure_account_connectors_table(
     )
     .await?;
     Ok(())
+}
+
+/// Ensure table exists for any scope
+pub async fn ensure_connectors_table_for_scope(
+    client: &reqwest::Client,
+    cfg: &cloud::TursoConfig,
+    scope: &str,
+) -> Result<(), String> {
+    match scope {
+        "project" => ensure_project_connectors_table(client, cfg).await,
+        "org" => ensure_org_connectors_table(client, cfg).await,
+        "account" => ensure_account_connectors_table(client, cfg).await,
+        _ => Ok(()),
+    }
 }
 
 /// Decrypt and parse a connector credentials blob.
@@ -364,9 +440,7 @@ pub async fn list_connectors(
     let (table, id_col, _) = scope_table(&scope)?;
     let cfg = cloud::turso_config()?;
     let client = reqwest::Client::new();
-    if scope == "account" {
-        ensure_account_connectors_table(&client, &cfg).await?;
-    }
+    ensure_connectors_table_for_scope(&client, &cfg, &scope).await?;
     let result = cloud::turso_execute(
         &client,
         &cfg,
@@ -402,9 +476,7 @@ pub async fn set_connector(
 
     let cfg = cloud::turso_config()?;
     let client = reqwest::Client::new();
-    if scope == "account" {
-        ensure_account_connectors_table(&client, &cfg).await?;
-    }
+    ensure_connectors_table_for_scope(&client, &cfg, &scope).await?;
 
     // Merge with any existing blob so blank secret fields keep their value.
     let existing = cloud::turso_execute(
@@ -621,9 +693,7 @@ pub async fn delete_connector(
     let (table, id_col, _) = scope_table(&scope)?;
     let cfg = cloud::turso_config()?;
     let client = reqwest::Client::new();
-    if scope == "account" {
-        ensure_account_connectors_table(&client, &cfg).await?;
-    }
+    ensure_connectors_table_for_scope(&client, &cfg, &scope).await?;
     cloud::turso_execute(
         &client,
         &cfg,

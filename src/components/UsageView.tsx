@@ -1,5 +1,9 @@
+/**
+ * UsageView Component — Token consumption and cost telemetry dashboard
+ * Renders usage breakdowns and charts using dynamic CSS variable tokens.
+ */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BarChart3, Download, Loader2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 import {
   api,
   type UsageBreakdown,
@@ -8,13 +12,6 @@ import {
   type Workspace,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
@@ -23,16 +20,16 @@ type Period = "month" | "year" | "all";
 // Provider color channels for charts (a deliberate data-viz exception to the
 // token-only color rule, like the xterm theme).
 const PROVIDER_COLOR: Record<string, string> = {
-  anthropic: "#a06cd5",
-  openai: "#10a37f",
-  google: "#4285f4",
-  gemini: "#4285f4",
-  openrouter: "#f59e0b",
-  local: "#9ca3af",
+  anthropic: "var(--color-primary)",
+  openai: "var(--color-foreground)",
+  google: "var(--color-toggle-box)",
+  gemini: "var(--color-toggle-box)",
+  openrouter: "var(--color-accent)",
+  local: "var(--color-muted-foreground)",
 };
 
 function providerColor(p?: string): string {
-  return PROVIDER_COLOR[(p ?? "").toLowerCase()] ?? "#a06cd5";
+  return PROVIDER_COLOR[(p ?? "").toLowerCase()] ?? "var(--color-primary)";
 }
 
 function fmtUsd(n: number): string {
@@ -155,6 +152,7 @@ function Breakdown({
           const [model, provider] = splitKey ? key.split(":") : [key, v.provider];
           const color = providerColor(provider);
           const tokens = v.tokens ?? (v.tokens_prompt ?? 0) + (v.tokens_completion ?? 0);
+          const displayName = v.name && v.name.trim() !== "" ? v.name : model;
           return (
             <div key={key} className="flex items-center gap-3">
               <span
@@ -163,7 +161,7 @@ function Breakdown({
               />
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline justify-between gap-2">
-                  <span className="truncate text-[13px] font-medium">{model}</span>
+                  <span className="truncate text-[13px] font-medium">{displayName}</span>
                   <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
                     {v.sessions ?? 0} sess · {fmtTokens(tokens)} · {fmtUsd(v.cost_usd ?? 0)}
                   </span>
@@ -286,6 +284,8 @@ export function UsageView({ workspaces }: { workspaces: Workspace[] }) {
   const [heatMode, setHeatMode] = useState<"tokens" | "cost">("tokens");
   const [row, setRow] = useState<UsageRow | null>(null);
   const [loading, setLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const cloudWorkspaces = useMemo(
     () => workspaces.filter((w) => w.project_id),
@@ -294,25 +294,36 @@ export function UsageView({ workspaces }: { workspaces: Workspace[] }) {
   const [projectId, setProjectId] = useState<string | null>(
     cloudWorkspaces[0]?.project_id ?? null,
   );
+
+  useEffect(() => {
+    if (!projectId && cloudWorkspaces.length > 0) {
+      setProjectId(cloudWorkspaces[0].project_id as string);
+    }
+  }, [cloudWorkspaces, projectId]);
+
   // Org viewed for analytics; independent of the active cloud org so users can
   // inspect any org's usage without switching their working context.
   const orgs = auth?.orgs ?? [];
   const [orgId, setOrgId] = useState<string | null>(null);
-  const viewedOrgId = orgId ?? activeCloudOrg?.id ?? null;
+  const viewedOrgId = orgId ?? activeCloudOrg?.id ?? (orgs[0]?.id ?? null);
 
   const selectedId =
     level === "project"
       ? projectId
       : level === "org"
         ? viewedOrgId
-        : auth?.user.id ?? null;
+        : level === "user"
+          ? auth?.user.id ?? "user"
+          : "total";
 
   const label =
     level === "project"
       ? cloudWorkspaces.find((w) => w.project_id === projectId)?.name ?? "Project"
       : level === "org"
         ? orgs.find((o) => o.id === viewedOrgId)?.name ?? "Organization"
-        : auth?.user.email ?? "Account";
+        : level === "user"
+          ? auth?.user.email ?? "User"
+          : "Account (All Projects & Orgs)";
 
   const years = useMemo(() => {
     const ks = row ? Object.keys(row.analytics_lifetime) : [];
@@ -321,22 +332,49 @@ export function UsageView({ workspaces }: { workspaces: Workspace[] }) {
   }, [row]);
   const [year, setYear] = useState(new Date().getFullYear().toString());
 
-  const load = useCallback(() => {
-    if (!selectedId) {
-      setRow(null);
-      return;
-    }
-    setLoading(true);
-    api
-      .getUsage(level, selectedId)
-      .then(setRow)
-      .catch(() => setRow(null))
-      .finally(() => setLoading(false));
-  }, [level, selectedId]);
+  const load = useCallback(
+    async (isManual = false) => {
+      if (!selectedId) {
+        setRow(null);
+        setLastUpdated(null);
+        return;
+      }
+      if (isManual) {
+        setIsRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      const startTime = Date.now();
+      try {
+        const data = await api.getUsage(level, selectedId);
+        setRow(data);
+        if (data?.updated_at) {
+          const d = new Date(data.updated_at);
+          setLastUpdated(!isNaN(d.getTime()) ? d : new Date());
+        } else {
+          setLastUpdated(new Date());
+        }
+      } catch {
+        if (!isManual) setRow(null);
+      } finally {
+        if (isManual) {
+          const elapsed = Date.now() - startTime;
+          if (elapsed < 500) {
+            await new Promise((r) => setTimeout(r, 500 - elapsed));
+          }
+          setIsRefreshing(false);
+        } else {
+          setLoading(false);
+        }
+      }
+    },
+    [level, selectedId],
+  );
 
   useEffect(() => {
+    setRow(null);
     load();
-  }, [load]);
+  }, [level, selectedId]);
 
   const totals = row ? periodTotals(row, period, year) : null;
   const cacheRate =
@@ -346,7 +384,7 @@ export function UsageView({ workspaces }: { workspaces: Workspace[] }) {
   const periodLabel =
     period === "all" ? "All time" : period === "year" ? year : "This month";
 
-  const exportReport = () => {
+  const exportReport = useCallback(() => {
     if (!row || !totals) return;
     const md = buildReport(label, level, row, totals, periodLabel);
     const blob = new Blob([md], { type: "text/markdown" });
@@ -356,7 +394,65 @@ export function UsageView({ workspaces }: { workspaces: Workspace[] }) {
     a.download = `usage-${label.replace(/\s+/g, "-").toLowerCase()}-${periodLabel.replace(/\s+/g, "-").toLowerCase()}.md`;
     a.click();
     URL.revokeObjectURL(url);
-  };
+  }, [row, totals, label, level, periodLabel]);
+
+  // Sync state to UsageNavbar
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("usage-state-sync", {
+        detail: {
+          level,
+          period,
+          projectId,
+          orgId: viewedOrgId,
+          year,
+          years,
+        },
+      })
+    );
+  }, [level, period, projectId, viewedOrgId, year, years]);
+
+  // Listen for navbar events
+  useEffect(() => {
+    const onLevel = (e: any) => { if (e.detail) setLevel(e.detail); };
+    const onProj = (e: any) => { if (e.detail) setProjectId(e.detail); };
+    const onOrg = (e: any) => { if (e.detail) setOrgId(e.detail); };
+    const onPeriod = (e: any) => { if (e.detail) setPeriod(e.detail); };
+    const onYear = (e: any) => { if (e.detail) setYear(e.detail); };
+    const onExport = () => exportReport();
+    const onNavMounted = () => {
+      window.dispatchEvent(
+        new CustomEvent("usage-state-sync", {
+          detail: {
+            level,
+            period,
+            projectId,
+            orgId: viewedOrgId,
+            year,
+            years,
+          },
+        })
+      );
+    };
+
+    window.addEventListener("usage-level-change", onLevel);
+    window.addEventListener("usage-project-change", onProj);
+    window.addEventListener("usage-org-change", onOrg);
+    window.addEventListener("usage-period-change", onPeriod);
+    window.addEventListener("usage-year-change", onYear);
+    window.addEventListener("usage-export-report", onExport);
+    window.addEventListener("usage-nav-mounted", onNavMounted);
+
+    return () => {
+      window.removeEventListener("usage-level-change", onLevel);
+      window.removeEventListener("usage-project-change", onProj);
+      window.removeEventListener("usage-org-change", onOrg);
+      window.removeEventListener("usage-period-change", onPeriod);
+      window.removeEventListener("usage-year-change", onYear);
+      window.removeEventListener("usage-export-report", onExport);
+      window.removeEventListener("usage-nav-mounted", onNavMounted);
+    };
+  }, [level, period, projectId, viewedOrgId, year, years, exportReport]);
 
   const seg = (active: boolean) =>
     cn(
@@ -367,112 +463,51 @@ export function UsageView({ workspaces }: { workspaces: Workspace[] }) {
   const breakdowns = row
     ? (() => {
         const sort = (m: Record<string, UsageBreakdown>) =>
-          Object.entries(m).sort((a, b) => (b[1].cost_usd ?? 0) - (a[1].cost_usd ?? 0));
+          Object.entries(m || {}).sort((a, b) => (b[1].cost_usd ?? 0) - (a[1].cost_usd ?? 0));
         const out: { title: string; entries: [string, UsageBreakdown][]; split?: boolean }[] = [
           { title: "By model", entries: sort(row.by_model), split: true },
           { title: "By provider", entries: sort(row.by_provider) },
         ];
-        if (level === "project") out.push({ title: "By CLI", entries: sort(row.by_cli) });
-        if (level === "project") out.push({ title: "By member", entries: sort(row.by_member) });
-        if (level === "org") out.push({ title: "By project", entries: sort(row.by_project) });
-        if (level === "account") out.push({ title: "By org", entries: sort(row.by_org) });
+        if (level === "project") {
+          out.push({ title: "By CLI", entries: sort(row.by_cli) });
+          out.push({ title: "By member", entries: sort(row.by_member) });
+        }
+        if (level === "org") {
+          out.push({ title: "By project", entries: sort(row.by_project) });
+          const memberEntries = sort(row.by_member);
+          if (memberEntries.length > 0) {
+            out.push({ title: "By member", entries: memberEntries });
+          }
+        }
+        if (level === "user") {
+          out.push({ title: "By project", entries: sort(row.by_project) });
+          out.push({ title: "By CLI", entries: sort(row.by_cli) });
+          const orgEntries = sort(row.by_org);
+          if (orgEntries.length > 0) {
+            out.push({ title: "By org", entries: orgEntries });
+          }
+        }
+        if (level === "account") {
+          out.push({ title: "By project", entries: sort(row.by_project) });
+          out.push({ title: "By CLI", entries: sort(row.by_cli) });
+          const orgEntries = sort(row.by_org);
+          if (orgEntries.length > 0) {
+            out.push({ title: "By org", entries: orgEntries });
+          }
+          const memberEntries = sort(row.by_member);
+          if (memberEntries.length > 0) {
+            out.push({ title: "By member", entries: memberEntries });
+          }
+        }
         return out;
       })()
     : [];
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex flex-wrap items-center gap-3 border-b px-5 py-3">
-        <div className="flex items-center gap-2">
-          <BarChart3 className="h-4 w-4 text-primary" />
-          <h1 className="font-display text-base font-semibold">Usage</h1>
-        </div>
-
-        <div className="flex items-center gap-0.5 rounded-lg bg-muted p-0.5">
-          {(["project", "org", "account"] as UsageLevel[]).map((l) => (
-            <button key={l} className={seg(level === l)} onClick={() => setLevel(l)}>
-              {l[0].toUpperCase() + l.slice(1)}
-            </button>
-          ))}
-        </div>
-
-        {level === "project" && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs">
-                {label}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
-              {cloudWorkspaces.map((w) => (
-                <DropdownMenuItem
-                  key={w.id}
-                  onClick={() => setProjectId(w.project_id as string)}
-                >
-                  {w.name}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-
-        {level === "org" && orgs.length > 0 && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs">
-                {label}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
-              {orgs.map((o) => (
-                <DropdownMenuItem key={o.id} onClick={() => setOrgId(o.id)}>
-                  {o.name}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-
-        <div className="ml-auto flex items-center gap-2">
-          <div className="flex items-center gap-0.5 rounded-lg bg-muted p-0.5">
-            {(["month", "year", "all"] as Period[]).map((p) => (
-              <button key={p} className={seg(period === p)} onClick={() => setPeriod(p)}>
-                {p === "month" ? "This month" : p === "year" ? "This year" : "All time"}
-              </button>
-            ))}
-          </div>
-          {period === "year" && years.length > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs tabular-nums">
-                  {year}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {years.map((y) => (
-                  <DropdownMenuItem key={y} onClick={() => setYear(y)}>
-                    {y}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 px-2.5 text-xs"
-            onClick={exportReport}
-            disabled={!row}
-          >
-            <Download className="mr-1.5 h-3.5 w-3.5" />
-            Export
-          </Button>
-        </div>
-      </header>
-
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-4 p-5">
-          {loading && (
+          {loading && !row && (
             <div className="flex items-center justify-center py-16 text-muted-foreground">
               <Loader2 className="h-5 w-5 animate-spin" />
             </div>
@@ -486,7 +521,7 @@ export function UsageView({ workspaces }: { workspaces: Workspace[] }) {
             </p>
           )}
 
-          {!loading && selectedId && totals && (
+          {selectedId && totals && (
             <>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <Metric label="Spend" value={fmtUsd(totals.cost)} />
@@ -509,7 +544,24 @@ export function UsageView({ workspaces }: { workspaces: Workspace[] }) {
                 </div>
               )}
 
-              <div className="flex items-center justify-end gap-0.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => load(true)}
+                    disabled={isRefreshing || loading}
+                    title="Refresh and aggregate usage"
+                    className="flex h-7 w-7 items-center justify-center rounded-md border border-border/70 bg-card/60 text-muted-foreground hover:bg-hover hover:text-foreground transition-colors disabled:opacity-50"
+                  >
+                    <RefreshCw className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin")} strokeWidth={1.5} />
+                  </button>
+                  {lastUpdated && (
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      Last updated: {lastUpdated.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}
+                    </span>
+                  )}
+                </div>
+
                 <div className="flex items-center gap-0.5 rounded-lg bg-muted p-0.5">
                   {(["tokens", "cost"] as const).map((m) => (
                     <button key={m} className={seg(heatMode === m)} onClick={() => setHeatMode(m)}>

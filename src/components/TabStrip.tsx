@@ -1,3 +1,7 @@
+/**
+ * TabStrip Component — Workspace session tabs (CLI, chat, file, browser)
+ * Renders tab list, tab switches, and preset launches on the page background.
+ */
 import { MessageSquare, Plus, SquareTerminal, X, FileCode, Globe } from "lucide-react";
 import { CLI_PRESETS, type SessionTab } from "@/lib/api";
 import { PresetIcon } from "@/components/PresetIcon";
@@ -29,7 +33,7 @@ export function TabStrip({
   onOpen,
 }: TabStripProps) {
   return (
-    <div className="flex h-9 shrink-0 items-stretch border-b bg-sidebar">
+    <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-background">
       <div
         className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden no-scrollbar"
         onWheel={(e) => {
@@ -49,14 +53,14 @@ export function TabStrip({
               onClick={() => onActivate(tab.id)}
               onKeyDown={(e) => e.key === "Enter" && onActivate(tab.id)}
               className={cn(
-                "group relative flex max-w-44 cursor-pointer items-center gap-1.5 border-r px-3 text-xs",
+                "group relative flex max-w-44 cursor-pointer items-center gap-1.5 border-r border-border px-3 text-xs",
                 active
                   ? "bg-background text-foreground"
-                  : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+                  : "text-muted-foreground hover:bg-hover hover:text-foreground",
               )}
             >
               {active && (
-                <span className="absolute inset-x-0 top-0 h-[2px] bg-primary" />
+                <span className="absolute inset-x-0 bottom-0 h-[2px] bg-primary" />
               )}
               {tab.cli === "shell" ? (
                 <SquareTerminal
@@ -106,7 +110,7 @@ export function TabStrip({
         >
           <DropdownMenuTrigger asChild>
             <button
-              className="flex h-9 w-9 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+              className="flex h-9 w-9 shrink-0 items-center justify-center text-icon transition-colors hover:bg-hover hover:text-foreground"
               title="New tab"
             >
               <Plus className="h-4 w-4" />
@@ -114,21 +118,21 @@ export function TabStrip({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-44">
             {CLI_PRESETS.map((preset) => (
-              <DropdownMenuItem key={preset.id} onClick={() => onOpen(preset.id)}>
+              <DropdownMenuItem key={preset.id} onSelect={() => onOpen(preset.id)}>
                 <PresetIcon preset={preset.id} className="h-3.5 w-3.5" />
                 {preset.label}
               </DropdownMenuItem>
             ))}
-            <DropdownMenuItem onClick={() => onOpen("chat")}>
+            <DropdownMenuItem onSelect={() => onOpen("chat")}>
               <MessageSquare className="h-3.5 w-3.5" />
               Chat
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onOpen("browser")}>
+            <DropdownMenuItem onSelect={() => onOpen("browser")}>
               <Globe className="h-3.5 w-3.5" />
               Browser
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => onOpen("shell")}>
+            <DropdownMenuItem onSelect={() => onOpen("shell")}>
               <SquareTerminal className="h-3.5 w-3.5" />
               New terminal
             </DropdownMenuItem>
@@ -136,7 +140,7 @@ export function TabStrip({
         </DropdownMenu>
       </div>
 
-      <div className="group relative flex items-center gap-0.5 border-l px-1.5">
+      <div className="group relative flex items-center gap-0.5 border-l border-border px-1.5">
         <div className="pointer-events-none absolute right-[100%] mr-1 flex items-center gap-0.5 translate-x-2 opacity-0 transition-all duration-200 ease-in-out group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100">
           {CLI_PRESETS.map((preset) => {
             const isOpen = tabs.some((t) => t.cli === preset.id);
@@ -145,7 +149,7 @@ export function TabStrip({
                 <TooltipTrigger asChild>
                   <button
                     className={cn(
-                      "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-none hover:bg-accent",
+                      "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-none hover:bg-hover",
                       isOpen ? "opacity-100" : "opacity-50 hover:opacity-100",
                     )}
                     onClick={() => onOpen(preset.id)}
@@ -164,14 +168,14 @@ export function TabStrip({
           <TooltipTrigger asChild>
             <button
               className={cn(
-                "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-none hover:bg-accent",
+                "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-none hover:bg-hover",
                 tabs.some((t) => t.cli === "chat")
                   ? "opacity-100"
                   : "opacity-50 hover:opacity-100",
               )}
               onClick={() => onOpen("chat")}
             >
-              <MessageSquare className="h-3.5 w-3.5" />
+              <MessageSquare className="h-3.5 w-3.5 text-icon" />
             </button>
           </TooltipTrigger>
           <TooltipContent>
@@ -181,7 +185,7 @@ export function TabStrip({
         <Tooltip>
           <TooltipTrigger asChild>
             <button
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-none hover:bg-accent"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-icon transition-none hover:bg-hover hover:text-foreground"
               onClick={() => onOpen("shell")}
             >
               <SquareTerminal className="h-3.5 w-3.5" />

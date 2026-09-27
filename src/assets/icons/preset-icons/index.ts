@@ -17,6 +17,12 @@ import opencodeWhiteIcon from "./opencode-white.svg";
 import piIcon from "./pi.svg";
 import piWhiteIcon from "./pi-white.svg";
 import supersetIcon from "./superset.svg";
+import warpIcon from "./warp.svg";
+import warpWhiteIcon from "./warp-white.svg";
+import xaiIcon from "./xai.svg";
+import xaiWhiteIcon from "./xai-white.svg";
+import grokIcon from "./grok.svg";
+import grokWhiteIcon from "./grok-white.svg";
 
 export interface PresetIconSet {
 	light: string;
@@ -29,13 +35,20 @@ export const PRESET_ICONS: Record<string, PresetIconSet> = {
 	claude: { light: claudeIcon, dark: claudeIcon },
 	codex: { light: codexIcon, dark: codexWhiteIcon },
 	copilot: { light: copilotIcon, dark: copilotWhiteIcon },
-	gemini: { light: geminiIcon, dark: geminiIcon },
-	pi: { light: piIcon, dark: piWhiteIcon },
-	superset: { light: supersetIcon, dark: supersetIcon },
+	cursor: { light: cursorAgentIcon, dark: cursorAgentIcon },
 	"cursor-agent": { light: cursorAgentIcon, dark: cursorAgentIcon },
 	droid: { light: droidIcon, dark: droidWhiteIcon },
+	gemini: { light: geminiIcon, dark: geminiIcon },
+	grok: { light: grokIcon, dark: grokWhiteIcon },
+	"grok-build": { light: grokIcon, dark: grokWhiteIcon },
 	mastracode: { light: mastracodeIcon, dark: mastracodeWhiteIcon },
 	opencode: { light: opencodeIcon, dark: opencodeWhiteIcon },
+	pi: { light: piIcon, dark: piWhiteIcon },
+	superset: { light: supersetIcon, dark: supersetIcon },
+	warp: { light: warpIcon, dark: warpWhiteIcon },
+	"warp-agent": { light: warpIcon, dark: warpWhiteIcon },
+	xai: { light: grokIcon, dark: grokWhiteIcon },
+	"x-ai": { light: grokIcon, dark: grokWhiteIcon },
 };
 
 export function getPresetIcon(
@@ -61,6 +74,8 @@ export {
 	droidIcon,
 	droidWhiteIcon,
 	geminiIcon,
+	grokIcon,
+	grokWhiteIcon,
 	mastracodeIcon,
 	mastracodeWhiteIcon,
 	opencodeIcon,
@@ -68,4 +83,9 @@ export {
 	piIcon,
 	piWhiteIcon,
 	supersetIcon,
+	warpIcon,
+	warpWhiteIcon,
+	xaiIcon,
+	xaiWhiteIcon,
 };
+

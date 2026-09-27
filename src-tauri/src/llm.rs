@@ -124,7 +124,7 @@ pub async fn ensure_workspace_project(
 
     {
         let db = app.state::<Db>();
-        db.set_workspace_project_id(workspace_id, &project_id)?;
+        db.set_workspace_cloud_link(workspace_id, &project_id, &cloud_org_id)?;
         let _ = db.set_project_org(&project_id, &cloud_org_id, &now_iso());
     }
     crate::sync_manager::sync_on_update(&app, "project", &project_id).await;

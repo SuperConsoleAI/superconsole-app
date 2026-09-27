@@ -12,6 +12,7 @@ mod files;
 mod git;
 mod hooks;
 mod llm;
+mod localdb;
 mod mcp;
 mod mcp_server;
 mod memory;
@@ -119,6 +120,7 @@ async fn start_session(
     rows: u16,
     cols: u16,
     resume_session_id: Option<String>,
+    is_dark: Option<bool>,
 ) -> Result<SessionInfo, String> {
     let (ws_path, env_files, account_env_files, account_env_vars, was_active) = {
         let db = app.state::<Db>();
@@ -135,7 +137,7 @@ async fn start_session(
     };
     // Refresh the SuperConsole MCP config (fresh token, pre-approved) so the
     // launching CLI can reach skills/memory/wiki/connector tools.
-    if cli == "claude" || cli == "droid" {
+    if cli == "claude" || cli == "droid" || cli == "warp" || cli == "warp-agent" || cli == "cursor" || cli == "cursor-agent" || cli == "opencode" || cli == "grok" || cli == "grok-build" || cli == "xai" || cli == "x-ai" {
         if let Some(ctx) = mcp::native_ctx(&app, workspace_id) {
             let mcps = connectors::workspace_connector_mcps(&app, workspace_id);
             let _ = mcp::write_mcp_config(&ctx, &mcps);
@@ -174,8 +176,9 @@ async fn start_session(
         &env,
         &resolved.providers,
         resume_session_id.as_deref(),
+        is_dark,
     )?;
-    if !was_active {
+    if !was_active && cli != "shell" && !cli.is_empty() {
         let db = app.state::<Db>();
         let _ = db.log_session(workspace_id, &session_id, &cli, None, None);
     }
@@ -195,16 +198,24 @@ fn write_session(
 /// Turso shared totals). `level` is project|org|account.
 #[tauri::command]
 fn get_usage(app: AppHandle, level: String, id: String) -> Result<serde_json::Value, String> {
-    let table = match level.as_str() {
-        "project" => "project_usage",
-        "org" => "org_usage",
-        "account" => "account_usage",
-        _ => return Err("invalid usage level".into()),
-    };
+    if !matches!(level.as_str(), "project" | "org" | "user" | "account") {
+        return Err("invalid usage level".into());
+    }
     let db = app.state::<Db>();
-    Ok(db
-        .get_usage_row(table, &id)
-        .unwrap_or_else(|| crate::usage::zero_row(&id)))
+    Ok(crate::usage::recompute_local_usage(&db, &level, &id))
+}
+
+#[tauri::command]
+fn get_model_rates(model: Option<String>, provider: Option<String>) -> Result<serde_json::Value, String> {
+    let m = model.as_deref().unwrap_or("");
+    let p = provider.as_deref().unwrap_or("");
+    let (prompt, cached, completion, reasoning) = crate::usage::pricing_for(m, p);
+    Ok(serde_json::json!({
+        "promptPer1M": prompt,
+        "cachedPer1M": cached,
+        "completionPer1M": completion,
+        "reasoningPer1M": reasoning
+    }))
 }
 
 #[tauri::command]
@@ -1155,7 +1166,7 @@ async fn sync_org_cache(app: AppHandle, org_id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn eval_webview(app: AppHandle, label: String, script: String) -> Result<(), String> {
-    if let Some(webview) = app.get_webview(&label) {
+    if let Some(webview) = app.get_webview_window(&label) {
         webview.eval(&script).map_err(|e| e.to_string())
     } else {
         Err(format!("Webview {} not found", label))
@@ -1164,7 +1175,7 @@ fn eval_webview(app: AppHandle, label: String, script: String) -> Result<(), Str
 
 #[tauri::command]
 fn open_webview_devtools(app: AppHandle, label: String) -> Result<(), String> {
-    if let Some(_webview) = app.get_webview(&label) {
+    if let Some(_webview) = app.get_webview_window(&label) {
         #[cfg(debug_assertions)]
         _webview.open_devtools();
         #[cfg(not(debug_assertions))]
@@ -1233,15 +1244,20 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let db = Db::init(data_dir).map_err(|e| std::io::Error::other(e))?;
+            let auth_state = AuthState::load_from_db(&db);
             app.manage(db);
             app.manage(SessionManager::default());
             app.manage(chat::ChatCancel::default());
-            app.manage(AuthState::load_from_keyring());
+            app.manage(auth_state);
             app.manage(remote::TelegramState::default());
             scheduler::spawn(app.handle().clone());
             sync_manager::spawn(app.handle().clone());
             remote::spawn_http(app.handle().clone());
             remote::spawn_telegram(app.handle().clone());
+            let handle_pricing = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                crate::usage::sync_openrouter_pricing(&handle_pricing).await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1252,6 +1268,7 @@ pub fn run() {
             start_session,
             write_session,
             get_usage,
+            get_model_rates,
             resize_session,
             stop_session,
             session_active,
@@ -1443,6 +1460,10 @@ pub fn run() {
             plugins::submit_command_to_cloud,
             eval_webview,
             open_webview_devtools,
+            // LocalDB Studio commands
+            localdb::local_db_list_tables,
+            localdb::local_db_get_table_schema,
+            localdb::local_db_get_table_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

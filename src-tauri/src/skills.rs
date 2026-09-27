@@ -12,7 +12,7 @@
 // `/<name>` slash command whose body is fetched on demand (the skill_view
 // pattern), never preloaded.
 
-use crate::cloud::{self, cell_opt, cell_text, rows};
+use crate::cloud::{self};
 use crate::db::Db;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -1175,6 +1175,7 @@ pub fn active_skills(app: &AppHandle, workspace_id: i64) -> Vec<(String, String)
 
 // --- Turso metadata sync (best-effort; never blocks the UI on the network) ---
 
+#[allow(dead_code)]
 pub async fn ensure_skill_index_table(
     client: &reqwest::Client,
     cfg: &cloud::TursoConfig,
@@ -1231,236 +1232,64 @@ pub async fn ensure_skill_index_table(
 
 // Mirrors connectors.rs: write to Turso, then sync_on_update to refresh the
 // local cache. No-op (offline-safe) when the workspace has no cloud project.
+#[allow(dead_code)]
 pub async fn push_skill_to_cloud(
-    app: &AppHandle,
-    project_id: Option<&str>,
-    skill_name: &str,
-    tags: &[String],
-    scope: &str,
-    active: bool,
-    skill_catalog_id: Option<&str>,
-    author: &str,
+    _app: &AppHandle,
+    _project_id: Option<&str>,
+    _skill_name: &str,
+    _tags: &[String],
+    _scope: &str,
+    _active: bool,
+    _skill_catalog_id: Option<&str>,
+    _author: &str,
 ) {
-    let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else {
-        return;
-    };
-    let client = reqwest::Client::new();
-    if ensure_skill_index_table(&client, &cfg).await.is_err() {
-        return;
-    }
-    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let result = cloud::turso_execute(
-        &client,
-        &cfg,
-        "INSERT INTO project_skill_index (id, project_id, skill_name, tags, scope, active, skill_catalog_id, author, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
-         ON CONFLICT(project_id, skill_name) DO UPDATE SET \
-           tags = excluded.tags, scope = excluded.scope, active = excluded.active, skill_catalog_id = excluded.skill_catalog_id, author = excluded.author, \
-           updated_at = excluded.updated_at",
-        vec![
-            Some(Ulid::new().to_string()),
-            Some(project_id.to_string()),
-            Some(skill_name.to_string()),
-            Some(tags.join(",")),
-            Some(scope.to_string()),
-            Some(if active { "1".into() } else { "0".into() }),
-            skill_catalog_id.map(|s| s.to_string()),
-            Some(author.to_string()),
-            Some(ts),
-        ],
-    )
-    .await;
-    if result.is_ok() {
-        crate::sync_manager::sync_on_update(app, "project", project_id).await;
-    }
+    // Skills are stored 100% locally on user machine (no cloud index table sync)
 }
 
-async fn delete_skill_from_cloud(app: &AppHandle, project_id: Option<&str>, skill_name: &str) {
-    let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else {
-        return;
-    };
-    let client = reqwest::Client::new();
-    if ensure_skill_index_table(&client, &cfg).await.is_err() {
-        return;
-    }
-    let result = cloud::turso_execute(
-        &client,
-        &cfg,
-        "DELETE FROM project_skill_index WHERE project_id = ? AND skill_name = ?",
-        vec![Some(project_id.to_string()), Some(skill_name.to_string())],
-    )
-    .await;
-    if result.is_ok() {
-        crate::sync_manager::sync_on_update(app, "project", project_id).await;
-    }
+#[allow(dead_code)]
+async fn delete_skill_from_cloud(_app: &AppHandle, _project_id: Option<&str>, _skill_name: &str) {
+    // Skills are stored 100% locally on user machine (no cloud index table sync)
 }
 
-/// Read cloud skill metadata for a project (used by the sync layer to confirm
-/// which skills should exist). Returns `(skill_name, tags, scope, active)`.
+/// Read cloud skill metadata for a project. Returns empty list as skills are local-only.
+#[allow(dead_code)]
 pub async fn fetch_cloud_skills(
-    client: &reqwest::Client,
-    cfg: &cloud::TursoConfig,
-    project_id: &str,
+    _client: &reqwest::Client,
+    _cfg: &cloud::TursoConfig,
+    _project_id: &str,
 ) -> Vec<(String, String, String, bool)> {
-    if ensure_skill_index_table(client, cfg).await.is_err() {
-        return Vec::new();
-    }
-    let Ok(result) = cloud::turso_execute(
-        client,
-        cfg,
-        "SELECT skill_name, tags, scope, active FROM project_skill_index WHERE project_id = ?",
-        vec![Some(project_id.to_string())],
-    )
-    .await
-    else {
-        return Vec::new();
-    };
-    rows(&result)
-        .iter()
-        .map(|row| {
-            (
-                cell_text(row, 0),
-                cell_opt(row, 1).unwrap_or_default(),
-                cell_opt(row, 2).unwrap_or_else(|| "project".into()),
-                cell_opt(row, 3).map(|v| v == "1").unwrap_or(true),
-            )
-        })
-        .collect()
+    Vec::new()
 }
 
 // --- org references (Turso metadata) ---
 
+#[allow(dead_code)]
 pub async fn ensure_org_skill_table(
-    client: &reqwest::Client,
-    cfg: &cloud::TursoConfig,
+    _client: &reqwest::Client,
+    _cfg: &cloud::TursoConfig,
 ) -> Result<(), String> {
-    cloud::turso_execute(
-        client,
-        cfg,
-        "CREATE TABLE IF NOT EXISTS org_skill_index (\
-            id TEXT PRIMARY KEY NOT NULL, org_id TEXT NOT NULL, skill_name TEXT NOT NULL, \
-            tags TEXT, skill_catalog_id TEXT, author TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
-        vec![],
-    )
-    .await?;
-    cloud::turso_execute(
-        client,
-        cfg,
-        "CREATE UNIQUE INDEX IF NOT EXISTS org_skill_index_unq \
-         ON org_skill_index (org_id, skill_name)",
-        vec![],
-    )
-    .await?;
-    let _ = cloud::turso_execute(
-        client,
-        cfg,
-        "ALTER TABLE org_skill_index ADD COLUMN skill_catalog_id TEXT",
-        vec![],
-    )
-    .await;
-    let _ = cloud::turso_execute(
-        client,
-        cfg,
-        "ALTER TABLE org_skill_index ADD COLUMN author TEXT NOT NULL DEFAULT ''",
-        vec![],
-    )
-    .await;
-    let _ = cloud::turso_execute(
-        client,
-        cfg,
-        "ALTER TABLE org_skill_index ADD COLUMN skill_catalog_id TEXT",
-        vec![],
-    )
-    .await;
-    let _ = cloud::turso_execute(
-        client,
-        cfg,
-        "ALTER TABLE org_skill_index ADD COLUMN author TEXT NOT NULL DEFAULT ''",
-        vec![],
-    )
-    .await;
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn push_org_skill_to_cloud(
-    app: &AppHandle,
-    org_id: &str,
-    skill_name: &str,
-    tags: &[String],
-    attach: bool,
+    _app: &AppHandle,
+    _org_id: &str,
+    _skill_name: &str,
+    _tags: &[String],
+    _attach: bool,
 ) {
-    let Ok(cfg) = cloud::turso_config() else {
-        return;
-    };
-    let client = reqwest::Client::new();
-    if ensure_org_skill_table(&client, &cfg).await.is_err() {
-        return;
-    }
-    let result = if attach {
-        let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        cloud::turso_execute(
-            &client,
-            &cfg,
-            "INSERT INTO org_skill_index (id, org_id, skill_name, tags, updated_at) \
-             VALUES (?, ?, ?, ?, ?) \
-             ON CONFLICT(org_id, skill_name) DO UPDATE SET \
-               tags = excluded.tags, updated_at = excluded.updated_at",
-            vec![
-                Some(Ulid::new().to_string()),
-                Some(org_id.to_string()),
-                Some(skill_name.to_string()),
-                Some(tags.join(",")),
-                Some(ts),
-            ],
-        )
-        .await
-    } else {
-        cloud::turso_execute(
-            &client,
-            &cfg,
-            "DELETE FROM org_skill_index WHERE org_id = ? AND skill_name = ?",
-            vec![Some(org_id.to_string()), Some(skill_name.to_string())],
-        )
-        .await
-    };
-    if result.is_ok() {
-        crate::sync_manager::sync_on_update(app, "org", org_id).await;
-    }
+    // Skills are stored 100% locally on user machine (no cloud index table sync)
 }
 
 /// Read org skill references from Turso (used by the sync layer).
-/// Returns `(skill_name, tags)`.
+#[allow(dead_code)]
 pub async fn fetch_cloud_org_skills(
-    client: &reqwest::Client,
-    cfg: &cloud::TursoConfig,
-    org_id: &str,
+    _client: &reqwest::Client,
+    _cfg: &cloud::TursoConfig,
+    _org_id: &str,
 ) -> Vec<(String, String, Option<String>, String)> {
-    if ensure_org_skill_table(client, cfg).await.is_err() {
-        return Vec::new();
-    }
-    let Ok(result) = cloud::turso_execute(
-        client,
-        cfg,
-        "SELECT skill_name, tags, skill_catalog_id, author FROM org_skill_index WHERE org_id = ?",
-        vec![Some(org_id.to_string())],
-    )
-    .await
-    else {
-        return Vec::new();
-    };
-    rows(&result)
-        .iter()
-        .map(|row| {
-            (
-                cell_text(row, 0),
-                cell_opt(row, 1).unwrap_or_default(),
-                cell_opt(row, 2),
-                cell_text(row, 3),
-            )
-        })
-        .collect()
+    Vec::new()
 }
 
 // --- built-in library (ships with the app) ---

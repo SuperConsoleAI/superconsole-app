@@ -1,6 +1,12 @@
+/**
+ * TerminalPane Component — Interactive PTY terminal emulator & session runner
+ * Renders xterm.js instance bound to local pty via Tauri IPC events.
+ * Fully theme-reactive via design-system computed tokens without hardcoded hex.
+ */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { BookOpen, Bot, ClipboardList, Paperclip, Plug, Plus, RefreshCw, ScrollText, TextCursorInput, TerminalSquare } from "lucide-react";
@@ -18,6 +24,7 @@ import {
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { StatusFooter } from "@/components/StatusFooter";
+import { useTheme } from "@/components/theme-provider";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,6 +35,56 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+
+const getTerminalTheme = (isDark: boolean) => {
+  return isDark
+    ? {
+        background: "#151515",
+        foreground: "#F0EFEB",
+        cursor: "#E3825E",
+        cursorAccent: "#151515",
+        selectionBackground: "rgba(227, 130, 94, 0.35)",
+        black: "#151515",
+        red: "#ef4444",
+        green: "#22c55e",
+        yellow: "#f59e0b",
+        blue: "#3887e5",
+        magenta: "#c084fc",
+        cyan: "#38bdf8",
+        white: "#d6d3d1",
+        brightBlack: "#898781",
+        brightRed: "#f87171",
+        brightGreen: "#4ade80",
+        brightYellow: "#fbbf24",
+        brightBlue: "#60a5fa",
+        brightMagenta: "#e879f9",
+        brightCyan: "#67e8f9",
+        brightWhite: "#ffffff",
+      }
+    : {
+        background: "#FAF9F5",
+        foreground: "#14161A",
+        cursor: "#D97757",
+        cursorAccent: "#FAF9F5",
+        selectionBackground: "rgba(217, 119, 87, 0.25)",
+        black: "#14161A",
+        red: "#dc2626",
+        green: "#16a34a",
+        yellow: "#d97706",
+        blue: "#2563eb",
+        magenta: "#9333ea",
+        cyan: "#0891b2",
+        white: "#14161A",
+        brightBlack: "#5E5B54",
+        brightRed: "#b91c1c",
+        brightGreen: "#15803d",
+        brightYellow: "#b45309",
+        brightBlue: "#1d4ed8",
+        brightMagenta: "#7e22ce",
+        brightCyan: "#0e7490",
+        brightWhite: "#14161A",
+      };
+};
 
 interface TerminalPaneProps {
   workspace: Workspace;
@@ -90,7 +147,7 @@ export function TerminalPane({
   const ctxLoadedRef = useRef(false);
 
   // Rich-input slash autocomplete
-  const [slashSuggestions, setSlashSuggestions] = useState<Array<{ value: string; label: string; color: string }>>([]);
+  const [slashSuggestions, setSlashSuggestions] = useState<Array<{ value: string; label: string; color?: string }>>([]);
   const [slashToken, setSlashToken]   = useState("");
   const [slashSelected, setSlashSelected] = useState(0);
 
@@ -111,12 +168,12 @@ export function TerminalPane({
 
   /** All slash items — memoized so both onChange and the effect see the same fresh list. */
   const allSlashItems = useMemo(() => [
-    ...skills.filter((s) => s.active).map((s) => ({ value: `/skill:${s.name}`, label: `/skill:${s.name}`, color: "#c9944a" })),
-    ...ctxFiles.map((f) => ({ value: `/context:${f.slug}`, label: `/context:${f.slug}`, color: "#7b9bc4" })),
-    ...commands.map((c) => ({ value: c.slash, label: c.slash, color: "#8aa05f" })),
-    ...connectors.map((c) => ({ value: `/connector:${c.service}`, label: `/connector:${c.service}`, color: "#b07ba8" })),
-    ...agents.map((a) => ({ value: `/agent:${a.name}`, label: `/agent:${a.name}`, color: "#7fa8a0" })),
-    ...sessionLogs.map((s) => ({ value: `/session:${s.id}`, label: `/session:${s.id}`, color: "#5e5b54" })),
+    ...skills.filter((s) => s.active).map((s) => ({ value: `/skill:${s.name}`, label: `/skill:${s.name}` })),
+    ...ctxFiles.map((f) => ({ value: `/context:${f.slug}`, label: `/context:${f.slug}` })),
+    ...commands.map((c) => ({ value: c.slash, label: c.slash })),
+    ...connectors.map((c) => ({ value: `/connector:${c.service}`, label: `/connector:${c.service}` })),
+    ...agents.map((a) => ({ value: `/agent:${a.name}`, label: `/agent:${a.name}` })),
+    ...sessionLogs.map((s) => ({ value: `/session:${s.id}`, label: `/session:${s.id}` })),
   ], [skills, ctxFiles, commands, connectors, agents, sessionLogs]);
 
   // Recompute suggestions whenever data arrives from ensureCtx (all async).
@@ -214,6 +271,7 @@ export function TerminalPane({
         term.rows,
         term.cols,
         resumeId,
+        isDark,
       );
       onSessionInfo(sessionId, info);
       onSessionState(sessionId, true);
@@ -229,42 +287,62 @@ export function TerminalPane({
     }
   };
 
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+  const isDarkRef = useRef(isDark);
+
+  useEffect(() => {
+    isDarkRef.current = isDark;
+    if (!termRef.current) return;
+    termRef.current.options.theme = getTerminalTheme(isDark);
+  }, [isDark]);
+
   useEffect(() => {
     if (!containerRef.current) return;
 
     const term = new Terminal({
-      fontFamily: '"JetBrainsMono Nerd Font", ui-monospace, SFMono-Regular, monospace',
+      fontFamily: '"JetBrainsMono Nerd Font", "JetBrains Mono Variable", "JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
       fontSize: 13,
       lineHeight: 1.0,
       cursorBlink: false,
       allowProposedApi: true,
       scrollback: 10000,
-      theme: {
-        background: "#1f1e1b",
-        foreground: "#f0eee7",
-        cursor: "#d97757",
-        cursorAccent: "#1f1e1b",
-        selectionBackground: "#d9775744",
-        black: "#1f1e1b",
-        red: "#e0705d",
-        green: "#8aa05f",
-        yellow: "#c9944a",
-        blue: "#7b9bc4",
-        magenta: "#b07ba8",
-        cyan: "#7fa8a0",
-        white: "#f0eee7",
-        brightBlack: "#5e5b54",
-        brightRed: "#ef8a76",
-        brightGreen: "#a3bd74",
-        brightYellow: "#e0ab5e",
-        brightBlue: "#94b4dd",
-        brightMagenta: "#cc94c2",
-        brightCyan: "#97c2ba",
-        brightWhite: "#fffdf7",
-      },
+      theme: getTerminalTheme(isDark),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    const unicode11 = new Unicode11Addon();
+    term.loadAddon(unicode11);
+    term.unicode.activeVersion = "11";
+
+    // Handle OSC 10 (foreground color query) and OSC 11 (background color query)
+    // so CLIs (Codex, Droid, etc.) correctly detect light vs dark mode
+    term.parser.registerOscHandler(10, (data) => {
+      if (data === "?") {
+        const t = getTerminalTheme(isDarkRef.current);
+        const hex = (t.foreground ?? (isDarkRef.current ? "#F0EFEB" : "#14161A")).replace("#", "");
+        const r = hex.slice(0, 2);
+        const g = hex.slice(2, 4);
+        const b = hex.slice(4, 6);
+        term.input(`\x1b]10;rgb:${r}${r}/${g}${g}/${b}${b}\x07`);
+        return true;
+      }
+      return false;
+    });
+
+    term.parser.registerOscHandler(11, (data) => {
+      if (data === "?") {
+        const t = getTerminalTheme(isDarkRef.current);
+        const hex = (t.background ?? (isDarkRef.current ? "#151515" : "#FAF9F5")).replace("#", "");
+        const r = hex.slice(0, 2);
+        const g = hex.slice(2, 4);
+        const b = hex.slice(4, 6);
+        term.input(`\x1b]11;rgb:${r}${r}/${g}${g}/${b}${b}\x07`);
+        return true;
+      }
+      return false;
+    });
+
     term.open(containerRef.current);
     termRef.current = term;
     fitRef.current = fit;
@@ -320,25 +398,33 @@ export function TerminalPane({
     });
     resizeObserver.observe(containerRef.current);
 
-    // xterm measures the character cell on open, so wait for the terminal font
-    // to load before fitting/starting — otherwise it sizes the grid with the
-    // fallback font's metrics and the CLI's prompt misaligns once the font swaps.
+    // Start terminal session instantly without waiting for async font callbacks
     const start = () => {
-      requestAnimationFrame(() => {
+      try {
+        fit.fit();
+      } catch {
+        /* not visible yet */
+      }
+      if (!startedRef.current) {
+        startedRef.current = true;
+        startSession();
+      } else {
+        api.resizeSession(sessionId, term.rows, term.cols).catch(() => {});
+      }
+    };
+
+    start();
+
+    if (typeof document !== "undefined" && document.fonts?.ready) {
+      document.fonts.ready.then(() => {
         try {
           fit.fit();
-        } catch {
-          /* not visible yet */
-        }
-        if (!startedRef.current) {
-          startedRef.current = true;
-          startSession();
-        } else {
-          api.resizeSession(sessionId, term.rows, term.cols).catch(() => {});
-        }
+          if (termRef.current) {
+            api.resizeSession(sessionId, termRef.current.rows, termRef.current.cols).catch(() => {});
+          }
+        } catch {}
       });
-    };
-    document.fonts.ready.then(start, start);
+    }
 
     return () => {
       dataDisposable.dispose();
@@ -397,12 +483,12 @@ export function TerminalPane({
         </div>
       )}
 
-      <div className="group/pane relative min-h-0 flex-1 bg-[#1f1e1b]">
+      <div className="group/pane relative min-h-0 flex-1 bg-background">
         <div ref={containerRef} className="absolute inset-0 px-3 py-2" />
         
         <div className="absolute right-2 top-1.5 z-10 flex items-center gap-0 opacity-100">
           <button
-            className="flex h-5 w-5 items-center justify-center text-[#5e5b54] transition-colors"
+            className="flex h-5 w-5 items-center justify-center text-icon transition-colors hover:text-foreground"
             onClick={() => onSplit()}
             title={`Split ${suggestedSplitDir}`}
           >
@@ -420,7 +506,7 @@ export function TerminalPane({
           </button>
           {!isOnlyPane && (
             <button
-              className="flex h-5 w-5 items-center justify-center text-[#5e5b54] transition-colors"
+              className="flex h-5 w-5 items-center justify-center text-icon transition-colors hover:text-foreground"
               onClick={() => onClose?.()}
               title="Close pane"
             >
@@ -434,8 +520,8 @@ export function TerminalPane({
 
         {exited && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 backdrop-blur-[2px]">
-            <div className="flex flex-col items-center gap-3 rounded-xl border border-white/10 bg-[#2b2a27] px-8 py-6 shadow-2xl">
-              <p className="text-sm text-[#f0eee7]/70">Session ended</p>
+            <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card px-8 py-6 shadow-2xl">
+              <p className="text-sm text-foreground/70">Session ended</p>
               <Button size="sm" onClick={startSession}>
                 <RefreshCw className="h-3.5 w-3.5" />
                 Restart {label}
@@ -449,19 +535,19 @@ export function TerminalPane({
         <div className="relative z-10">
           {/* Slash autocomplete overlay for rich input */}
           {slashSuggestions.length > 0 && (
-            <div className="absolute bottom-full left-0 right-0 max-h-52 overflow-y-auto border border-white/15 bg-[#1f1e1b] shadow-xl">
+            <div className="absolute bottom-full left-0 right-0 max-h-52 overflow-y-auto border border-border bg-popover text-popover-foreground shadow-xl">
               {slashSuggestions.map((item, i) => (
                 <button
                   key={item.value}
-                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs ${
+                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors ${
                     i === slashSelected
-                      ? "bg-white/12 text-[#f0eee7]"
-                      : "text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7]"
+                      ? "bg-accent text-accent-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   }`}
                   onMouseEnter={() => setSlashSelected(i)}
                   onMouseDown={(e) => { e.preventDefault(); insertRichToken(item); }}
                 >
-                  <span style={{ color: item.color }}>{item.label}</span>
+                  <span>{item.label}</span>
                 </button>
               ))}
             </div>
@@ -549,48 +635,48 @@ export function TerminalPane({
               <DropdownMenuContent
                 side="top"
                 align="start"
-                className="w-44 rounded border border-white/15 bg-[#1f1e1b] p-0.5 text-[#f0eee7] shadow-xl"
+                className="w-44 rounded border border-border bg-popover p-0.5 text-popover-foreground shadow-xl"
               >
                 {/* Attach file */}
                 <DropdownMenuItem
                   onClick={attachPath}
-                  className="gap-2 rounded px-2 py-1.5 text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] font-mono"
+                  className="gap-2 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground font-mono"
                 >
                   <Paperclip className="h-3.5 w-3.5 shrink-0 opacity-50" />
                   Attach file
                 </DropdownMenuItem>
 
-                <DropdownMenuSeparator className="my-0.5 bg-white/10" />
+                <DropdownMenuSeparator className="my-0.5 bg-border" />
 
                 {/* Skills sub-menu */}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger
-                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent"
                   >
                     <ScrollText className="h-3.5 w-3.5 shrink-0 opacity-50" />
-                    <span className="text-[#c9944a]">Skills</span>
-                    <span className="ml-auto text-[10px] text-[#5e5b54]">{skills.filter(s => s.active).length}</span>
+                    <span className="text-foreground">Skills</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{skills.filter(s => s.active).length}</span>
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent
-                    className="max-h-64 w-52 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                    className="max-h-64 w-52 overflow-y-auto rounded border border-border bg-popover p-0.5 shadow-xl"
                   >
                     {skills.filter((s) => s.active).length === 0 ? (
-                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No active skills</div>
+                      <div className="px-3 py-2 text-[11px] font-mono text-muted-foreground">No active skills</div>
                     ) : (
                       skills.filter((s) => s.active).map((s) => (
                         <DropdownMenuItem
                           key={s.name}
                           onClick={() => addToken(`/skill:${s.name}`)}
-                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                         >
                           {s.name}
                         </DropdownMenuItem>
                       ))
                     )}
-                    <DropdownMenuSeparator className="my-0.5 bg-white/10" />
+                    <DropdownMenuSeparator className="my-0.5 bg-border" />
                     <DropdownMenuItem
                       onClick={() => goSettingsTo("project", "Skills")}
-                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-[#5e5b54] hover:bg-white/8 hover:text-[#f0eee7]"
+                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                     >
                       <Plus className="h-3 w-3" /> Add skill
                     </DropdownMenuItem>
@@ -600,32 +686,32 @@ export function TerminalPane({
                 {/* Agents sub-menu */}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger
-                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent"
                   >
                     <Bot className="h-3.5 w-3.5 shrink-0 opacity-50" />
-                    <span className="text-[#7fa8a0]">Agents</span>
-                    <span className="ml-auto text-[10px] text-[#5e5b54]">{agents.length}</span>
+                    <span className="text-foreground">Agents</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{agents.length}</span>
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent
-                    className="max-h-64 w-52 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                    className="max-h-64 w-52 overflow-y-auto rounded border border-border bg-popover p-0.5 shadow-xl"
                   >
                     {agents.length === 0 ? (
-                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No agents</div>
+                      <div className="px-3 py-2 text-[11px] font-mono text-muted-foreground">No agents</div>
                     ) : (
                       agents.map((a) => (
                         <DropdownMenuItem
                           key={a.name}
                           onClick={() => addToken(`/agent:${a.name}`)}
-                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                         >
                           {a.name}
                         </DropdownMenuItem>
                       ))
                     )}
-                    <DropdownMenuSeparator className="my-0.5 bg-white/10" />
+                    <DropdownMenuSeparator className="my-0.5 bg-border" />
                     <DropdownMenuItem
                       onClick={() => router.navigate({ to: "/agents" })}
-                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-[#5e5b54] hover:bg-white/8 hover:text-[#f0eee7]"
+                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                     >
                       <Plus className="h-3 w-3" /> Add agent
                     </DropdownMenuItem>
@@ -635,32 +721,32 @@ export function TerminalPane({
                 {/* Context sub-menu */}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger
-                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent"
                   >
                     <BookOpen className="h-3.5 w-3.5 shrink-0 opacity-50" />
-                    <span className="text-[#7b9bc4]">Context</span>
-                    <span className="ml-auto text-[10px] text-[#5e5b54]">{ctxFiles.length}</span>
+                    <span className="text-foreground">Context</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{ctxFiles.length}</span>
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent
-                    className="max-h-64 w-52 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                    className="max-h-64 w-52 overflow-y-auto rounded border border-border bg-popover p-0.5 shadow-xl"
                   >
                     {ctxFiles.length === 0 ? (
-                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No context files</div>
+                      <div className="px-3 py-2 text-[11px] font-mono text-muted-foreground">No context files</div>
                     ) : (
                       ctxFiles.map((f) => (
                         <DropdownMenuItem
                           key={f.slug}
                           onClick={() => addToken(`/context:${f.slug}`)}
-                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                         >
                           {f.slug}
                         </DropdownMenuItem>
                       ))
                     )}
-                    <DropdownMenuSeparator className="my-0.5 bg-white/10" />
+                    <DropdownMenuSeparator className="my-0.5 bg-border" />
                     <DropdownMenuItem
                       onClick={() => goSettingsTo("project", "Context")}
-                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-[#5e5b54] hover:bg-white/8 hover:text-[#f0eee7]"
+                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                     >
                       <Plus className="h-3 w-3" /> Add context file
                     </DropdownMenuItem>
@@ -670,23 +756,23 @@ export function TerminalPane({
                 {/* Commands sub-menu */}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger
-                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent"
                   >
                     <TerminalSquare className="h-3.5 w-3.5 shrink-0 opacity-50" />
-                    <span className="text-[#8aa05f]">Commands</span>
-                    <span className="ml-auto text-[10px] text-[#5e5b54]">{commands.length}</span>
+                    <span className="text-foreground">Commands</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{commands.length}</span>
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent
-                    className="max-h-64 w-52 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                    className="max-h-64 w-52 overflow-y-auto rounded border border-border bg-popover p-0.5 shadow-xl"
                   >
                     {commands.length === 0 ? (
-                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No commands</div>
+                      <div className="px-3 py-2 text-[11px] font-mono text-muted-foreground">No commands</div>
                     ) : (
                       commands.map((c) => (
                         <DropdownMenuItem
                           key={c.file_path}
                           onClick={() => addToken(c.slash)}
-                          className="rounded px-2 py-1.5 font-mono text-xs text-[#8aa05f] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                          className="rounded px-2 py-1.5 font-mono text-xs text-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                         >
                           {c.slash}
                         </DropdownMenuItem>
@@ -698,32 +784,32 @@ export function TerminalPane({
                 {/* Connectors sub-menu */}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger
-                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent"
                   >
                     <Plug className="h-3.5 w-3.5 shrink-0 opacity-50" />
-                    <span className="text-[#b07ba8]">Connectors</span>
-                    <span className="ml-auto text-[10px] text-[#5e5b54]">{connectors.length}</span>
+                    <span className="text-foreground">Connectors</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{connectors.length}</span>
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent
-                    className="max-h-64 w-52 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                    className="max-h-64 w-52 overflow-y-auto rounded border border-border bg-popover p-0.5 shadow-xl"
                   >
                     {connectors.length === 0 ? (
-                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No connectors</div>
+                      <div className="px-3 py-2 text-[11px] font-mono text-muted-foreground">No connectors</div>
                     ) : (
                       connectors.map((c) => (
                         <DropdownMenuItem
                           key={`${c.scope}-${c.service}`}
                           onClick={() => addToken(`/connector:${c.service}`)}
-                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                          className="gap-0 rounded px-2 py-1.5 font-mono text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                         >
                           {c.service}
                         </DropdownMenuItem>
                       ))
                     )}
-                    <DropdownMenuSeparator className="my-0.5 bg-white/10" />
+                    <DropdownMenuSeparator className="my-0.5 bg-border" />
                     <DropdownMenuItem
                       onClick={() => goSettingsTo("project", "Connectors")}
-                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-[#5e5b54] hover:bg-white/8 hover:text-[#f0eee7]"
+                      className="gap-1.5 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                     >
                       <Plus className="h-3 w-3" /> Add connector
                     </DropdownMenuItem>
@@ -733,27 +819,27 @@ export function TerminalPane({
                 {/* Sessions sub-menu */}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger
-                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7] data-[state=open]:bg-white/8"
+                    className="gap-2 rounded px-2 py-1.5 text-xs font-mono text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent"
                   >
                     <ClipboardList className="h-3.5 w-3.5 shrink-0 opacity-50" />
-                    <span className="text-[#7fa8a0]">Sessions</span>
-                    <span className="ml-auto text-[10px] text-[#5e5b54]">{sessionLogs.length}</span>
+                    <span className="text-foreground">Sessions</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{sessionLogs.length}</span>
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent
-                    className="max-h-64 w-60 overflow-y-auto rounded border border-white/15 bg-[#1f1e1b] p-0.5 shadow-xl"
+                    className="max-h-64 w-60 overflow-y-auto rounded border border-border bg-popover p-0.5 shadow-xl"
                   >
                     {sessionLogs.length === 0 ? (
-                      <div className="px-3 py-2 text-[11px] font-mono text-[#5e5b54]">No saved sessions</div>
+                      <div className="px-3 py-2 text-[11px] font-mono text-muted-foreground">No saved sessions</div>
                     ) : (
                       sessionLogs.map((s) => (
                         <DropdownMenuItem
                           key={s.id}
                           onClick={() => addToken(`/session:${s.id}`)}
-                          className="flex-col items-start gap-0 rounded px-2 py-1.5 font-mono text-xs text-[#c9c5bc] hover:bg-white/8 hover:text-[#f0eee7] focus:bg-white/8 focus:text-[#f0eee7]"
+                          className="flex-col items-start gap-0 rounded px-2 py-1.5 font-mono text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                         >
                           <span className="truncate w-full">{s.id}</span>
                           {s.summary && (
-                            <span className="truncate w-full text-[10px] text-[#5e5b54]">{s.summary}</span>
+                            <span className="truncate w-full text-[10px] text-muted-foreground">{s.summary}</span>
                           )}
                         </DropdownMenuItem>
                       ))

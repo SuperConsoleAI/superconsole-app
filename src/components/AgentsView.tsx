@@ -1,3 +1,7 @@
+/**
+ * AgentsView Component — Headless agent runner & agent configuration suite
+ * Supports manual execution, scheduling, telegram bindings, and tool configuration.
+ */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bot,
@@ -5,7 +9,6 @@ import {
   GitBranch,
   History,
   Info,
-  ListTodo,
   Loader2,
   MessageSquare,
   Pencil,
@@ -16,7 +19,6 @@ import {
   Search,
   TerminalSquare,
   Trash2,
-  Wrench,
 } from "lucide-react";
 import {
   api,
@@ -81,29 +83,6 @@ function fmtRelative(s: string | null): string {
 // ─── Top-level tab toggle (same as TasksView) ────────────────────────────────
 
 type AgentTab = "agents" | "activity" | "library";
-
-function TabBtn({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-        active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
-      )}
-    >
-      <span className="flex items-center gap-1.5">{children}</span>
-    </button>
-  );
-}
 
 // ─── Activity row (exact same design as TasksView.ActivityRow) ────────────────
 
@@ -360,7 +339,7 @@ interface AgentsViewProps {
 
 export function AgentsView({
   workspaces,
-  organizations,
+  organizations: _organizations,
   activeOrgId,
   onUseInProject,
   onUseInNewProject,
@@ -382,9 +361,6 @@ export function AgentsView({
     [workspaces, orgFilter],
   );
 
-  const setOrg = (id: number | "all") => { setOrgFilter(id); setProjFilter("all"); };
-
-  const orgName = (id: number) => organizations.find((o) => o.id === id)?.name ?? "Org";
   const wsName = (id: number) => workspaces.find((w) => w.id === id)?.name ?? "unknown";
 
   // Filtered workspaces for Agents/Activity (respects both filters)
@@ -495,6 +471,50 @@ export function AgentsView({
     else loadLibrary();
   }, [tab, loadAgents, loadActivity]);
 
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("agents-tab-sync", { detail: tab }));
+  }, [tab]);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("agents-org-sync", { detail: orgFilter }));
+  }, [orgFilter]);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("agents-proj-sync", { detail: projFilter }));
+  }, [projFilter]);
+
+  useEffect(() => {
+    const onTab = (e: any) => setTab(e.detail);
+    const onOrg = (e: any) => { setOrgFilter(e.detail); setProjFilter("all"); };
+    const onProj = (e: any) => setProjFilter(e.detail);
+    const onCreate = () => setCreateOpen(true);
+    const onImport = () => setImportOpen(true);
+    const onCatalog = () => { setAdminInitial(null); setAdminOpen(true); };
+    const onNavMounted = () => {
+      window.dispatchEvent(new CustomEvent("agents-tab-sync", { detail: tab }));
+      window.dispatchEvent(new CustomEvent("agents-org-sync", { detail: orgFilter }));
+      window.dispatchEvent(new CustomEvent("agents-proj-sync", { detail: projFilter }));
+    };
+
+    window.addEventListener("agents-tab-change", onTab);
+    window.addEventListener("agents-org-change", onOrg);
+    window.addEventListener("agents-proj-change", onProj);
+    window.addEventListener("agents-create-open", onCreate);
+    window.addEventListener("agents-import-open", onImport);
+    window.addEventListener("agents-catalog-open", onCatalog);
+    window.addEventListener("agents-nav-mounted", onNavMounted);
+
+    return () => {
+      window.removeEventListener("agents-tab-change", onTab);
+      window.removeEventListener("agents-org-change", onOrg);
+      window.removeEventListener("agents-proj-change", onProj);
+      window.removeEventListener("agents-create-open", onCreate);
+      window.removeEventListener("agents-import-open", onImport);
+      window.removeEventListener("agents-catalog-open", onCatalog);
+      window.removeEventListener("agents-nav-mounted", onNavMounted);
+    };
+  }, [tab, orgFilter, projFilter]);
+
   // ── Agents tab actions (use row.workspaceId so they work across multi-ws views) ──
   const runNow = async (row: AgentRow) => {
     setRunning(`${row.workspaceId}:${row.name}`);
@@ -549,90 +569,6 @@ export function AgentsView({
 
   return (
     <div className="flex h-full flex-col">
-      {/* ── Header bar (TasksView pattern) ─────────────────────────────── */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card/60 px-5">
-        {/* Left: tab toggle */}
-        <div className="flex gap-0.5 rounded-lg border bg-background p-0.5">
-          <TabBtn active={tab === "agents"} onClick={() => setTab("agents")}>
-            <Bot className="h-3.5 w-3.5" strokeWidth={1} />
-            Agents
-          </TabBtn>
-          <TabBtn active={tab === "activity"} onClick={() => setTab("activity")}>
-            <History className="h-3.5 w-3.5" strokeWidth={1} />
-            Activity
-          </TabBtn>
-          <TabBtn active={tab === "library"} onClick={() => setTab("library")}>
-            <ListTodo className="h-3.5 w-3.5" strokeWidth={1} />
-            Library
-          </TabBtn>
-        </div>
-
-        {/* Right actions */}
-        <div className="ml-auto flex items-center gap-2">
-
-          {/* ── Org + Project filters (Agents & Activity tabs only) ── */}
-          {tab !== "library" && (
-            <>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-7 font-normal">
-                    {orgFilter === "all" ? "All orgs" : orgName(orgFilter)}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => setOrg("all")}>All orgs</DropdownMenuItem>
-                  {organizations.map((o) => (
-                    <DropdownMenuItem key={o.id} onClick={() => setOrg(o.id)}>{o.name}</DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-7 font-normal">
-                    {projFilter === "all" ? "All projects" : wsName(projFilter)}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => setProjFilter("all")}>All projects</DropdownMenuItem>
-                  {orgWorkspaces.map((w) => (
-                    <DropdownMenuItem key={w.id} onClick={() => setProjFilter(w.id)}>{w.name}</DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </>
-          )}
-
-          {/* ── Agents tab: [+ Agent] [Import] ── */}
-          {tab === "agents" && (
-            <>
-              <Button size="sm" className="h-7" onClick={() => setCreateOpen(true)}>
-                <Plus className="h-3.5 w-3.5" strokeWidth={1} />
-                Agent
-              </Button>
-              <Button variant="outline" size="sm" className="h-7" onClick={() => setImportOpen(true)} title="Import from GitHub repo">
-                <GitBranch className="h-3.5 w-3.5" strokeWidth={1} />
-                Import
-              </Button>
-            </>
-          )}
-
-          {/* ── Library tab: Add to catalog only ── */}
-          {tab === "library" && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7"
-              onClick={() => { setAdminInitial(null); setAdminOpen(true); }}
-              title="Add an agent to the shared catalog"
-            >
-              <Wrench className="h-3.5 w-3.5" strokeWidth={1} />
-              Add to catalog
-            </Button>
-          )}
-        </div>
-      </div>
-
       {/* ── Tab bodies ─────────────────────────────────────────────────── */}
       <ScrollArea className="min-h-0 flex-1">
 

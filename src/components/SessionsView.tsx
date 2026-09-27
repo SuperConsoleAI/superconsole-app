@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ChevronRight,
+  BarChart3,
   FolderInput,
-  History,
-  Loader2,
   MessageSquare,
   MoreHorizontal,
   Pencil,
@@ -17,7 +15,6 @@ import {
   CLI_PRESETS,
   modelDisplayName,
   type ChatSession,
-  type CliSession,
   type Organization,
   type SessionFeedItem,
   type SessionLog,
@@ -42,16 +39,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
+import { SessionUsageCost, type SessionUsageData } from "@/components/SessionUsageCost";
 
-function parseUtc(s: string | null): Date | null {
-  if (!s) return null;
-  const d = new Date(s.replace(" ", "T") + "Z");
-  return isNaN(d.getTime()) ? null : d;
-}
+import { parseUtcDate, extractCleanResumeId } from "@/lib/utils";
 
 function fmtWhen(s: string | null): string {
-  const d = parseUtc(s);
+  const d = parseUtcDate(s);
   if (!d) return "";
   return d.toLocaleString([], {
     month: "short",
@@ -62,7 +55,7 @@ function fmtWhen(s: string | null): string {
 }
 
 function fmtRelative(s: string | null): string {
-  const d = parseUtc(s);
+  const d = parseUtcDate(s);
   if (!d) return "";
   const diff = Date.now() - d.getTime();
   const min = Math.floor(diff / 60000);
@@ -76,13 +69,27 @@ function fmtRelative(s: string | null): string {
 }
 
 function duration(start: string, end: string | null): string {
-  const a = parseUtc(start);
-  const b = parseUtc(end);
+  const a = parseUtcDate(start);
+  const b = parseUtcDate(end);
   if (!a || !b) return "";
   const secs = Math.max(0, Math.round((b.getTime() - a.getTime()) / 1000));
   if (secs < 60) return `${secs}s`;
   if (secs < 3600) return `${Math.round(secs / 60)}m`;
   return `${Math.floor(secs / 3600)}h ${Math.round((secs % 3600) / 60)}m`;
+}
+
+function fmtUsd(n?: number): string {
+  if (!n || n <= 0) return "$0.00";
+  if (n < 0.0001) return "<$0.0001";
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+function fmtTokens(n?: number): string {
+  if (!n || n <= 0) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return `${n}`;
 }
 
 interface CliRow extends SessionLog {
@@ -113,7 +120,7 @@ function cliName(s: SessionLog): string {
 
 export function SessionsView({
   workspaces,
-  organizations,
+  organizations: _organizations,
   activeOrgId,
   lastProjectId,
   onOpenChat,
@@ -132,32 +139,8 @@ export function SessionsView({
   const [projFilter, setProjFilter] = useState<number | "all">(lastProjectId ?? "all");
   const [cli, setCli] = useState<CliRow[]>([]);
   const [threads, setThreads] = useState<ChatRow[]>([]);
-  const [expanded, setExpanded] = useState<number | null>(null);
-  const [native, setNative] = useState<Record<number, CliSession[] | "loading">>({});
   const [feedMap, setFeedMap] = useState<Record<string, SessionFeedItem>>({});
-
-  const wsName = useCallback(
-    (id: number) => workspaces.find((w) => w.id === id)?.name ?? "unknown",
-    [workspaces],
-  );
-
-  const toggleRow = (row: CliRow) => {
-    if (expanded === row.id) {
-      setExpanded(null);
-      return;
-    }
-    setExpanded(row.id);
-    if (native[row.id] === undefined) {
-      const ws = workspaces.find((w) => w.id === row.workspace_id);
-      if (!ws) return;
-      setNative((p) => ({ ...p, [row.id]: "loading" }));
-      api
-        .listCliSessions(ws.path, row.cli)
-        .then((list) => setNative((p) => ({ ...p, [row.id]: list })))
-        .catch(() => setNative((p) => ({ ...p, [row.id]: [] })));
-    }
-  };
-  const orgName = (id: number) => organizations.find((o) => o.id === id)?.name ?? "Org";
+  const [usageSession, setUsageSession] = useState<SessionUsageData | null>(null);
 
   // Workspaces under the current org filter drive the project list.
   const orgWorkspaces = useMemo(
@@ -168,17 +151,16 @@ export function SessionsView({
     [workspaces, orgFilter],
   );
 
-  const setOrg = (id: number | "all") => {
-    setOrgFilter(id);
-    setProjFilter("all");
-  };
-
   const load = useCallback(() => {
     Promise.all(
       workspaces.map((w) =>
         api
           .listSessionHistory(w.id)
-          .then((rows) => rows.map((r) => ({ ...r, wsName: w.name })))
+          .then((rows) =>
+            rows
+              .filter((r) => r.cli && r.cli !== "shell")
+              .map((r) => ({ ...r, wsName: w.name })),
+          )
           .catch(() => [] as CliRow[]),
       ),
     ).then((lists) => {
@@ -221,6 +203,41 @@ export function SessionsView({
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("sessions-tab-sync", { detail: tab }));
+  }, [tab]);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("sessions-org-sync", { detail: orgFilter }));
+  }, [orgFilter]);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("sessions-proj-sync", { detail: projFilter }));
+  }, [projFilter]);
+
+  useEffect(() => {
+    const onTab = (e: any) => setTab(e.detail);
+    const onOrg = (e: any) => { setOrgFilter(e.detail); setProjFilter("all"); };
+    const onProj = (e: any) => setProjFilter(e.detail);
+    const onNavMounted = () => {
+      window.dispatchEvent(new CustomEvent("sessions-tab-sync", { detail: tab }));
+      window.dispatchEvent(new CustomEvent("sessions-org-sync", { detail: orgFilter }));
+      window.dispatchEvent(new CustomEvent("sessions-proj-sync", { detail: projFilter }));
+    };
+
+    window.addEventListener("sessions-tab-change", onTab);
+    window.addEventListener("sessions-org-change", onOrg);
+    window.addEventListener("sessions-proj-change", onProj);
+    window.addEventListener("sessions-nav-mounted", onNavMounted);
+
+    return () => {
+      window.removeEventListener("sessions-tab-change", onTab);
+      window.removeEventListener("sessions-org-change", onOrg);
+      window.removeEventListener("sessions-proj-change", onProj);
+      window.removeEventListener("sessions-nav-mounted", onNavMounted);
+    };
+  }, [tab, orgFilter, projFilter]);
 
   const [renameTarget, setRenameTarget] = useState<ChatRow | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -304,67 +321,6 @@ export function SessionsView({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-3 border-b bg-card/60 px-5">
-        <History className="h-4 w-4 text-primary" strokeWidth={1} />
-        <h1 className="font-display text-base font-semibold">Sessions</h1>
-        <span className="text-xs text-muted-foreground">CLI runs and chat history</span>
-
-        <div className="ml-auto flex items-center gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-7 font-normal">
-                {orgFilter === "all" ? "All orgs" : orgName(orgFilter)}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setOrg("all")}>All orgs</DropdownMenuItem>
-              {organizations.map((o) => (
-                <DropdownMenuItem key={o.id} onClick={() => setOrg(o.id)}>
-                  {o.name}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-7 font-normal">
-                {projFilter === "all" ? "All projects" : wsName(projFilter)}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setProjFilter("all")}>All projects</DropdownMenuItem>
-              {orgWorkspaces.map((w) => (
-                <DropdownMenuItem key={w.id} onClick={() => setProjFilter(w.id)}>
-                  {w.name}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <div className="flex gap-0.5 rounded-lg border bg-background p-0.5">
-            <Button
-              variant={tab === "cli" ? "secondary" : "ghost"}
-              size="sm"
-              className="h-6 gap-1.5 px-2 text-xs"
-              onClick={() => setTab("cli")}
-            >
-              <Terminal className="h-3.5 w-3.5" strokeWidth={1} />
-              CLI
-            </Button>
-            <Button
-              variant={tab === "chat" ? "secondary" : "ghost"}
-              size="sm"
-              className="h-6 gap-1.5 px-2 text-xs"
-              onClick={() => setTab("chat")}
-            >
-              <MessageSquare className="h-3.5 w-3.5" strokeWidth={1} />
-              Chat
-            </Button>
-          </div>
-        </div>
-      </div>
-
       <div className="w-full px-5 pt-4">
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" strokeWidth={1} />
@@ -384,20 +340,20 @@ export function SessionsView({
               <Empty icon={<Terminal />} text="No CLI sessions recorded yet." />
             ) : (
               <div className="divide-y divide-border">
-                {filteredCli.map((s) => (
-                  <div key={s.id}>
-                    <div className="group flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-accent/50">
-                      <button
-                        onClick={() => toggleRow(s)}
-                        className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-2.5 text-left"
-                      >
-                        <ChevronRight
-                          className={cn(
-                            "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
-                            expanded === s.id && "rotate-90",
-                          )}
-                          strokeWidth={1.5}
-                        />
+                {filteredCli.map((s) => {
+                  const feed = feedMap[s.session_id ?? ""];
+                  const cost = (feed && feed.cost_usd > 0) ? feed.cost_usd : (s.cost_usd ?? 0);
+                  const tokens = (feed && feed.tokens_total > 0)
+                    ? feed.tokens_total
+                    : ((s.tokens_prompt ?? 0) + (s.tokens_completion ?? 0) + (s.tokens_reasoning ?? 0));
+                  const candidateResumeId = extractCleanResumeId(feed?.resume_id || s.session_id);
+
+                  return (
+                    <div
+                      key={s.id}
+                      className="group flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-accent/50"
+                    >
+                      <div className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-2.5 text-left">
                         <PresetIcon preset={s.cli} className="h-4 w-4 shrink-0" />
                         <span className="min-w-0 flex-1 truncate text-sm font-medium">
                           {cliName(s)}
@@ -405,15 +361,18 @@ export function SessionsView({
                         {!s.ended_at && (
                           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
                         )}
-                        {(() => {
-                          const feed = feedMap[s.session_id ?? ""];
-                          if (!feed || feed.cost_usd <= 0) return null;
-                          return (
-                            <span className="hidden shrink-0 gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
-                              ~${feed.cost_usd.toFixed(2)} · {Math.round(feed.tokens_total / 1000)}K tok
-                            </span>
-                          );
-                        })()}
+                        <button
+                          type="button"
+                          className="shrink-0 rounded px-2 py-0.5 text-xs font-medium text-primary opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
+                          onClick={() => onResume(s.workspace_id, s.cli, candidateResumeId)}
+                        >
+                          Resume →
+                        </button>
+                        {(cost > 0 || tokens > 0) && (
+                          <span className="hidden shrink-0 gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
+                            ~{fmtUsd(cost)} · {fmtTokens(tokens)} tok
+                          </span>
+                        )}
                         <span className="hidden max-w-[26%] shrink-0 truncate text-xs text-muted-foreground sm:inline">
                           {s.wsName}
                         </span>
@@ -421,18 +380,7 @@ export function SessionsView({
                           {fmtWhen(s.started_at)}
                           {s.ended_at && ` · ${duration(s.started_at, s.ended_at)}`}
                         </span>
-                      </button>
-                      {s.ended_at && (
-                        <button
-                          className="shrink-0 rounded px-2 py-1 text-xs font-medium text-primary opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
-                          onClick={() => {
-                            const feed = feedMap[s.session_id ?? ""];
-                            onResume(s.workspace_id, s.cli, feed?.resume_id ?? (s as any).session_id ?? "");
-                          }}
-                        >
-                          Continue →
-                        </button>
-                      )}
+                      </div>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100 data-[state=open]:opacity-100">
@@ -440,6 +388,17 @@ export function SessionsView({
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => {
+                              setUsageSession({
+                                ...s,
+                                ...(feed || {}),
+                                wsName: s.wsName,
+                              });
+                            }}
+                          >
+                            <BarChart3 className="mr-2 h-3.5 w-3.5" /> Usage & Cost
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => {
                               setCliRenameTarget(s);
@@ -458,14 +417,8 @@ export function SessionsView({
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>
-                    {expanded === s.id && (
-                      <NativePanel
-                        sessions={native[s.id]}
-                        onOpen={(_file, cli, id) => onResume(s.workspace_id, cli, id)}
-                      />
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )
           ) : filteredThreads.length === 0 ? (
@@ -478,10 +431,7 @@ export function SessionsView({
                     key={t.id}
                     className="group flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-accent/50"
                   >
-                    <button
-                      className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-2.5 text-left"
-                      onClick={() => onOpenChat(t.workspaceId, t.id)}
-                    >
+                    <div className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-2.5 text-left">
                       <ProviderIcon
                         provider={t.provider}
                         className="h-4 w-4 shrink-0 opacity-80"
@@ -492,28 +442,37 @@ export function SessionsView({
                       <span className="min-w-0 flex-1 truncate text-sm font-medium">
                         {chatTitle(t)}
                       </span>
+                      <button
+                        type="button"
+                        className="shrink-0 rounded px-2 py-0.5 text-xs font-medium text-primary opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
+                        onClick={() => onOpenChat(t.workspaceId, t.id)}
+                      >
+                        Resume →
+                      </button>
                       {t.model && (
                         <span className="hidden max-w-[28%] shrink-0 items-center gap-1 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground md:inline-flex">
                           <ProviderIcon model={t.model} className="h-3 w-3 shrink-0 opacity-50" />
                           {modelDisplayName(t.model, t.provider)}
                         </span>
                       )}
+                      {(() => {
+                        const feed = feedMap[t.id];
+                        const cost = feed?.cost_usd ?? 0;
+                        const tokens = feed?.tokens_total ?? 0;
+                        if (cost <= 0 && tokens <= 0) return null;
+                        return (
+                          <span className="hidden shrink-0 gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
+                            ~{fmtUsd(cost)} · {fmtTokens(tokens)} tok
+                          </span>
+                        );
+                      })()}
                       <span className="hidden max-w-[26%] shrink-0 truncate text-xs text-muted-foreground sm:inline">
                         {t.wsName}
                       </span>
                       <span className="shrink-0 text-xs text-muted-foreground">
                         {fmtRelative(t.last_at ?? t.updated_at)}
                       </span>
-                      {(() => {
-                        const feed = feedMap[t.id];
-                        if (!feed || feed.cost_usd <= 0) return null;
-                        return (
-                          <span className="hidden shrink-0 gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
-                            ~${feed.cost_usd.toFixed(2)} · {Math.round(feed.tokens_total / 1000)}K tok
-                          </span>
-                        );
-                      })()}
-                    </button>
+                    </div>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <button className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100 data-[state=open]:opacity-100">
@@ -521,6 +480,23 @@ export function SessionsView({
                         </button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={() => {
+                            const feed = feedMap[t.id];
+                            setUsageSession({
+                              ...(feed || {}),
+                              id: t.id,
+                              session_id: t.id,
+                              session_type: "chat",
+                              cli: "chat",
+                              label: t.name || "Chat Session",
+                              workspace_id: t.workspaceId,
+                              wsName: t.wsName,
+                            });
+                          }}
+                        >
+                          <BarChart3 className="mr-2 h-3.5 w-3.5" /> Usage & Cost
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => toggleStar(t)}>
                           <Star className="mr-2 h-3.5 w-3.5" />
                           {t.is_star ? "Unstar" : "Star"}
@@ -618,50 +594,12 @@ export function SessionsView({
           </div>
         </DialogContent>
       </Dialog>
-    </div>
-  );
-}
 
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function NativePanel({
-  sessions,
-  onOpen,
-}: {
-  sessions: CliSession[] | "loading" | undefined;
-  onOpen: (file: string, cli: string, id: string) => void;
-}) {
-  return (
-    <div className="mb-2 ml-[1.6rem] border-l border-border pl-3">
-      {sessions === "loading" || sessions === undefined ? (
-        <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading sessions...
-        </div>
-      ) : sessions.length === 0 ? (
-        <p className="py-2 text-xs text-muted-foreground">No native sessions found</p>
-      ) : (
-        <div className="flex flex-col">
-          {sessions.map((ns) => (
-            <button
-              key={ns.file_path}
-              onClick={() => onOpen(ns.file_path, ns.cli, ns.id)}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent/50"
-            >
-              <span className="flex-1 truncate text-muted-foreground">
-                {fmtWhen(ns.modified_at)}
-              </span>
-              <span className="shrink-0 text-muted-foreground">
-                {ns.message_count} msg{ns.message_count === 1 ? "" : "s"} · {fmtBytes(ns.size_bytes)}
-              </span>
-              <span className="shrink-0 font-medium text-primary">Open</span>
-            </button>
-          ))}
-        </div>
-      )}
+      <SessionUsageCost
+        open={!!usageSession}
+        onOpenChange={(open) => !open && setUsageSession(null)}
+        session={usageSession}
+      />
     </div>
   );
 }

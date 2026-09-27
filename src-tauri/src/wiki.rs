@@ -13,12 +13,11 @@
 // Agent-side automations (wiki_suggest -> inbox, LLM auto-seed reformatting) are
 // the Phase 16 MCP layer; here we ship the deterministic primitives.
 
-use crate::cloud::{self, cell_opt, cell_text, rows};
+use crate::cloud::{self};
 use crate::db::{CachedWiki, Db};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
-use ulid::Ulid;
 
 const WIKI_DIR: &str = ".superconsole/wiki";
 const INDEX_FILE: &str = "_index.md";
@@ -509,122 +508,39 @@ pub fn wiki_context(app: &AppHandle, workspace_id: i64) -> String {
 
 // --- Turso sync (full content; wiki is structured + predictable size) ---
 
+#[allow(dead_code)]
 pub async fn ensure_wiki_index_table(
-    client: &reqwest::Client,
-    cfg: &cloud::TursoConfig,
+    _client: &reqwest::Client,
+    _cfg: &cloud::TursoConfig,
 ) -> Result<(), String> {
-    cloud::turso_execute(
-        client,
-        cfg,
-        "CREATE TABLE IF NOT EXISTS wiki_index (\
-            id TEXT PRIMARY KEY NOT NULL, project_id TEXT NOT NULL, slug TEXT NOT NULL, \
-            title TEXT, summary TEXT, tags TEXT, content TEXT, \
-            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
-        vec![],
-    )
-    .await?;
-    cloud::turso_execute(
-        client,
-        cfg,
-        "CREATE UNIQUE INDEX IF NOT EXISTS wiki_index_unq ON wiki_index (project_id, slug)",
-        vec![],
-    )
-    .await?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 async fn push_wiki_to_cloud(
-    app: &AppHandle,
-    project_id: Option<&str>,
-    slug: &str,
-    title: &str,
-    summary: &str,
-    tags: &str,
-    content: &str,
+    _app: &AppHandle,
+    _project_id: Option<&str>,
+    _slug: &str,
+    _title: &str,
+    _summary: &str,
+    _tags: &str,
+    _content: &str,
 ) {
-    let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else {
-        return;
-    };
-    let client = reqwest::Client::new();
-    if ensure_wiki_index_table(&client, &cfg).await.is_err() {
-        return;
-    }
-    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let result = cloud::turso_execute(
-        &client,
-        &cfg,
-        "INSERT INTO wiki_index (id, project_id, slug, title, summary, tags, content, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
-         ON CONFLICT(project_id, slug) DO UPDATE SET \
-           title = excluded.title, summary = excluded.summary, tags = excluded.tags, \
-           content = excluded.content, updated_at = excluded.updated_at",
-        vec![
-            Some(Ulid::new().to_string()),
-            Some(project_id.to_string()),
-            Some(slug.to_string()),
-            Some(title.to_string()),
-            Some(summary.to_string()),
-            Some(tags.to_string()),
-            Some(content.to_string()),
-            Some(ts),
-        ],
-    )
-    .await;
-    if result.is_ok() {
-        crate::sync_manager::sync_on_update(app, "project", project_id).await;
-    }
+    // Wiki is stored 100% locally on user machine (no cloud index table sync)
 }
 
-async fn delete_wiki_from_cloud(app: &AppHandle, project_id: Option<&str>, slug: &str) {
-    let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else {
-        return;
-    };
-    let client = reqwest::Client::new();
-    if ensure_wiki_index_table(&client, &cfg).await.is_err() {
-        return;
-    }
-    let result = cloud::turso_execute(
-        &client,
-        &cfg,
-        "DELETE FROM wiki_index WHERE project_id = ? AND slug = ?",
-        vec![Some(project_id.to_string()), Some(slug.to_string())],
-    )
-    .await;
-    if result.is_ok() {
-        crate::sync_manager::sync_on_update(app, "project", project_id).await;
-    }
+#[allow(dead_code)]
+async fn delete_wiki_from_cloud(_app: &AppHandle, _project_id: Option<&str>, _slug: &str) {
+    // Wiki is stored 100% locally on user machine (no cloud index table sync)
 }
 
-/// Read wiki pages (full content) from Turso (used by the sync layer).
+/// Read wiki pages from Turso. Returns empty list as wiki is local-only.
+#[allow(dead_code)]
 pub async fn fetch_cloud_wiki(
-    client: &reqwest::Client,
-    cfg: &cloud::TursoConfig,
-    project_id: &str,
+    _client: &reqwest::Client,
+    _cfg: &cloud::TursoConfig,
+    _project_id: &str,
 ) -> Vec<CachedWiki> {
-    if ensure_wiki_index_table(client, cfg).await.is_err() {
-        return Vec::new();
-    }
-    let Ok(result) = cloud::turso_execute(
-        client,
-        cfg,
-        "SELECT slug, title, summary, tags, content FROM wiki_index WHERE project_id = ?",
-        vec![Some(project_id.to_string())],
-    )
-    .await
-    else {
-        return Vec::new();
-    };
-    rows(&result)
-        .iter()
-        .map(|row| CachedWiki {
-            slug: cell_text(row, 0),
-            title: cell_opt(row, 1).unwrap_or_default(),
-            summary: cell_opt(row, 2).unwrap_or_default(),
-            tags: cell_opt(row, 3).unwrap_or_default(),
-            content: cell_opt(row, 4).unwrap_or_default(),
-        })
-        .collect()
+    Vec::new()
 }
+

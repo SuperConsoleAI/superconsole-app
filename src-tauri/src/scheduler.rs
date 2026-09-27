@@ -52,6 +52,10 @@ fn job_command(cli: &str, prompt: &str) -> (String, Vec<String>) {
         "droid" => ("droid".into(), vec!["exec".into(), prompt.into()]),
         "antigravity" => ("agy".into(), vec![prompt.into()]),
         "codex" => ("codex".into(), vec!["exec".into(), prompt.into()]),
+        "warp" | "warp-agent" => ("warp".into(), vec!["agent".into(), prompt.into()]),
+        "cursor" | "cursor-agent" => ("cursor".into(), vec!["agent".into(), prompt.into()]),
+        "opencode" => ("opencode".into(), vec!["run".into(), prompt.into()]),
+        "grok" | "grok-build" | "xai" | "x-ai" => ("grok".into(), vec![prompt.into()]),
         other => (other.to_string(), vec![prompt.to_string()]),
     }
 }

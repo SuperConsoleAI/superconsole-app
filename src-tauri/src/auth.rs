@@ -16,9 +16,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-const KEYRING_SERVICE: &str = "com.superconsole.desktop";
-const KEYRING_ACCOUNT: &str = "workos_session";
-
 // Fixed loopback port so the redirect URI is stable and can be registered in
 // the WorkOS dashboard. Register exactly: http://localhost:4666/callback
 const CALLBACK_PORT: u16 = 4666;
@@ -63,11 +60,20 @@ pub struct AuthState {
 }
 
 impl AuthState {
-    pub fn load_from_keyring() -> Self {
-        let session = keyring_entry()
-            .ok()
-            .and_then(|e| e.get_password().ok())
-            .and_then(|p| serde_json::from_str::<StoredSession>(&p).ok());
+    pub fn load_from_db(db: &Db) -> Self {
+        let session = if let Some(json) = db.get_cloud_identity() {
+            if let Ok(info) = serde_json::from_str::<AuthInfo>(&json) {
+                Some(StoredSession {
+                    user: info.user,
+                    access_token: String::new(),
+                    refresh_token: None,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         AuthState {
             session: Mutex::new(session),
         }
@@ -90,10 +96,6 @@ fn workos_config() -> Result<WorkosConfig, String> {
 
 fn turso_config() -> Result<TursoConfig, String> {
     cloud::turso_config()
-}
-
-fn keyring_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).map_err(|e| e.to_string())
 }
 
 fn authorize_url(cfg: &WorkosConfig, redirect_uri: &str, state: &str) -> String {
@@ -375,15 +377,12 @@ async fn complete_login(
     let tcfg = turso_config()?;
     let info = upsert_user_and_orgs(&client, &tcfg, &workos_id, &email, &name, &avatar).await?;
 
-    // Persist tokens to the OS keychain; cache identity in local SQLite.
+    // Cache identity in local SQLite and RAM.
     let stored = StoredSession {
         user: info.user.clone(),
         access_token,
         refresh_token,
     };
-    keyring_entry()?
-        .set_password(&serde_json::to_string(&stored).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("keychain write failed: {}", e))?;
 
     {
         let db = app.state::<Db>();
@@ -497,12 +496,7 @@ pub fn auth_status(db: State<Db>, state: State<AuthState>) -> Result<Option<Auth
 
 #[tauri::command]
 pub fn sign_out(db: State<Db>, state: State<AuthState>) -> Result<(), String> {
-    if let Ok(entry) = keyring_entry() {
-        let _ = entry.delete_credential();
-    }
     let _ = db.clear_cloud_identity();
-    // Leave zero cloud data on the machine after sign-out.
-    let _ = db.clear_cloud_cache();
     *state.session.lock().unwrap() = None;
     Ok(())
 }

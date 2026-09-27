@@ -6,6 +6,7 @@ export interface Workspace {
   path: string;
   cli: string;
   organization_id: number;
+  org_id: string | null;
   created_at: string;
   project_id: string | null;
   default_run_mode: "cli" | "chat";
@@ -162,6 +163,8 @@ export interface Job {
   last_run_cost_usd: number;
   last_run_tokens: number;
   last_run_session_id: string | null;
+  agent_id?: string | null;
+  user_id?: string | null;
   // ── Loop system (Phase 25) ──
   /** JSON-encoded exit condition, or null/undefined for run-once. */
   exit_condition?: string | null;
@@ -233,6 +236,17 @@ export interface SessionLog {
   ended_at: string | null;
   label: string | null;
   session_id: string;
+  tokens_prompt?: number;
+  tokens_completion?: number;
+  tokens_reasoning?: number;
+  cost_usd?: number;
+  model?: string;
+  provider?: string;
+  user_id?: string | null;
+  rate_prompt_per_1m?: number | null;
+  rate_cached_per_1m?: number | null;
+  rate_completion_per_1m?: number | null;
+  rate_reasoning_per_1m?: number | null;
 }
 
 export interface SessionFeedItem {
@@ -250,7 +264,12 @@ export interface SessionFeedItem {
   cost_usd: number;
   job_id?: number;
   agent_id?: string;
+  user_id?: string | null;
   resume_id: string;
+  rate_prompt_per_1m?: number | null;
+  rate_cached_per_1m?: number | null;
+  rate_completion_per_1m?: number | null;
+  rate_reasoning_per_1m?: number | null;
 }
 
 export interface CliSession {
@@ -261,6 +280,8 @@ export interface CliSession {
   size_bytes: number;
   modified_at: string;
   message_count: number;
+  title?: string | null;
+  preview?: string | null;
 }
 
 export interface CliSessionMessage {
@@ -333,6 +354,10 @@ export const CLI_PRESETS = [
   { id: "droid", label: "Droid" },
   { id: "antigravity", label: "Antigravity" },
   { id: "codex", label: "Codex" },
+  { id: "warp", label: "Warp" },
+  { id: "cursor", label: "Cursor" },
+  { id: "opencode", label: "OpenCode" },
+  { id: "grok", label: "Grok Build" },
 ] as const;
 
 export interface ChatSession {
@@ -348,6 +373,7 @@ export interface ChatSession {
   first_user: string | null;
   provider: string | null;
   model: string | null;
+  user_id?: string | null;
 }
 
 export interface ChatMessage {
@@ -358,6 +384,7 @@ export interface ChatMessage {
   content: string;
   provider: string | null;
   model: string | null;
+  user_id?: string | null;
   created_at: string;
 }
 
@@ -368,7 +395,7 @@ export interface CompactResult {
 
 // Phase 21: usage monitoring. One canonical aggregate shape is reused at every
 // level (project/org/account) so a single display path renders all three.
-export type UsageLevel = "project" | "org" | "account";
+export type UsageLevel = "project" | "org" | "user" | "account";
 
 // A daily/hourly/monthly bucket inside a rolling window (usage_24h/7d/30d/12m).
 export interface UsageBucket {
@@ -768,6 +795,7 @@ export interface SessionLogFile {
   tokens: number;
   summary: string;
   cloudId?: string;
+  userId?: string;
   createdAt: string;
 }
 
@@ -868,6 +896,7 @@ export const api = {
     rows: number,
     cols: number,
     resumeSessionId?: string,
+    isDark?: boolean,
   ) =>
     invoke<SessionInfo>("start_session", {
       workspaceId,
@@ -876,6 +905,7 @@ export const api = {
       rows,
       cols,
       resumeSessionId,
+      isDark,
     }),
   writeSession: (sessionId: string, data: string) =>
     invoke<void>("write_session", { sessionId, data }),
@@ -1406,7 +1436,70 @@ export const api = {
   readRule: (workspaceId: number, slug: string) => invoke<string>("tauri_read_rule", { workspaceId, slug }).then(content => ({ slug, name: slug, description: "", content, always_apply: true } as RuleFile)),
   writeRule: (workspaceId: number, slug: string, content: string) => invoke<void>("tauri_write_rule", { workspaceId, slug, content }),
   deleteRule: (workspaceId: number, slug: string) => invoke<void>("tauri_delete_rule", { workspaceId, slug }),
+
+  // ── LocalDB Studio (Real-time In-App SQLite Explorer) ──────────────────────
+  listLocalDbTables: () => invoke<LocalDbTableSummary[]>("local_db_list_tables"),
+  getLocalDbTableSchema: (tableName: string) =>
+    invoke<LocalDbTableSchema>("local_db_get_table_schema", { tableName }),
+  getLocalDbTableData: (params: {
+    tableName: string;
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    sortCol?: string;
+    sortDesc?: boolean;
+    onlyCurrentUser?: boolean;
+  }) =>
+    invoke<LocalDbTableDataResult>("local_db_get_table_data", {
+      tableName: params.tableName,
+      page: params.page,
+      pageSize: params.pageSize,
+      search: params.search,
+      sortCol: params.sortCol,
+      sortDesc: params.sortDesc,
+      onlyCurrentUser: params.onlyCurrentUser,
+    }),
 };
+
+// ── LocalDB Studio Types ──────────────────────────────────────────────────────
+
+export interface LocalDbTableSummary {
+  name: string;
+  rowCount: number;
+  userRowCount: number | null;
+  hasUserId: boolean;
+  category: "account" | "org" | "project" | "catalog" | "system";
+}
+
+export interface LocalDbColumnInfo {
+  cid: number;
+  name: string;
+  typeName: string;
+  notnull: boolean;
+  dfltValue: string | null;
+  pk: boolean;
+}
+
+export interface LocalDbIndexInfo {
+  name: string;
+  unique: boolean;
+  columns: string[];
+}
+
+export interface LocalDbTableSchema {
+  tableName: string;
+  columns: LocalDbColumnInfo[];
+  indexes: LocalDbIndexInfo[];
+  createStatement: string;
+}
+
+export interface LocalDbTableDataResult {
+  columns: string[];
+  rows: any[][];
+  totalCount: number;
+  page: number;
+  pageSize: number;
+}
 
 export interface SubmitPluginInput {
   id: string;

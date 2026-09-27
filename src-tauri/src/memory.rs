@@ -13,7 +13,7 @@
 // the Phase 16 MCP tools `memory_read` / `memory_write`, which build on the
 // deterministic primitives below.
 
-use crate::cloud::{self, cell_opt, cell_text, rows};
+use crate::cloud::{self, cell_text, rows};
 use crate::db::{CachedMemory, CachedOrgMemory, Db};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -441,10 +441,10 @@ pub async fn delete_memory(
 
 #[tauri::command]
 pub async fn wipe_memory(app: AppHandle, workspace_id: i64) -> Result<(), String> {
-    let (ws_path, project_id) = {
+    let ws_path = {
         let db = app.state::<Db>();
         let ws = db.get_workspace(workspace_id)?;
-        (ws.path, ws.project_id)
+        ws.path
     };
     let dir = memory_dir(&ws_path);
     if dir.exists() {
@@ -452,19 +452,6 @@ pub async fn wipe_memory(app: AppHandle, workspace_id: i64) -> Result<(), String
     }
     for cat in MEMORY_CATEGORIES {
         let _ = app.state::<Db>().delete_memory_category(workspace_id, cat);
-    }
-    if let (Some(pid), Ok(cfg)) = (project_id, cloud::turso_config()) {
-        let client = reqwest::Client::new();
-        if ensure_memory_index_table(&client, &cfg).await.is_ok() {
-            let _ = cloud::turso_execute(
-                &client,
-                &cfg,
-                "DELETE FROM project_memory_index WHERE project_id = ?",
-                vec![Some(pid.clone())],
-            )
-            .await;
-            crate::sync_manager::sync_on_update(&app, "project", &pid).await;
-        }
     }
     Ok(())
 }
@@ -654,139 +641,48 @@ pub fn memory_context(app: &AppHandle, workspace_id: i64) -> String {
 
 // --- Turso metadata sync (project) ---
 
+#[allow(dead_code)]
 pub async fn ensure_memory_index_table(
-    client: &reqwest::Client,
-    cfg: &cloud::TursoConfig,
+    _client: &reqwest::Client,
+    _cfg: &cloud::TursoConfig,
 ) -> Result<(), String> {
-    cloud::turso_execute(
-        client,
-        cfg,
-        "CREATE TABLE IF NOT EXISTS project_memory_index (\
-            id TEXT PRIMARY KEY NOT NULL, project_id TEXT NOT NULL, category TEXT NOT NULL, \
-            slug TEXT NOT NULL, title TEXT, summary TEXT, tags TEXT, \
-            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
-        vec![],
-    )
-    .await?;
-    cloud::turso_execute(
-        client,
-        cfg,
-        "CREATE UNIQUE INDEX IF NOT EXISTS project_memory_index_unq \
-         ON project_memory_index (project_id, category, slug)",
-        vec![],
-    )
-    .await?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 async fn push_memory_to_cloud(
-    app: &AppHandle,
-    project_id: Option<&str>,
-    category: &str,
-    slug: &str,
-    title: &str,
-    summary: &str,
-    tags: &str,
+    _app: &AppHandle,
+    _project_id: Option<&str>,
+    _category: &str,
+    _slug: &str,
+    _title: &str,
+    _summary: &str,
+    _tags: &str,
 ) {
-    let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else {
-        return;
-    };
-    let client = reqwest::Client::new();
-    if ensure_memory_index_table(&client, &cfg).await.is_err() {
-        return;
-    }
-    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let result = cloud::turso_execute(
-        &client,
-        &cfg,
-        "INSERT INTO project_memory_index (id, project_id, category, slug, title, summary, tags, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
-         ON CONFLICT(project_id, category, slug) DO UPDATE SET \
-           title = excluded.title, summary = excluded.summary, tags = excluded.tags, \
-           updated_at = excluded.updated_at",
-        vec![
-            Some(Ulid::new().to_string()),
-            Some(project_id.to_string()),
-            Some(category.to_string()),
-            Some(slug.to_string()),
-            Some(title.to_string()),
-            Some(summary.to_string()),
-            Some(tags.to_string()),
-            Some(ts),
-        ],
-    )
-    .await;
-    if result.is_ok() {
-        crate::sync_manager::sync_on_update(app, "project", project_id).await;
-    }
+    // Memory is stored 100% locally on user machine (no cloud index table sync)
 }
 
+#[allow(dead_code)]
 async fn delete_memory_from_cloud(
-    app: &AppHandle,
-    project_id: Option<&str>,
-    category: &str,
-    slug: &str,
+    _app: &AppHandle,
+    _project_id: Option<&str>,
+    _category: &str,
+    _slug: &str,
 ) {
-    let Some(project_id) = project_id else { return };
-    let Ok(cfg) = cloud::turso_config() else {
-        return;
-    };
-    let client = reqwest::Client::new();
-    if ensure_memory_index_table(&client, &cfg).await.is_err() {
-        return;
-    }
-    let result = cloud::turso_execute(
-        &client,
-        &cfg,
-        "DELETE FROM project_memory_index WHERE project_id = ? AND category = ? AND slug = ?",
-        vec![
-            Some(project_id.to_string()),
-            Some(category.to_string()),
-            Some(slug.to_string()),
-        ],
-    )
-    .await;
-    if result.is_ok() {
-        crate::sync_manager::sync_on_update(app, "project", project_id).await;
-    }
+    // Memory is stored 100% locally on user machine (no cloud index table sync)
 }
 
-/// Read the project memory index from Turso (used by the sync layer).
-/// Returns `(category, slug, title, summary, tags)`.
+/// Read the project memory index from Turso. Returns empty list as memory is local-only.
+#[allow(dead_code)]
 pub async fn fetch_cloud_memory(
-    client: &reqwest::Client,
-    cfg: &cloud::TursoConfig,
-    project_id: &str,
+    _client: &reqwest::Client,
+    _cfg: &cloud::TursoConfig,
+    _project_id: &str,
 ) -> Vec<(String, String, String, String, String)> {
-    if ensure_memory_index_table(client, cfg).await.is_err() {
-        return Vec::new();
-    }
-    let Ok(result) = cloud::turso_execute(
-        client,
-        cfg,
-        "SELECT category, slug, title, summary, tags FROM project_memory_index WHERE project_id = ?",
-        vec![Some(project_id.to_string())],
-    )
-    .await
-    else {
-        return Vec::new();
-    };
-    rows(&result)
-        .iter()
-        .map(|row| {
-            (
-                cell_text(row, 0),
-                cell_text(row, 1),
-                cell_opt(row, 2).unwrap_or_default(),
-                cell_opt(row, 3).unwrap_or_default(),
-                cell_opt(row, 4).unwrap_or_default(),
-            )
-        })
-        .collect()
+    Vec::new()
 }
 
+#[allow(dead_code)]
 pub fn cached_memory_from(
     rows: Vec<(String, String, String, String, String)>,
 ) -> Vec<CachedMemory> {
@@ -801,58 +697,22 @@ pub fn cached_memory_from(
         .collect()
 }
 
-// --- Turso (org memory: shared facts, content included) ---
+// --- Turso (org memory: shared facts) ---
 
+#[allow(dead_code)]
 pub async fn ensure_org_memory_table(
-    client: &reqwest::Client,
-    cfg: &cloud::TursoConfig,
+    _client: &reqwest::Client,
+    _cfg: &cloud::TursoConfig,
 ) -> Result<(), String> {
-    cloud::turso_execute(
-        client,
-        cfg,
-        "CREATE TABLE IF NOT EXISTS org_memory_index (\
-            id TEXT PRIMARY KEY NOT NULL, org_id TEXT NOT NULL, slug TEXT NOT NULL, \
-            title TEXT, body TEXT, tags TEXT, \
-            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
-        vec![],
-    )
-    .await?;
-    cloud::turso_execute(
-        client,
-        cfg,
-        "CREATE UNIQUE INDEX IF NOT EXISTS org_memory_index_unq ON org_memory_index (org_id, slug)",
-        vec![],
-    )
-    .await?;
     Ok(())
 }
 
-/// Read org memory from Turso (used by the sync layer).
+/// Read org memory from Turso.
+#[allow(dead_code)]
 pub async fn fetch_cloud_org_memory(
-    client: &reqwest::Client,
-    cfg: &cloud::TursoConfig,
-    org_id: &str,
+    _client: &reqwest::Client,
+    _cfg: &cloud::TursoConfig,
+    _org_id: &str,
 ) -> Vec<CachedOrgMemory> {
-    if ensure_org_memory_table(client, cfg).await.is_err() {
-        return Vec::new();
-    }
-    let Ok(result) = cloud::turso_execute(
-        client,
-        cfg,
-        "SELECT slug, title, body, tags FROM org_memory_index WHERE org_id = ?",
-        vec![Some(org_id.to_string())],
-    )
-    .await
-    else {
-        return Vec::new();
-    };
-    rows(&result)
-        .iter()
-        .map(|row| CachedOrgMemory {
-            slug: cell_text(row, 0),
-            title: cell_opt(row, 1).unwrap_or_default(),
-            body: cell_opt(row, 2).unwrap_or_default(),
-            tags: cell_opt(row, 3).unwrap_or_default(),
-        })
-        .collect()
+    Vec::new()
 }

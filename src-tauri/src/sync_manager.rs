@@ -11,14 +11,13 @@
 // connectors for those orgs/projects. Sign-out wipes it entirely.
 
 use crate::cloud::{self, cell_opt, cell_text, rows, TursoConfig};
-use crate::db::{CachedConnector, CachedLlmKey, CachedOrgSkill, CachedSkill, Db};
-use crate::memory;
-use crate::wiki;
+use crate::db::{CachedConnector, CachedLlmKey, Db};
 use chrono::Utc;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
-const BACKGROUND_INTERVAL: Duration = Duration::from_secs(30 * 60);
+// Silent background tick once every 24 hours. Usage also aggregates on-demand when visiting the Usage page.
+const BACKGROUND_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn now() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
@@ -101,22 +100,16 @@ async fn sync_connectors(
     scope_id: &str,
     synced_at: &str,
 ) {
+    if crate::connectors::ensure_connectors_table_for_scope(client, cfg, scope)
+        .await
+        .is_err()
+    {
+        return;
+    }
     let sql = match scope {
-        "account" => {
-            if crate::connectors::ensure_account_connectors_table(client, cfg)
-                .await
-                .is_err()
-            {
-                return;
-            }
-            "SELECT service, status, credentials_encrypted FROM account_connectors WHERE user_id = ?"
-        }
-        "org" => {
-            "SELECT service, status, credentials_encrypted FROM org_connectors WHERE org_id = ?"
-        }
-        "project" => {
-            "SELECT service, status, credentials_encrypted FROM connectors WHERE project_id = ?"
-        }
+        "account" => "SELECT service, status, credentials_encrypted FROM account_connectors WHERE user_id = ?",
+        "org" => "SELECT service, status, credentials_encrypted FROM org_connectors WHERE org_id = ?",
+        "project" => "SELECT service, status, credentials_encrypted FROM project_connectors WHERE project_id = ?",
         _ => return,
     };
     let result =
@@ -139,96 +132,6 @@ async fn sync_connectors(
 
     let db = app.state::<Db>();
     let _ = db.replace_cached_connectors(scope, scope_id, &connectors, synced_at);
-}
-
-// Mirror the Turso project_skill_index (metadata only) into the local
-// skill_index_cache so cross-device skill listings never hit Turso live.
-async fn sync_skills(
-    app: &AppHandle,
-    client: &reqwest::Client,
-    cfg: &TursoConfig,
-    project_id: &str,
-    synced_at: &str,
-) {
-    let cloud_skills = crate::skills::fetch_cloud_skills(client, cfg, project_id).await;
-    let skills: Vec<CachedSkill> = cloud_skills
-        .into_iter()
-        .map(|(skill_name, tags, scope, active)| CachedSkill {
-            skill_name,
-            tags,
-            scope,
-            active,
-        })
-        .collect();
-    let db = app.state::<Db>();
-    let _ = db.replace_cached_skills(project_id, &skills, synced_at);
-}
-
-// Mirror the Turso org_skill_index (references to global-library skills) into
-// the local org_skill_cache.
-async fn sync_org_skills(
-    app: &AppHandle,
-    client: &reqwest::Client,
-    cfg: &TursoConfig,
-    org_id: &str,
-    synced_at: &str,
-) {
-    let refs = crate::skills::fetch_cloud_org_skills(client, cfg, org_id).await;
-    let skills: Vec<CachedOrgSkill> = refs
-        .into_iter()
-        .map(
-            |(skill_name, tags, skill_catalog_id, author)| CachedOrgSkill {
-                skill_name,
-                tags,
-                skill_catalog_id,
-                author,
-            },
-        )
-        .collect();
-    let db = app.state::<Db>();
-    let _ = db.replace_cached_org_skills(org_id, &skills, synced_at);
-}
-
-// Mirror the Turso project_memory_index (metadata + summaries) into the local
-// memory_index_cache for cross-device restore.
-async fn sync_memory(
-    app: &AppHandle,
-    client: &reqwest::Client,
-    cfg: &TursoConfig,
-    project_id: &str,
-    synced_at: &str,
-) {
-    let rows = memory::fetch_cloud_memory(client, cfg, project_id).await;
-    let entries = memory::cached_memory_from(rows);
-    let db = app.state::<Db>();
-    let _ = db.replace_cached_memory(project_id, &entries, synced_at);
-}
-
-// Mirror the Turso wiki_index (full content) into the local wiki_index_cache.
-async fn sync_wiki(
-    app: &AppHandle,
-    client: &reqwest::Client,
-    cfg: &TursoConfig,
-    project_id: &str,
-    synced_at: &str,
-) {
-    let pages = wiki::fetch_cloud_wiki(client, cfg, project_id).await;
-    let db = app.state::<Db>();
-    let _ = db.replace_cached_wiki(project_id, &pages, synced_at);
-}
-
-// Mirror the Turso org_memory_index (shared facts, content included) into the
-// local org_memory_cache.
-async fn sync_org_memory(
-    app: &AppHandle,
-    client: &reqwest::Client,
-    cfg: &TursoConfig,
-    org_id: &str,
-    synced_at: &str,
-) {
-    let entries = memory::fetch_cloud_org_memory(client, cfg, org_id).await;
-    let db = app.state::<Db>();
-    let _ = db.replace_cached_org_memory(org_id, &entries, synced_at);
 }
 
 // Mirror the desktop-managed project settings from the cloud projects row into
@@ -313,20 +216,13 @@ async fn sync_org_projects(
         sync_project_settings(app, client, cfg, &project_id).await;
         sync_llm(app, client, cfg, "project", &project_id, synced_at).await;
         sync_connectors(app, client, cfg, "project", &project_id, synced_at).await;
-        sync_skills(app, client, cfg, &project_id, synced_at).await;
-        sync_memory(app, client, cfg, &project_id, synced_at).await;
-        sync_wiki(app, client, cfg, &project_id, synced_at).await;
         crate::usage::pull_usage(app, client, cfg, "project_usage", &project_id).await;
     }
 }
 
-/// Full initial sync, scoped to the signed-in user. Clears stale data (e.g. a
-/// previous user's) before repopulating. Silent no-op if not signed in.
+/// Full initial sync, scoped to the signed-in user. Silent no-op if not signed in.
 pub async fn sync_on_startup(app: &AppHandle) {
     let Some((user_id, org_ids)) = identity(app) else {
-        // Not signed in: ensure nothing cloud-related lingers locally.
-        let db = app.state::<Db>();
-        let _ = db.clear_cloud_cache();
         return;
     };
 
@@ -335,11 +231,6 @@ pub async fn sync_on_startup(app: &AppHandle) {
     };
     let client = reqwest::Client::new();
     let synced_at = now();
-
-    {
-        let db = app.state::<Db>();
-        let _ = db.clear_cloud_cache();
-    }
 
     // Re-push any usage events that never reached the cloud (e.g. offline at
     // session end) before pulling the shared totals back down.
@@ -357,8 +248,6 @@ pub async fn sync_on_startup(app: &AppHandle) {
     for org_id in &org_ids {
         sync_llm(app, &client, &cfg, "org", org_id, &synced_at).await;
         sync_connectors(app, &client, &cfg, "org", org_id, &synced_at).await;
-        sync_org_skills(app, &client, &cfg, org_id, &synced_at).await;
-        sync_org_memory(app, &client, &cfg, org_id, &synced_at).await;
         crate::usage::pull_usage(app, &client, &cfg, "org_usage", org_id).await;
         sync_org_projects(app, &client, &cfg, org_id, &synced_at).await;
     }
@@ -382,8 +271,6 @@ pub async fn sync_on_update(app: &AppHandle, entity_type: &str, id: &str) {
         "org" => {
             sync_llm(app, &client, &cfg, "org", id, &synced_at).await;
             sync_connectors(app, &client, &cfg, "org", id, &synced_at).await;
-            sync_org_skills(app, &client, &cfg, id, &synced_at).await;
-            sync_org_memory(app, &client, &cfg, id, &synced_at).await;
             crate::usage::pull_usage(app, &client, &cfg, "org_usage", id).await;
             sync_org_projects(app, &client, &cfg, id, &synced_at).await;
         }
@@ -391,9 +278,6 @@ pub async fn sync_on_update(app: &AppHandle, entity_type: &str, id: &str) {
             sync_project_settings(app, &client, &cfg, id).await;
             sync_llm(app, &client, &cfg, "project", id, &synced_at).await;
             sync_connectors(app, &client, &cfg, "project", id, &synced_at).await;
-            sync_skills(app, &client, &cfg, id, &synced_at).await;
-            sync_memory(app, &client, &cfg, id, &synced_at).await;
-            sync_wiki(app, &client, &cfg, id, &synced_at).await;
             crate::usage::pull_usage(app, &client, &cfg, "project_usage", id).await;
         }
         _ => {}

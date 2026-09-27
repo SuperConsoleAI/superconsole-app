@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Download, FolderOpen } from "lucide-react";
+import { Download, FolderOpen, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -124,7 +124,7 @@ export function AddWorkspaceDialog({
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-lg min-w-0 overflow-hidden">
         <DialogHeader>
           <DialogTitle>Add workspace</DialogTitle>
           <DialogDescription>
@@ -133,9 +133,10 @@ export function AddWorkspaceDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-4">
-          <div className="grid grid-cols-2 gap-2">
+        <div className="flex min-w-0 w-full flex-col gap-4">
+          <div className="grid grid-cols-2 gap-2 min-w-0 w-full">
             <Button
+              type="button"
               variant={mode === "folder" ? "secondary" : "outline"}
               size="sm"
               className={cn("h-8", mode === "folder" && "ring-1 ring-primary")}
@@ -145,6 +146,7 @@ export function AddWorkspaceDialog({
               Existing folder
             </Button>
             <Button
+              type="button"
               variant={mode === "repo" ? "secondary" : "outline"}
               size="sm"
               className={cn("h-8", mode === "repo" && "ring-1 ring-primary")}
@@ -156,7 +158,7 @@ export function AddWorkspaceDialog({
           </div>
 
           {mode === "repo" && (
-            <div className="flex flex-col gap-1.5">
+            <div className="flex min-w-0 w-full flex-col gap-1.5">
               <label className="text-sm font-medium">Repository</label>
               <Input
                 value={repo}
@@ -173,17 +175,17 @@ export function AddWorkspaceDialog({
             </div>
           )}
 
-          <div className="flex flex-col gap-1.5">
+          <div className="flex min-w-0 w-full flex-col gap-1.5">
             <label className="text-sm font-medium">
               {mode === "repo" ? "Clone into folder" : "Folder"}
             </label>
-            <div className="flex gap-2">
+            <div className="flex min-w-0 w-full gap-2">
               <Input
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
                 placeholder={mode === "repo" ? "/path/to/parent-folder" : "/path/to/workspace"}
               />
-              <Button variant="outline" size="icon" onClick={pickFolder}>
+              <Button type="button" variant="outline" size="icon" className="shrink-0" onClick={pickFolder}>
                 <FolderOpen className="h-4 w-4" />
               </Button>
             </div>
@@ -195,7 +197,7 @@ export function AddWorkspaceDialog({
             )}
           </div>
 
-          <div className="flex flex-col gap-1.5">
+          <div className="flex min-w-0 w-full flex-col gap-1.5">
             <label className="text-sm font-medium">
               Name{mode === "repo" && " (optional)"}
             </label>
@@ -206,21 +208,44 @@ export function AddWorkspaceDialog({
             />
           </div>
 
-          <div className="flex flex-col gap-1.5">
-            <label className="text-sm font-medium">CLI</label>
-            <div className="flex gap-2">
-              {CLI_PRESETS.map((preset) => (
+          <div className="flex min-w-0 w-full flex-col gap-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">Start with</label>
+              <span className="text-[11px] text-muted-foreground">Scroll to see all</span>
+            </div>
+            <div className="relative min-w-0 w-full">
+              <div
+                className="flex min-w-0 w-full items-center gap-2 overflow-x-auto py-1 no-scrollbar"
+                onWheel={(e) => {
+                  if (e.deltaY !== 0) {
+                    e.currentTarget.scrollLeft += e.deltaY;
+                  }
+                }}
+              >
                 <Button
-                  key={preset.id}
-                  variant={cli === preset.id ? "secondary" : "outline"}
+                  type="button"
+                  variant={cli === "chat" ? "secondary" : "outline"}
                   size="sm"
-                  className={cli === preset.id ? "ring-1 ring-primary" : ""}
-                  onClick={() => setCli(preset.id)}
+                  className={cn("h-8 shrink-0 gap-1.5", cli === "chat" && "ring-1 ring-primary")}
+                  onClick={() => setCli("chat")}
                 >
-                  <PresetIcon preset={preset.id} className="h-3.5 w-3.5" />
-                  {preset.label}
+                  <MessageSquare className="h-3.5 w-3.5 text-primary" />
+                  Chat
                 </Button>
-              ))}
+                {CLI_PRESETS.map((preset) => (
+                  <Button
+                    type="button"
+                    key={preset.id}
+                    variant={cli === preset.id ? "secondary" : "outline"}
+                    size="sm"
+                    className={cn("h-8 shrink-0 gap-1.5", cli === preset.id && "ring-1 ring-primary")}
+                    onClick={() => setCli(preset.id)}
+                  >
+                    <PresetIcon preset={preset.id} className="h-3.5 w-3.5" />
+                    {preset.label}
+                  </Button>
+                ))}
+              </div>
             </div>
           </div>
 

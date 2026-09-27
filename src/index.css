@@ -19,6 +19,18 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "SuperConsoleSerif";
+  src: url("./assets/fonts/SuperConsoleSerif.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+.font-brand {
+  font-family: "SuperConsoleSerif", serif;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /*
@@ -29,7 +41,7 @@
 
 :root {
   /* Light: warm cream, ink text, terracotta accent */
-  --background: oklch(0.977 0.005 91);          /* #faf9f5 cream */
+  --background: #FAF9F5;                         /* #faf9f5 cream */
   --foreground: oklch(0.328 0.014 95);          /* #3d3929 warm ink */
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.328 0.014 95);
@@ -47,41 +59,71 @@
   --destructive-foreground: oklch(0.985 0.005 91);
   --border: oklch(0.9 0.008 91);
   --input: oklch(0.9 0.008 91);
-  --ring: oklch(0.667 0.123 40);
+  --ring: #2A78D6;
   --radius: 0.625rem;
 
-  --terminal-bg: oklch(0.234 0.006 80);
+  --terminal-bg: #FAF9F5;                       /* light terminal bg = #FAF9F5 */
   --sidebar: oklch(0.962 0.006 91);
   --sidebar-foreground: oklch(0.328 0.014 95);
   --sidebar-border: oklch(0.9 0.008 91);
+
+  --icon: #5E5B54;
+
+  /* Buttons */
+  --button: oklch(0.667 0.123 40);
+  --button-foreground: oklch(0.985 0.005 91);
+  --button-secondary: #3B3B3B;
+  --button-secondary-foreground: #FFFFFF;
+
+  /* Toggle box (dark+light both same) */
+  --toggle-box: #2A78D6;
+  --toggle-box-hover: #3887E5;
+  --toggle-circle: #FFFFFF;
 }
 
 .dark {
-  /* Dark: warm charcoal, parchment text, brighter terracotta */
-  --background: oklch(0.234 0.006 80);          /* #262624 warm charcoal */
-  --foreground: oklch(0.937 0.008 91);          /* #f0eee7 parchment */
-  --card: oklch(0.268 0.007 80);                /* #2b2a27 */
-  --card-foreground: oklch(0.937 0.008 91);
-  --popover: oklch(0.268 0.007 80);
-  --popover-foreground: oklch(0.937 0.008 91);
+  /* Dark: Canonical SuperConsole palette */
+  --background: #151515;                        /* main page bg = #151515 */
+  --foreground: #F0EFEB;                        /* text primary #F0EFEB */
+  --card: #151515;
+  --card-foreground: #F0EFEB;
+  --popover: #151515;
+  --popover-foreground: #F0EFEB;
   --primary: oklch(0.705 0.13 41);              /* lifted terracotta */
   --primary-foreground: oklch(0.2 0.006 80);
-  --secondary: oklch(0.305 0.007 80);
-  --secondary-foreground: oklch(0.937 0.008 91);
-  --muted: oklch(0.305 0.007 80);
-  --muted-foreground: oklch(0.69 0.01 91);
-  --accent: oklch(0.33 0.009 75);
-  --accent-foreground: oklch(0.937 0.008 91);
+  --secondary: #3B3B3B;                         /* button secondary = #3B3B3B */
+  --secondary-foreground: #F0EFEB;
+  --muted: #262626;                             /* #262626 = hover */
+  --muted-foreground: #898781;                  /* #898781 = secondary */
+  --accent: #383838;                            /* #383838 = active project/page */
+  --accent-foreground: #F0EFEB;                 /* active text #F0EFEB */
+  --icon: #C3C2B7;                              /* icon colour #C3C2B7 on dark */
   --destructive: oklch(0.62 0.19 27);
   --destructive-foreground: oklch(0.95 0.005 91);
-  --border: oklch(0.33 0.008 80);
-  --input: oklch(0.33 0.008 80);
-  --ring: oklch(0.705 0.13 41);
+  --border: #262626;
+  --input: #262626;
+  --ring: #3887E5;
 
-  --terminal-bg: oklch(0.205 0.006 80);
-  --sidebar: oklch(0.215 0.006 80);
-  --sidebar-foreground: oklch(0.937 0.008 91);
-  --sidebar-border: oklch(0.29 0.007 80);
+  --terminal-bg: #151515;                       /* terminal bg = same as background #151515 */
+  --sidebar: #111111;                           /* sidebar = #111111 */
+  --sidebar-foreground: #F0EFEB;                /* sidebar #F0EFEB = text */
+  --sidebar-border: #262626;
+  --sidebar-active: #383838;                    /* active project/page */
+  --sidebar-active-foreground: #F0EFEB;         /* active text */
+
+  --hover: #262626;                             /* #262626 = hover */
+  --active: #383838;                            /* #383838 = active project/page */
+
+  /* Buttons */
+  --button: oklch(0.705 0.13 41);               /* previous button = oklch(0.705 0.13 41) */
+  --button-foreground: oklch(0.2 0.006 80);
+  --button-secondary: #3B3B3B;                  /* button secondary = #3B3B3B */
+  --button-secondary-foreground: #F0EFEB;
+
+  /* Toggle box (dark+light both same) */
+  --toggle-box: #2A78D6;                        /* toggle box = #2A78D6 */
+  --toggle-box-hover: #3887E5;                  /* on hover = #3887E5 */
+  --toggle-circle: #FFFFFF;                     /* circle = #FFFFFF */
 }
 
 @theme inline {
@@ -99,6 +141,7 @@
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+  --color-icon: var(--icon);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
@@ -108,6 +151,17 @@
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-sidebar-active-foreground: var(--sidebar-active-foreground);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-button: var(--button);
+  --color-button-foreground: var(--button-foreground);
+  --color-button-secondary: var(--button-secondary);
+  --color-button-secondary-foreground: var(--button-secondary-foreground);
+  --color-toggle-box: var(--toggle-box);
+  --color-toggle-box-hover: var(--toggle-box-hover);
+  --color-toggle-circle: var(--toggle-circle);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -140,16 +194,31 @@
   letter-spacing: -0.01em;
 }
 
+.xterm {
+  background-color: var(--background) !important;
+}
+
+.xterm .xterm-screen,
 .xterm .xterm-viewport {
   background-color: transparent !important;
 }
 
-.xterm .xterm-viewport::-webkit-scrollbar {
-  width: 8px;
+.xterm .xterm-viewport {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
 }
+
+.xterm .xterm-viewport::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-track,
 .xterm .xterm-viewport::-webkit-scrollbar-thumb {
-  background: oklch(0.45 0.008 80 / 0.5);
-  border-radius: 4px;
+  display: none !important;
+  background: transparent !important;
 }
 
 ::selection {

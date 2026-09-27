@@ -24,8 +24,6 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use hkdf::Hkdf;
 use sha2::Sha256;
 
-const KEYRING_SERVICE: &str = "com.superconsole.desktop";
-const KEYRING_ACCOUNT: &str = "llm_enc_key";
 
 // Salt for the global (non-scoped) key — must match web portal.
 const HKDF_SALT_GLOBAL: &[u8] = b"superconsole-llm-keys-v1";
@@ -62,7 +60,7 @@ fn aes_decrypt(key: &[u8; 32], encoded: &str) -> Result<Vec<u8>, String> {
         .map_err(|_| "decryption failed".to_string())
 }
 
-// ── Global key (backward-compat, keychain-cached) ────────────────────────────
+// ── Global key (backward-compat, in-memory HKDF derived) ──────────────────────
 
 fn derive_key_global() -> Result<[u8; 32], String> {
     let password = cloud::cookie_password()?;
@@ -74,27 +72,11 @@ fn derive_key_global() -> Result<[u8; 32], String> {
 }
 
 fn encryption_key() -> Result<[u8; 32], String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).map_err(|e| e.to_string())?;
-    if let Ok(b64) = entry.get_password() {
-        if let Ok(bytes) = STANDARD.decode(b64) {
-            if bytes.len() == 32 {
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&bytes);
-                return Ok(key);
-            }
-        }
-    }
-    let key = derive_key_global()?;
-    let _ = entry.set_password(&STANDARD.encode(key));
-    Ok(key)
+    derive_key_global()
 }
 
-/// Remove the derived AES key cached in the OS keychain. It is re-derived from
-/// WORKOS_COOKIE_PASSWORD on next use, so this is safe to call anytime.
+/// No-op: keys are derived deterministically in RAM from WORKOS_COOKIE_PASSWORD.
 pub fn clear_cached_key() -> Result<(), String> {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT) {
-        let _ = entry.delete_credential();
-    }
     Ok(())
 }
 

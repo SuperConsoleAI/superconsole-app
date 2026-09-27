@@ -1,3 +1,7 @@
+/**
+ * SettingsPage Component — Multi-tier settings console (Account, Organization, Project)
+ * Manages models, connectors, team members, appearance, and general preferences.
+ */
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
@@ -5,9 +9,9 @@ import {
   BookOpen,
   Blocks,
   Check,
-  ChevronsUpDown,
   Copy,
   CreditCard,
+  Database,
   Eye,
   EyeOff,
   FileCode,
@@ -43,17 +47,12 @@ import {
 } from "@/lib/api";
 import { ConnectorManager } from "@/components/connectors/ConnectorManager";
 export { ConnectorManager };
+import { LocalDBStudio } from "@/components/localdb/LocalDBStudio";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { PresetIcon } from "@/components/PresetIcon";
 import { useTheme } from "@/components/theme-provider";
 
@@ -63,12 +62,6 @@ import { useWorkspaces } from "@/lib/workspace-context";
 import { cn } from "@/lib/utils";
 
 type TopTab = "account" | "org" | "project";
-
-const TOP_TABS: { id: TopTab; label: string }[] = [
-  { id: "account", label: "Account" },
-  { id: "org", label: "Organisation" },
-  { id: "project", label: "Project" },
-];
 
 const NAV: Record<TopTab, string[]> = {
   account: [
@@ -80,9 +73,9 @@ const NAV: Record<TopTab, string[]> = {
     "Commands",
     "Integrations",
     "Connectors",
+    "LocalDB",
     "Security",
     "Notifications",
-    "Library",
   ],
   org: ["General", "Team", "Models", "Integrations", "Connectors", "Billing"],
   project: [
@@ -108,6 +101,7 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   Commands: Terminal,
   Integrations: Blocks,
   Connectors: Plug,
+  LocalDB: Database,
   Messaging: MessageSquare,
   Security: Shield,
   Notifications: Bell,
@@ -125,7 +119,7 @@ export function SettingsPage({
   initialSection?: string;
 } = {}) {
   const { workspaces } = useWorkspaces();
-  const { activeCloudOrg } = useAuth();
+  const { activeCloudOrg, setActiveCloudOrgId } = useAuth();
 
   const [tab, setTab] = useState<TopTab>(initialTab ?? "account");
   const [query, setQuery] = useState("");
@@ -134,6 +128,16 @@ export function SettingsPage({
     org: initialTab === "org" && initialSection ? initialSection : "General",
     project: initialTab === "project" && initialSection ? initialSection : "General",
   });
+
+  useEffect(() => {
+    if (initialTab) {
+      setTab(initialTab);
+    }
+    if (initialSection) {
+      const targetTab = initialTab ?? tab;
+      setSection((prev) => ({ ...prev, [targetTab]: initialSection }));
+    }
+  }, [initialTab, initialSection]);
 
   // Project scope selection, shared across Project sub-sections.
   const [workspaceId, setWorkspaceId] = useState<number | null>(null);
@@ -167,6 +171,37 @@ export function SettingsPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, workspaces, activeCloudOrg]);
 
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("settings-tab-sync", {
+        detail: { tab, workspaceId },
+      })
+    );
+  }, [tab, workspaceId]);
+
+  useEffect(() => {
+    const onTab = (e: any) => { if (e.detail) setTab(e.detail); };
+    const onProject = (e: any) => { if (typeof e.detail === "number") selectProject(e.detail); };
+    const onOrg = (e: any) => { if (e.detail) setActiveCloudOrgId(e.detail); };
+    const onNavMounted = () => {
+      window.dispatchEvent(
+        new CustomEvent("settings-tab-sync", {
+          detail: { tab, workspaceId },
+        })
+      );
+    };
+    window.addEventListener("settings-tab-change", onTab);
+    window.addEventListener("settings-project-change", onProject);
+    window.addEventListener("settings-org-change", onOrg);
+    window.addEventListener("settings-nav-mounted", onNavMounted);
+    return () => {
+      window.removeEventListener("settings-tab-change", onTab);
+      window.removeEventListener("settings-project-change", onProject);
+      window.removeEventListener("settings-org-change", onOrg);
+      window.removeEventListener("settings-nav-mounted", onNavMounted);
+    };
+  }, [tab, workspaceId, setActiveCloudOrgId]);
+
   const active = section[tab];
   const setActive = (s: string) =>
     setSection((prev) => ({ ...prev, [tab]: s }));
@@ -177,33 +212,6 @@ export function SettingsPage({
 
   return (
     <div className="flex h-full flex-col">
-      {/* Top bar: three-level tabs + inline scope switcher */}
-      <div className="flex shrink-0 items-center gap-5 border-b px-5">
-        {TOP_TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              "relative py-3 text-[13px] transition-colors",
-              tab === t.id
-                ? "font-medium text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full after:bg-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-        {tab === "org" && (
-          <div className="ml-1">
-            <OrgSwitcher />
-          </div>
-        )}
-        {tab === "project" && (
-          <div className="ml-1">
-            <ProjectSwitcher workspaceId={workspaceId} onSelect={selectProject} />
-          </div>
-        )}
-      </div>
 
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar">
@@ -239,10 +247,25 @@ export function SettingsPage({
             })}
           </ScrollArea>
 
-          <div className="border-t p-3">
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => {
+              setTab("account");
+              setSection((prev) => ({ ...prev, account: "Library" }));
+            }}
+            className="w-full h-6 text-transparent select-none cursor-default bg-transparent text-[11px] shrink-0 outline-none"
+            aria-label="Library"
+          >
+            Library
+          </button>
+
+          <div
+            className="border-t py-3.5 px-3 flex items-center min-h-[44px] cursor-pointer hover:bg-accent/30 transition-colors"
+            onClick={() => openUrl("https://github.com").catch(() => {})}
+          >
             <button
-              className="flex items-center gap-2 px-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
-              onClick={() => openUrl("https://github.com").catch(() => {})}
+              className="flex items-center gap-2 px-1 text-xs text-muted-foreground transition-colors hover:text-foreground cursor-pointer"
             >
               <BookOpen className="h-3.5 w-3.5" />
               Documentation
@@ -250,22 +273,36 @@ export function SettingsPage({
           </div>
         </aside>
 
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="mx-auto max-w-2xl px-8 py-8">
-            <h2 className="font-display text-xl font-semibold">{active}</h2>
-            <div className="mt-6">
-              <Content
-                tab={tab}
-                section={active}
-                workspaceId={workspaceId}
-                projectId={projectId}
-                projectError={projectError}
-                ensuring={ensuring}
-                hasWorkspaces={workspaces.length > 0}
-              />
-            </div>
+        {active === "LocalDB" ? (
+          <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+            <Content
+              tab={tab}
+              section={active}
+              workspaceId={workspaceId}
+              projectId={projectId}
+              projectError={projectError}
+              ensuring={ensuring}
+              hasWorkspaces={workspaces.length > 0}
+            />
           </div>
-        </ScrollArea>
+        ) : (
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="mx-auto max-w-2xl px-8 py-8">
+              <h2 className="font-display text-xl font-semibold">{active}</h2>
+              <div className="mt-6">
+                <Content
+                  tab={tab}
+                  section={active}
+                  workspaceId={workspaceId}
+                  projectId={projectId}
+                  projectError={projectError}
+                  ensuring={ensuring}
+                  hasWorkspaces={workspaces.length > 0}
+                />
+              </div>
+            </div>
+          </ScrollArea>
+        )}
       </div>
     </div>
   );
@@ -332,6 +369,8 @@ function Content({
         ) : (
           <SignInPrompt label="manage connectors" />
         );
+      case "LocalDB":
+        return <LocalDBStudio />;
       case "Security":
         return <SecuritySection />;
       case "Notifications":
@@ -467,86 +506,6 @@ function SignInPrompt({ label }: { label: string }) {
     <div className="rounded-xl border border-dashed px-6 py-12 text-center">
       <p className="text-sm text-muted-foreground">Sign in to {label}.</p>
     </div>
-  );
-}
-
-function OrgSwitcher() {
-  const { auth, activeCloudOrg, setActiveCloudOrgId } = useAuth();
-  const orgs = auth?.orgs ?? [];
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button className="flex max-w-[200px] items-center gap-2 rounded-md border bg-background px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors hover:border-foreground/30">
-          <span className="truncate">
-            {activeCloudOrg?.name ?? "No organisation"}
-          </span>
-          <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[200px]">
-        {orgs.map((org) => (
-          <DropdownMenuItem
-            key={org.id}
-            onClick={() => setActiveCloudOrgId(org.id)}
-            className="flex items-center justify-between"
-          >
-            <span className="min-w-0">
-              <span className="block truncate text-[13px]">{org.name}</span>
-              <span className="block truncate text-[11px] capitalize text-muted-foreground">
-                {org.role} · {org.plan}
-              </span>
-            </span>
-            {org.id === activeCloudOrg?.id && (
-              <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-primary" />
-            )}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function ProjectSwitcher({
-  workspaceId,
-  onSelect,
-}: {
-  workspaceId: number | null;
-  onSelect: (id: number) => void;
-}) {
-  const { workspaces } = useWorkspaces();
-  const current = workspaces.find((w) => w.id === workspaceId);
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button className="flex max-w-[200px] items-center gap-2 rounded-md border bg-background px-2.5 py-1.5 text-left text-[13px] font-medium transition-colors hover:border-foreground/30">
-          <span className="truncate">
-            {current?.name ?? "Select a project"}
-          </span>
-          <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[200px]">
-        {workspaces.map((w) => (
-          <DropdownMenuItem
-            key={w.id}
-            onClick={() => onSelect(w.id)}
-            className="flex items-center justify-between"
-          >
-            <span className="min-w-0">
-              <span className="block truncate text-[13px]">{w.name}</span>
-              <span className="block truncate text-[11px] text-muted-foreground">
-                {w.cli}
-              </span>
-            </span>
-            {w.id === workspaceId && (
-              <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-primary" />
-            )}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 
@@ -1309,10 +1268,10 @@ function AppearanceSection() {
             >
               <div
                 className={cn(
-                  "flex h-20 items-center justify-center rounded-lg text-xs font-medium",
+                  "flex h-20 items-center justify-center rounded-lg border border-border/40 text-xs font-medium",
                   t === "light"
-                    ? "bg-[#faf9f5] text-[#3d3929]"
-                    : "bg-[#262624] text-[#f0eee7]",
+                    ? "bg-card text-foreground"
+                    : "dark bg-card text-foreground",
                 )}
               >
                 {t === "light" ? "Cream" : "Charcoal"}

@@ -40,16 +40,8 @@ export function InboxView({ workspaces }: { workspaces: Workspace[] }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-14 shrink-0 items-center gap-3 border-b bg-card/60 px-5">
-        <Inbox className="h-4 w-4 text-primary" />
-        <h1 className="font-display text-base font-semibold">Inbox</h1>
-        <span className="text-xs text-muted-foreground">
-          Output from scheduled jobs across all workspaces
-        </span>
-      </div>
-
       <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto flex max-w-3xl flex-col gap-2 px-5 py-4">
+        <div className="flex flex-col gap-2 px-5 py-4">
           {items.length === 0 && (
             <div className="rounded-xl border border-dashed py-16 text-center">
               <Inbox className="mx-auto h-8 w-8 text-muted-foreground/40" />

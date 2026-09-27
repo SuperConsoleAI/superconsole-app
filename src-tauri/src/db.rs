@@ -1,3 +1,5 @@
+pub mod schema;
+
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -10,6 +12,7 @@ pub struct Workspace {
     pub path: String,
     pub cli: String,
     pub organization_id: i64,
+    pub org_id: Option<String>,
     pub created_at: String,
     pub project_id: Option<String>,
     pub default_run_mode: String,
@@ -57,6 +60,8 @@ pub struct Job {
     #[serde(default)]
     pub last_run_tokens: i64,
     pub last_run_session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub user_id: Option<String>,
     // ── Loop system (Phase 25) ──
     /// JSON-encoded exit condition or NULL (run-once, existing behavior).
     pub exit_condition: Option<String>,
@@ -93,6 +98,17 @@ pub struct SessionLog {
     pub ended_at: Option<String>,
     pub label: Option<String>,
     pub session_id: String,
+    pub tokens_prompt: i64,
+    pub tokens_completion: i64,
+    pub tokens_reasoning: i64,
+    pub cost_usd: f64,
+    pub model: String,
+    pub provider: String,
+    pub user_id: Option<String>,
+    pub rate_prompt_per_1m: Option<f64>,
+    pub rate_cached_per_1m: Option<f64>,
+    pub rate_completion_per_1m: Option<f64>,
+    pub rate_reasoning_per_1m: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,7 +127,12 @@ pub struct SessionFeedItem {
     pub cost_usd: f64,
     pub job_id: Option<i64>,
     pub agent_id: Option<String>,
+    pub user_id: Option<String>,
     pub resume_id: String,
+    pub rate_prompt_per_1m: Option<f64>,
+    pub rate_cached_per_1m: Option<f64>,
+    pub rate_completion_per_1m: Option<f64>,
+    pub rate_reasoning_per_1m: Option<f64>,
 }
 
 /// Local metadata index for agents living in `.superconsole/agents/<name>/agent.md`.
@@ -159,6 +180,45 @@ pub struct SessionLogFile {
     pub tokens: i64,
     pub summary: String,
     pub cloud_id: Option<String>, // Turso row id once synced
+    pub user_id: Option<String>,
+    pub created_at: String,
+}
+
+/// A row in the org-scope shared session logs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct OrgSessionLogRow {
+    pub id: String,
+    pub org_id: String,
+    pub project_id: Option<String>,
+    pub session_id: Option<String>,
+    pub date: String,
+    pub agent_name: String,
+    pub model: String,
+    pub cost_usd: f64,
+    pub tokens: i64,
+    pub summary: String,
+    pub user_id: Option<String>,
+    pub created_at: String,
+}
+
+/// A row in the account/user-scope session logs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct AccountSessionLogRow {
+    pub id: String,
+    pub user_id: String,
+    pub file_path: String,
+    pub agent_id: Option<String>,
+    pub session_id: Option<String>,
+    pub date: String,
+    pub agent_name: String,
+    pub model: String,
+    pub cost_usd: f64,
+    pub tokens: i64,
+    pub summary: String,
     pub created_at: String,
 }
 
@@ -217,6 +277,10 @@ pub struct UsageEvent {
     pub estimated: bool,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
+    pub rate_prompt_per_1m: Option<f64>,
+    pub rate_cached_per_1m: Option<f64>,
+    pub rate_completion_per_1m: Option<f64>,
+    pub rate_reasoning_per_1m: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,6 +292,7 @@ pub struct ChatMessage {
     pub content: String,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub user_id: Option<String>,
     pub created_at: String,
 }
 
@@ -245,6 +310,7 @@ pub struct ChatSession {
     pub first_user: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -267,6 +333,7 @@ pub struct SkillIndexRow {
 
 /// A row mirrored from the Turso `project_skill_index` (metadata only).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CachedSkill {
     pub skill_name: String,
     pub tags: String,
@@ -277,6 +344,7 @@ pub struct CachedSkill {
 /// A reference mirrored from the Turso `org_skill_index`. Org skills are
 /// references (by name) to machine-global library skills; content is not stored.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CachedOrgSkill {
     pub skill_name: String,
     pub tags: String,
@@ -351,902 +419,17 @@ impl Db {
         std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
         let conn =
             Connection::open(app_data_dir.join("superconsole.db")).map_err(|e| e.to_string())?;
-        conn.execute_batch(
-            "PRAGMA foreign_keys = ON;
-            CREATE TABLE IF NOT EXISTS installed_plugins_cache (
-                id TEXT PRIMARY KEY,
-                plugin_id TEXT NOT NULL,
-                scope TEXT NOT NULL,
-                scope_id TEXT NOT NULL,
-                installed_at TEXT NOT NULL DEFAULT (datetime('now')),
-                installed_by TEXT NOT NULL DEFAULT '',
-                version TEXT NOT NULL DEFAULT '1.0.0',
-                skills_url TEXT NOT NULL DEFAULT '[]',
-                commands_url TEXT NOT NULL DEFAULT '[]',
-                agents_url TEXT NOT NULL DEFAULT '[]',
-                hooks_url TEXT NOT NULL DEFAULT '[]',
-                rules_url TEXT NOT NULL DEFAULT '[]',
-                mcp_url TEXT NOT NULL DEFAULT '[]',
-                skill_ids TEXT NOT NULL DEFAULT '[]',
-                agent_ids TEXT NOT NULL DEFAULT '[]',
-                mcp_ids TEXT NOT NULL DEFAULT '[]',
-                command_ids TEXT NOT NULL DEFAULT '[]',
-                hook_ids TEXT NOT NULL DEFAULT '[]',
-                rule_ids TEXT NOT NULL DEFAULT '[]',
-                connector_ids TEXT NOT NULL DEFAULT '[]'
-            );
-            CREATE INDEX IF NOT EXISTS installed_plugins_cache_scope_idx 
-                ON installed_plugins_cache(scope, scope_id);
-            CREATE TABLE IF NOT EXISTS workspaces (
-                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                 name                TEXT NOT NULL,
-                 path                TEXT NOT NULL UNIQUE,
-                 cli                 TEXT NOT NULL DEFAULT 'claude',
-                 created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-                 -- org/project linkage (added after initial release)
-                 organization_id     INTEGER NOT NULL DEFAULT 1,
-                 project_id          TEXT,
-                 -- per-workspace agent defaults + scripts
-                 default_run_mode    TEXT NOT NULL DEFAULT 'cli',
-                 default_cli         TEXT NOT NULL DEFAULT 'claude',
-                 default_provider    TEXT NOT NULL DEFAULT 'anthropic',
-                 default_model       TEXT NOT NULL DEFAULT '',
-                 script_setup        TEXT NOT NULL DEFAULT '',
-                 script_run          TEXT NOT NULL DEFAULT '',
-                 script_teardown     TEXT NOT NULL DEFAULT '',
-                 script_auto_run     INTEGER NOT NULL DEFAULT 0,
-                 repo_url            TEXT NOT NULL DEFAULT '',
-                 description         TEXT NOT NULL DEFAULT '',
-                 env_files           TEXT NOT NULL DEFAULT '[]'
-             );
-            CREATE TABLE IF NOT EXISTS jobs (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                workspace_id        INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                name                TEXT NOT NULL,
-                command             TEXT NOT NULL,
-                schedule            TEXT NOT NULL,
-                enabled             INTEGER NOT NULL DEFAULT 1,
-                last_run            TEXT,
-                next_run            TEXT,
-                -- Phase 16b: run mode, trigger type, connector scoping
-                run_mode            TEXT NOT NULL DEFAULT 'cli',
-                run_config          TEXT NOT NULL DEFAULT '{}',
-                trigger_type        TEXT NOT NULL DEFAULT 'cron',
-                trigger_config      TEXT NOT NULL DEFAULT '{}',
-                allowed_connectors  TEXT NOT NULL DEFAULT '[]',
-                -- Phase 23: post-run cost/usage tracking
-                last_run_cost_usd   REAL NOT NULL DEFAULT 0,
-                last_run_tokens     INTEGER NOT NULL DEFAULT 0,
-                last_run_session_id TEXT,
-                -- Phase 24: agent attribution (NULL = user/manual)
-                agent_id            TEXT,
-                -- Phase 25: loop system (NULL exit_condition = run-once, existing behavior)
-                exit_condition      TEXT,
-                max_attempts        INTEGER NOT NULL DEFAULT 1,
-                current_attempt     INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS session_history (
-                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                 workspace_id        INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                 session_id          TEXT NOT NULL,
-                 cli                 TEXT NOT NULL,
-                 started_at          TEXT NOT NULL DEFAULT (datetime('now')),
-                 ended_at            TEXT,
-                 -- user-assigned label (rename + search)
-                 label               TEXT,
-                 -- Phase 23: cost/usage tracking per session
-                 job_id              INTEGER,
-                 tokens_prompt       INTEGER NOT NULL DEFAULT 0,
-                 tokens_completion   INTEGER NOT NULL DEFAULT 0,
-                 tokens_reasoning    INTEGER NOT NULL DEFAULT 0,
-                 cost_usd            REAL NOT NULL DEFAULT 0,
-                 model               TEXT NOT NULL DEFAULT '',
-                 provider            TEXT NOT NULL DEFAULT '',
-                 last_output         TEXT NOT NULL DEFAULT '',
-                 -- Phase 24: agent attribution (NULL = user/manual)
-                 agent_id            TEXT
-             );
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS cloud_identity (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                payload TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS inbox (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                job_id INTEGER,
-                title TEXT NOT NULL,
-                output TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'unread',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );",
-        )
-        .map_err(|e| e.to_string())?;
 
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS organizations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            INSERT INTO organizations (id, name)
-                SELECT 1, 'Personal'
-                WHERE NOT EXISTS (SELECT 1 FROM organizations);",
-        )
-        .map_err(|e| e.to_string())?;
+        // Provision all local SQLite tables, indexes, and migrations cleanly
+        schema::localdb::provision_local_database(&conn)?;
 
-        let has_org_col = conn
-            .prepare("SELECT organization_id FROM workspaces LIMIT 1")
-            .is_ok();
-        if !has_org_col {
-            conn.execute_batch(
-                "ALTER TABLE workspaces ADD COLUMN organization_id INTEGER NOT NULL DEFAULT 1;",
-            )
-            .map_err(|e| e.to_string())?;
-        }
-
-        let has_project_col = conn
-            .prepare("SELECT project_id FROM workspaces LIMIT 1")
-            .is_ok();
-        if !has_project_col {
-            conn.execute_batch("ALTER TABLE workspaces ADD COLUMN project_id TEXT;")
-                .map_err(|e| e.to_string())?;
-        }
-
-        // Alterations for installed_plugins schema
-        for (col, decl) in [
-            ("installed_by", "TEXT NOT NULL DEFAULT ''"),
-            ("skills_url", "TEXT NOT NULL DEFAULT '[]'"),
-            ("commands_url", "TEXT NOT NULL DEFAULT '[]'"),
-            ("agents_url", "TEXT NOT NULL DEFAULT '[]'"),
-            ("hooks_url", "TEXT NOT NULL DEFAULT '[]'"),
-            ("rules_url", "TEXT NOT NULL DEFAULT '[]'"),
-            ("mcp_url", "TEXT NOT NULL DEFAULT '[]'"),
-            ("skill_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("mcp_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("command_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("connector_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("agent_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("hook_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("rule_ids", "TEXT NOT NULL DEFAULT '[]'"),
-        ] {
-            if conn
-                .prepare(&format!(
-                    "SELECT {} FROM installed_plugins_cache LIMIT 1",
-                    col
-                ))
-                .is_err()
-            {
-                let _ = conn.execute_batch(&format!(
-                    "ALTER TABLE installed_plugins_cache ADD COLUMN {} {};",
-                    col, decl
-                ));
-            }
-        }
-
-        for (col, decl) in [
-            ("agent_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("hook_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("rule_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("agents_url", "TEXT NOT NULL DEFAULT '[]'"),
-            ("hooks_url", "TEXT NOT NULL DEFAULT '[]'"),
-            ("rules_url", "TEXT NOT NULL DEFAULT '[]'"),
-            ("skill_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("mcp_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("command_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("connector_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("connector_auth", "TEXT NOT NULL DEFAULT '[]'"),
-            ("featured", "INTEGER NOT NULL DEFAULT 0"),
-        ] {
-            if conn
-                .prepare(&format!("SELECT {} FROM plugins_cache LIMIT 1", col))
-                .is_err()
-            {
-                let _ = conn.execute_batch(&format!(
-                    "ALTER TABLE plugins_cache ADD COLUMN {} {};",
-                    col, decl
-                ));
-            }
-        }
-
-        // Ensure catalog cache tables exist
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS plugins_cache (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                author TEXT NOT NULL DEFAULT '',
-                version TEXT NOT NULL DEFAULT '1.0.0',
-                icon_url TEXT NOT NULL DEFAULT '',
-                docs_url TEXT NOT NULL DEFAULT '',
-                github_url TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT '',
-                scope TEXT NOT NULL DEFAULT 'project',
-                skill_ids TEXT NOT NULL DEFAULT '[]',
-                agent_ids TEXT NOT NULL DEFAULT '[]',
-                agents_url TEXT NOT NULL DEFAULT '[]',
-                mcp_ids TEXT NOT NULL DEFAULT '[]',
-                command_ids TEXT NOT NULL DEFAULT '[]',
-                hook_ids TEXT NOT NULL DEFAULT '[]',
-                connector_ids TEXT NOT NULL DEFAULT '[]',
-                skills_url TEXT NOT NULL DEFAULT '[]',
-                commands_url TEXT NOT NULL DEFAULT '[]',
-                hooks_url TEXT NOT NULL DEFAULT '[]',
-                rules_url TEXT NOT NULL DEFAULT '[]',
-                rule_ids TEXT NOT NULL DEFAULT '[]',
-                mcp_url TEXT NOT NULL DEFAULT '[]',
-                skill_ids TEXT NOT NULL DEFAULT '[]',
-                mcp_ids TEXT NOT NULL DEFAULT '[]',
-                command_ids TEXT NOT NULL DEFAULT '[]',
-                hook_ids TEXT NOT NULL DEFAULT '[]',
-                rule_ids TEXT NOT NULL DEFAULT '[]',
-                connector_ids TEXT NOT NULL DEFAULT '[]',
-                rules_url TEXT NOT NULL DEFAULT '[]',
-                connector_auth TEXT NOT NULL DEFAULT '[]',
-                featured INTEGER NOT NULL DEFAULT 0,
-                synced_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS mcp_catalog_cache (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                author TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT '',
-                type TEXT NOT NULL DEFAULT '',
-                url TEXT NOT NULL DEFAULT '',
-                command TEXT NOT NULL DEFAULT '',
-                args TEXT NOT NULL DEFAULT '[]',
-                env TEXT NOT NULL DEFAULT '{}',
-                required_env_vars TEXT NOT NULL DEFAULT '[]',
-                github_url TEXT NOT NULL DEFAULT '',
-                content TEXT NOT NULL DEFAULT '',
-                icon_url TEXT NOT NULL DEFAULT '',
-                docs_url TEXT NOT NULL DEFAULT '',
-                install_count INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS commands_catalog_cache (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                slash TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                author TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT '',
-                github_url TEXT NOT NULL DEFAULT '',
-                content TEXT,
-                icon_url TEXT,
-                install_count INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS hooks_catalog_cache (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                author TEXT NOT NULL DEFAULT '',
-                hook_type TEXT NOT NULL DEFAULT '',
-                github_url TEXT NOT NULL DEFAULT '',
-                content TEXT,
-                icon_url TEXT,
-                install_count INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS connector_catalog_cache (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT '',
-                auth_type TEXT NOT NULL DEFAULT '',
-                oauth_url TEXT NOT NULL DEFAULT '',
-                api_key_fields TEXT NOT NULL DEFAULT '[]',
-                docs_url TEXT NOT NULL DEFAULT '',
-                icon_url TEXT NOT NULL DEFAULT '',
-                scope TEXT NOT NULL DEFAULT '',
-                install_count INTEGER NOT NULL DEFAULT 0
-            );",
-        )
-        .map_err(|e| e.to_string())?;
-
-        // Alterations for plugins_cache
-        for (col, decl) in [
-            ("agent_ids", "TEXT NOT NULL DEFAULT '[]'"),
-            ("agents_url", "TEXT NOT NULL DEFAULT '[]'"),
-            ("mcp_url", "TEXT NOT NULL DEFAULT '[]'"),
-        ] {
-            if conn
-                .prepare(&format!("SELECT {} FROM plugins_cache LIMIT 1", col))
-                .is_err()
-            {
-                let _ = conn.execute_batch(&format!(
-                    "ALTER TABLE plugins_cache ADD COLUMN {} {};",
-                    col, decl
-                ));
-            }
-        }
-
-        // Project settings: default session, lifecycle scripts, repo/description.
-        // All defaulted so existing rows keep current behaviour.
-        if conn
-            .prepare("SELECT author FROM project_skills LIMIT 1")
-            .is_err()
-        {
-            let _ = conn.execute_batch(
-                "ALTER TABLE project_skills ADD COLUMN author TEXT NOT NULL DEFAULT '';",
-            );
-        }
-
-        for (col, decl) in [
-            ("default_run_mode", "TEXT NOT NULL DEFAULT 'cli'"),
-            ("default_cli", "TEXT NOT NULL DEFAULT 'claude'"),
-            ("default_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
-            ("default_model", "TEXT NOT NULL DEFAULT ''"),
-            ("script_setup", "TEXT NOT NULL DEFAULT ''"),
-            ("script_run", "TEXT NOT NULL DEFAULT ''"),
-            ("script_teardown", "TEXT NOT NULL DEFAULT ''"),
-            ("script_auto_run", "INTEGER NOT NULL DEFAULT 0"),
-            ("repo_url", "TEXT NOT NULL DEFAULT ''"),
-            ("description", "TEXT NOT NULL DEFAULT ''"),
-            ("env_files", "TEXT NOT NULL DEFAULT '[]'"),
-        ] {
-            let exists = conn
-                .prepare(&format!("SELECT {} FROM workspaces LIMIT 1", col))
-                .is_ok();
-            if !exists {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE workspaces ADD COLUMN {} {};",
-                    col, decl
-                ))
-                .map_err(|e| e.to_string())?;
-            }
-        }
-
-        // Phase 16b — jobs run mode / trigger / connector restriction. All
-        // defaulted so existing rows keep running unchanged (cli + cron + all).
-        for (col, decl) in [
-            ("run_mode", "TEXT NOT NULL DEFAULT 'cli'"),
-            ("run_config", "TEXT NOT NULL DEFAULT '{}'"),
-            ("trigger_type", "TEXT NOT NULL DEFAULT 'cron'"),
-            ("trigger_config", "TEXT NOT NULL DEFAULT '{}'"),
-            ("allowed_connectors", "TEXT NOT NULL DEFAULT '[]'"),
-        ] {
-            let exists = conn
-                .prepare(&format!("SELECT {} FROM jobs LIMIT 1", col))
-                .is_ok();
-            if !exists {
-                conn.execute_batch(&format!("ALTER TABLE jobs ADD COLUMN {} {};", col, decl))
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-
-        // Optional user-assigned label for CLI sessions (rename + search).
-        let has_session_label = conn
-            .prepare("SELECT label FROM session_history LIMIT 1")
-            .is_ok();
-        if !has_session_label {
-            conn.execute_batch("ALTER TABLE session_history ADD COLUMN label TEXT;")
-                .map_err(|e| e.to_string())?;
-        }
-
-        // Local mirror of cloud (Turso) data, scoped to the signed-in user.
-        // PTY injection reads only from here; Turso is never hit at session
-        // start. scope is account|org|project, scope_id the matching cloud id.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS llm_keys_cache (
-                scope TEXT NOT NULL,
-                scope_id TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                credentials_encrypted TEXT,
-                base_url TEXT,
-                extra_env TEXT,
-                synced_at TEXT NOT NULL,
-                PRIMARY KEY (scope, scope_id, provider)
-            );
-            CREATE TABLE IF NOT EXISTS connectors_cache (
-                scope TEXT NOT NULL,
-                scope_id TEXT NOT NULL,
-                service TEXT NOT NULL,
-                status TEXT,
-                credentials_encrypted TEXT,
-                synced_at TEXT NOT NULL,
-                PRIMARY KEY (scope, scope_id, service)
-            );
-            CREATE TABLE IF NOT EXISTS project_org_cache (
-                project_id TEXT PRIMARY KEY,
-                org_id TEXT NOT NULL,
-                synced_at TEXT NOT NULL
-            );
-            -- Native chat history, keyed by project_id (the workspace->project
-            -- ULID). Local only: never synced to Turso.
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id TEXT NOT NULL,
-                session_id TEXT,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                provider TEXT,
-                model TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE INDEX IF NOT EXISTS chat_messages_project_idx
-                ON chat_messages(project_id);
-            CREATE INDEX IF NOT EXISTS chat_messages_session_idx
-                ON chat_messages(session_id);
-            -- Legacy per-project chat metadata (pre multi-session). Kept only as
-            -- a migration source; superseded by chat_sessions.
-            CREATE TABLE IF NOT EXISTS chat_threads (
-                project_id TEXT PRIMARY KEY,
-                name TEXT,
-                is_star INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            -- Multi-session chat: many sessions per project. Local only.
-             CREATE TABLE IF NOT EXISTS chat_sessions (
-                 id                  TEXT PRIMARY KEY,
-                 project_id          TEXT NOT NULL,
-                 name                TEXT,
-                 is_star             INTEGER NOT NULL DEFAULT 0,
-                 created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-                 updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
-                 -- Phase 23: cost/usage tracking per chat session
-                 job_id              INTEGER,
-                 tokens_prompt       INTEGER NOT NULL DEFAULT 0,
-                 tokens_completion   INTEGER NOT NULL DEFAULT 0,
-                 tokens_reasoning    INTEGER NOT NULL DEFAULT 0,
-                 cost_usd            REAL NOT NULL DEFAULT 0,
-                 model               TEXT NOT NULL DEFAULT '',
-                 provider            TEXT NOT NULL DEFAULT '',
-                 -- Phase 24: agent attribution (NULL = user/manual)
-                 agent_id            TEXT
-             );
-            CREATE INDEX IF NOT EXISTS chat_sessions_project_idx
-                ON chat_sessions(project_id);",
-        )
-        .map_err(|e| e.to_string())?;
-
-        // Multi-session chat migration. Pre-existing DBs have chat_messages
-        // without session_id; add it, then fold each project's messages into a
-        // single session, carrying over the legacy chat_threads name/star.
-        let has_session_col = conn
-            .prepare("SELECT session_id FROM chat_messages LIMIT 1")
-            .is_ok();
-        if !has_session_col {
-            conn.execute_batch("ALTER TABLE chat_messages ADD COLUMN session_id TEXT;")
-                .map_err(|e| e.to_string())?;
-        }
-        let pending: Vec<String> = {
-            let mut stmt = conn
-                .prepare("SELECT DISTINCT project_id FROM chat_messages WHERE session_id IS NULL")
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([], |r| r.get::<_, String>(0))
-                .map_err(|e| e.to_string())?;
-            rows.filter_map(|r| r.ok()).collect()
-        };
-        for pid in pending {
-            let sid = ulid::Ulid::new().to_string();
-            conn.execute(
-                "INSERT INTO chat_sessions (id, project_id, name, is_star)
-                 SELECT ?1, ?2,
-                        (SELECT name FROM chat_threads WHERE project_id = ?2),
-                        COALESCE((SELECT is_star FROM chat_threads WHERE project_id = ?2), 0)",
-                rusqlite::params![sid, pid],
-            )
-            .map_err(|e| e.to_string())?;
-            conn.execute(
-                "UPDATE chat_messages SET session_id = ?1 WHERE project_id = ?2 AND session_id IS NULL",
-                rusqlite::params![sid, pid],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-
-        // Phase 18 — Skills.
-        // `project_skills` is the local working index over the on-disk skill
-        // files in each workspace (.superconsole/skills/*.md); content always
-        // lives in the files, this holds metadata + the `active` flag. Keyed by
-        // local workspace id so it works for non-cloud workspaces too.
-        // `skill_index_cache` mirrors the Turso `project_skill_index` (metadata
-        // only) so cross-device skill listings never hit Turso on the hot path.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS project_skills (
-                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                tags TEXT NOT NULL DEFAULT '',
-                file_path TEXT NOT NULL DEFAULT '',
-                scope TEXT NOT NULL DEFAULT 'project',
-                active INTEGER NOT NULL DEFAULT 1,
-                auto INTEGER NOT NULL DEFAULT 0,
-                version INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'superconsole',
-                author TEXT NOT NULL DEFAULT '',
-                skill_catalog_id TEXT,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (workspace_id, name)
-            );
-            CREATE TABLE IF NOT EXISTS skill_index_cache (
-                project_id TEXT NOT NULL,
-                skill_name TEXT NOT NULL,
-                tags TEXT,
-                scope TEXT NOT NULL DEFAULT 'project',
-                active INTEGER NOT NULL DEFAULT 1,
-                synced_at TEXT NOT NULL,
-                PRIMARY KEY (project_id, skill_name)
-            );
-            -- Local mirror of Turso org_skill_index: org-level references (by
-            -- name) to machine-global library skills. Metadata only.
-            CREATE TABLE IF NOT EXISTS org_skill_cache (
-                org_id TEXT NOT NULL,
-                skill_name TEXT NOT NULL,
-                tags TEXT,
-                synced_at TEXT NOT NULL,
-                skill_catalog_id TEXT,
-                author TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY (org_id, skill_name)
-            );",
-        )
-        .map_err(|e| e.to_string())?;
-
-        // Phase 19: memory. Content lives in workspace files
-        // (.superconsole/memory/*.md); `memory_entries` is a local index
-        // (metadata + one-line summary) keyed by workspace. `memory_index_cache`
-        // mirrors the Turso `project_memory_index` for cross-device restore;
-        // `org_memory_cache` mirrors `org_memory_index` (shared facts, content
-        // included since org memory has no workspace file).
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS memory_entries (
-                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                category TEXT NOT NULL,
-                slug TEXT NOT NULL,
-                title TEXT NOT NULL DEFAULT '',
-                summary TEXT NOT NULL DEFAULT '',
-                tags TEXT NOT NULL DEFAULT '',
-                file_path TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (workspace_id, category, slug)
-            );
-            CREATE TABLE IF NOT EXISTS memory_index_cache (
-                project_id TEXT NOT NULL,
-                category TEXT NOT NULL,
-                slug TEXT NOT NULL,
-                title TEXT NOT NULL DEFAULT '',
-                summary TEXT NOT NULL DEFAULT '',
-                tags TEXT,
-                synced_at TEXT NOT NULL,
-                PRIMARY KEY (project_id, category, slug)
-            );
-            CREATE TABLE IF NOT EXISTS org_memory_cache (
-                org_id TEXT NOT NULL,
-                slug TEXT NOT NULL,
-                title TEXT NOT NULL DEFAULT '',
-                body TEXT NOT NULL DEFAULT '',
-                tags TEXT,
-                synced_at TEXT NOT NULL,
-                PRIMARY KEY (org_id, slug)
-            );",
-        )
-        .map_err(|e| e.to_string())?;
-
-        // Phase 20: wiki. Content lives in workspace files
-        // (.superconsole/wiki/*.md); `wiki_pages` is a local metadata index.
-        // `wiki_index_cache` mirrors the Turso `wiki_index` which, unlike skills
-        // and memory, stores full content (wiki is structured + predictable
-        // size) so teammates and fresh devices get it without pulling git.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS wiki_pages (
-                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                slug TEXT NOT NULL,
-                title TEXT NOT NULL DEFAULT '',
-                summary TEXT NOT NULL DEFAULT '',
-                tags TEXT NOT NULL DEFAULT '',
-                file_path TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (workspace_id, slug)
-            );
-            CREATE TABLE IF NOT EXISTS wiki_index_cache (
-                project_id TEXT NOT NULL,
-                slug TEXT NOT NULL,
-                title TEXT NOT NULL DEFAULT '',
-                summary TEXT NOT NULL DEFAULT '',
-                tags TEXT,
-                content TEXT NOT NULL DEFAULT '',
-                synced_at TEXT NOT NULL,
-                PRIMARY KEY (project_id, slug)
-            );",
-        )
-        .map_err(|e| e.to_string())?;
-
-        // Phase 21: usage monitoring.
-        // `usage_events` is the raw, local-only ledger (one row per measured
-        // session/turn). It NEVER leaves the device and is never cleared by
-        // cloud-cache wipes. `user_id` records who generated the event so the
-        // by_member breakdown can be populated. `synced` marks whether the
-        // event's delta has been pushed to the Turso shared totals.
-        //
-        // The three `*_usage` tables share one canonical schema so a single
-        // display path renders every level. They are a LOCAL CACHE of the Turso
-        // shared (cross-machine/member) totals; display always reads them.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS usage_events (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                org_id TEXT,
-                user_id TEXT,
-                session_id TEXT,
-                model TEXT,
-                provider TEXT,
-                cli TEXT,
-                tokens_prompt INTEGER NOT NULL DEFAULT 0,
-                tokens_prompt_cached INTEGER NOT NULL DEFAULT 0,
-                tokens_completion INTEGER NOT NULL DEFAULT 0,
-                tokens_reasoning INTEGER NOT NULL DEFAULT 0,
-                cost_usd REAL NOT NULL DEFAULT 0,
-                cache_hit_rate REAL NOT NULL DEFAULT 0,
-                estimated INTEGER NOT NULL DEFAULT 0,
-                synced INTEGER NOT NULL DEFAULT 0,
-                started_at TEXT,
-                ended_at TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE INDEX IF NOT EXISTS usage_events_project_idx ON usage_events(project_id);
-            CREATE INDEX IF NOT EXISTS usage_events_synced_idx ON usage_events(synced);
-            CREATE TABLE IF NOT EXISTS project_usage (
-                id TEXT PRIMARY KEY,
-                tokens_prompt_lifetime INTEGER NOT NULL DEFAULT 0,
-                tokens_prompt_cached_lifetime INTEGER NOT NULL DEFAULT 0,
-                tokens_completion_lifetime INTEGER NOT NULL DEFAULT 0,
-                tokens_reasoning_lifetime INTEGER NOT NULL DEFAULT 0,
-                cost_lifetime_usd REAL NOT NULL DEFAULT 0,
-                sessions_lifetime INTEGER NOT NULL DEFAULT 0,
-                cache_hits_lifetime INTEGER NOT NULL DEFAULT 0,
-                analytics_lifetime TEXT NOT NULL DEFAULT '{}',
-                usage_24h TEXT NOT NULL DEFAULT '[]',
-                usage_7d TEXT NOT NULL DEFAULT '[]',
-                usage_30d TEXT NOT NULL DEFAULT '[]',
-                usage_12m TEXT NOT NULL DEFAULT '[]',
-                by_model TEXT NOT NULL DEFAULT '{}',
-                by_provider TEXT NOT NULL DEFAULT '{}',
-                by_cli TEXT NOT NULL DEFAULT '{}',
-                by_member TEXT NOT NULL DEFAULT '{}',
-                by_project TEXT NOT NULL DEFAULT '{}',
-                by_org TEXT NOT NULL DEFAULT '{}',
-                heatmap_365d TEXT NOT NULL DEFAULT '{}',
-                last_synced_at TEXT,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS org_usage (
-                id TEXT PRIMARY KEY,
-                tokens_prompt_lifetime INTEGER NOT NULL DEFAULT 0,
-                tokens_prompt_cached_lifetime INTEGER NOT NULL DEFAULT 0,
-                tokens_completion_lifetime INTEGER NOT NULL DEFAULT 0,
-                tokens_reasoning_lifetime INTEGER NOT NULL DEFAULT 0,
-                cost_lifetime_usd REAL NOT NULL DEFAULT 0,
-                sessions_lifetime INTEGER NOT NULL DEFAULT 0,
-                cache_hits_lifetime INTEGER NOT NULL DEFAULT 0,
-                analytics_lifetime TEXT NOT NULL DEFAULT '{}',
-                usage_24h TEXT NOT NULL DEFAULT '[]',
-                usage_7d TEXT NOT NULL DEFAULT '[]',
-                usage_30d TEXT NOT NULL DEFAULT '[]',
-                usage_12m TEXT NOT NULL DEFAULT '[]',
-                by_model TEXT NOT NULL DEFAULT '{}',
-                by_provider TEXT NOT NULL DEFAULT '{}',
-                by_cli TEXT NOT NULL DEFAULT '{}',
-                by_member TEXT NOT NULL DEFAULT '{}',
-                by_project TEXT NOT NULL DEFAULT '{}',
-                by_org TEXT NOT NULL DEFAULT '{}',
-                heatmap_365d TEXT NOT NULL DEFAULT '{}',
-                last_synced_at TEXT,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS account_usage (
-                id TEXT PRIMARY KEY,
-                tokens_prompt_lifetime INTEGER NOT NULL DEFAULT 0,
-                tokens_prompt_cached_lifetime INTEGER NOT NULL DEFAULT 0,
-                tokens_completion_lifetime INTEGER NOT NULL DEFAULT 0,
-                tokens_reasoning_lifetime INTEGER NOT NULL DEFAULT 0,
-                cost_lifetime_usd REAL NOT NULL DEFAULT 0,
-                sessions_lifetime INTEGER NOT NULL DEFAULT 0,
-                cache_hits_lifetime INTEGER NOT NULL DEFAULT 0,
-                analytics_lifetime TEXT NOT NULL DEFAULT '{}',
-                usage_24h TEXT NOT NULL DEFAULT '[]',
-                usage_7d TEXT NOT NULL DEFAULT '[]',
-                usage_30d TEXT NOT NULL DEFAULT '[]',
-                usage_12m TEXT NOT NULL DEFAULT '[]',
-                by_model TEXT NOT NULL DEFAULT '{}',
-                by_provider TEXT NOT NULL DEFAULT '{}',
-                by_cli TEXT NOT NULL DEFAULT '{}',
-                by_member TEXT NOT NULL DEFAULT '{}',
-                by_project TEXT NOT NULL DEFAULT '{}',
-                by_org TEXT NOT NULL DEFAULT '{}',
-                heatmap_365d TEXT NOT NULL DEFAULT '{}',
-                last_synced_at TEXT,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );",
-        )
-        .map_err(|e| e.to_string())?;
-
-        // Phase 23 — session cost columns + job cost tracking.
-        for (col, decl) in [
-            ("job_id", "INTEGER"),
-            ("tokens_prompt", "INTEGER NOT NULL DEFAULT 0"),
-            ("tokens_completion", "INTEGER NOT NULL DEFAULT 0"),
-            ("tokens_reasoning", "INTEGER NOT NULL DEFAULT 0"),
-            ("cost_usd", "REAL NOT NULL DEFAULT 0"),
-            ("model", "TEXT NOT NULL DEFAULT ''"),
-            ("provider", "TEXT NOT NULL DEFAULT ''"),
-            ("last_output", "TEXT NOT NULL DEFAULT ''"),
-        ] {
-            let exists = conn
-                .prepare(&format!("SELECT {} FROM session_history LIMIT 1", col))
-                .is_ok();
-            if !exists {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE session_history ADD COLUMN {} {};",
-                    col, decl
-                ))
-                .map_err(|e| e.to_string())?;
-            }
-        }
-        for (col, decl) in [
-            ("job_id", "INTEGER"),
-            ("tokens_prompt", "INTEGER NOT NULL DEFAULT 0"),
-            ("tokens_completion", "INTEGER NOT NULL DEFAULT 0"),
-            ("tokens_reasoning", "INTEGER NOT NULL DEFAULT 0"),
-            ("cost_usd", "REAL NOT NULL DEFAULT 0"),
-            ("model", "TEXT NOT NULL DEFAULT ''"),
-            ("provider", "TEXT NOT NULL DEFAULT ''"),
-        ] {
-            let exists = conn
-                .prepare(&format!("SELECT {} FROM chat_sessions LIMIT 1", col))
-                .is_ok();
-            if !exists {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE chat_sessions ADD COLUMN {} {};",
-                    col, decl
-                ))
-                .map_err(|e| e.to_string())?;
-            }
-        }
-        for (col, decl) in [
-            ("last_run_cost_usd", "REAL NOT NULL DEFAULT 0"),
-            ("last_run_tokens", "INTEGER NOT NULL DEFAULT 0"),
-            ("last_run_session_id", "TEXT"),
-        ] {
-            let exists = conn
-                .prepare(&format!("SELECT {} FROM jobs LIMIT 1", col))
-                .is_ok();
-            if !exists {
-                conn.execute_batch(&format!("ALTER TABLE jobs ADD COLUMN {} {};", col, decl))
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-
-        // Phase 24 — Agent metadata index.
-        // `agents` is the local working index keyed by workspace. Content (instructions)
-        // always lives in the `.superconsole/agents/<name>/agent.md` file; this table
-        // holds only metadata + scheduling defaults. `agent_id` (TEXT ULID) is the
-        // matching row id in the Turso `project_agents`; NULL until cloud sync.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS agents (
-                id TEXT PRIMARY KEY,
-                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                schedule TEXT NOT NULL DEFAULT '',
-                default_run_mode TEXT NOT NULL DEFAULT 'cli',
-                default_cli TEXT NOT NULL DEFAULT 'claude',
-                default_provider TEXT NOT NULL DEFAULT 'anthropic',
-                default_model TEXT NOT NULL DEFAULT '',
-                skills TEXT NOT NULL DEFAULT '',
-                connectors TEXT NOT NULL DEFAULT '',
-                is_active INTEGER NOT NULL DEFAULT 1,
-                agent_id TEXT,
-                agent_catalog_id TEXT,
-                author TEXT NOT NULL DEFAULT '',
-                last_run TEXT,
-                next_run TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(workspace_id, name)
-            );",
-        )
-        .map_err(|e| e.to_string())?;
-
-        // Phase 24 addendum — columns added after initial agents table release.
-        // Existing DBs already have the table; ALTER TABLE guards bring them up to date.
-        for (col, decl) in [
-            ("skills", "TEXT NOT NULL DEFAULT ''"),
-            ("connectors", "TEXT NOT NULL DEFAULT ''"),
-            ("default_run_mode", "TEXT NOT NULL DEFAULT 'cli'"),
-        ] {
-            let exists = conn
-                .prepare(&format!("SELECT {} FROM agents LIMIT 1", col))
-                .is_ok();
-            if !exists {
-                conn.execute_batch(&format!("ALTER TABLE agents ADD COLUMN {} {};", col, decl,))
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-
-        // Phase 24 — agent_id attribution columns.
-        // NULL = user / manually triggered; non-NULL = run by a named agent.
-        for (table, _col) in [
-            ("session_history", "agent_id TEXT"),
-            ("chat_sessions", "agent_id TEXT"),
-            ("jobs", "agent_id TEXT"),
-        ] {
-            let exists = conn
-                .prepare(&format!("SELECT agent_id FROM {} LIMIT 1", table))
-                .is_ok();
-            if !exists {
-                conn.execute_batch(&format!("ALTER TABLE {} ADD COLUMN agent_id TEXT;", table))
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-
-        // Phase 25 — Loop system.
-        // exit_condition: JSON-encoded stop condition or NULL (run-once).
-        // max_attempts:   hard cap on retries (1 = run-once, existing behavior).
-        // current_attempt: tracks how many attempts have fired for the current run.
-        // All defaulted so existing jobs continue running unchanged.
-        for (col, decl) in [
-            ("exit_condition", "TEXT"),
-            ("max_attempts", "INTEGER NOT NULL DEFAULT 1"),
-            ("current_attempt", "INTEGER NOT NULL DEFAULT 0"),
-        ] {
-            let exists = conn
-                .prepare(&format!("SELECT {} FROM jobs LIMIT 1", col))
-                .is_ok();
-            if !exists {
-                conn.execute_batch(&format!("ALTER TABLE jobs ADD COLUMN {} {};", col, decl))
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-
-        // `.superconsole/sessions/YYYY-MM-DD-<slug>.md` are opt-in markdown logs
-        // saved manually by the user. This table is the local index; Turso mirrors
-        // metadata (project_session_logs) — content/file_path never leaves the device.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS session_logs (
-                id TEXT PRIMARY KEY,
-                workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-                file_path TEXT NOT NULL,
-                agent_id TEXT,
-                session_id TEXT,
-                date TEXT NOT NULL,
-                agent_name TEXT NOT NULL DEFAULT '',
-                model TEXT NOT NULL DEFAULT '',
-                cost_usd REAL NOT NULL DEFAULT 0,
-                tokens INTEGER NOT NULL DEFAULT 0,
-                summary TEXT NOT NULL DEFAULT '',
-                cloud_id TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE INDEX IF NOT EXISTS session_logs_ws_idx
-                ON session_logs(workspace_id);
-            CREATE INDEX IF NOT EXISTS session_logs_agent_idx
-                ON session_logs(agent_id);",
-        )
-        .map_err(|e| e.to_string())?;
-
-        // Phase C — Skill community catalog cache.
-        // Local mirror of the Turso `skill_catalog` table (global, public).
-        // Content (SKILL.md) is never stored here; fetched from GitHub URL on install.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS skill_catalog_cache (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT '',
-                tags TEXT NOT NULL DEFAULT '',
-                github_url TEXT NOT NULL,
-                readme TEXT NOT NULL DEFAULT '',
-                author TEXT NOT NULL DEFAULT '',
-                stars INTEGER NOT NULL DEFAULT 0,
-                synced_at TEXT NOT NULL
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS skill_catalog_name_unq
-                ON skill_catalog_cache(name);",
-        )
-        .map_err(|e| e.to_string())?;
+        // Ensure legacy/migrated usage_events have org_id and user_id populated
+        let _ = conn.execute_batch(
+            "UPDATE usage_events SET org_id = (SELECT org_id FROM project_org_cache WHERE project_org_cache.project_id = usage_events.project_id)
+             WHERE (org_id IS NULL OR org_id = '') AND project_id IN (SELECT project_id FROM project_org_cache);
+             UPDATE usage_events SET user_id = (SELECT json_extract(payload, '$.user.id') FROM cloud_identity WHERE id = 1)
+             WHERE (user_id IS NULL OR user_id = '') AND EXISTS (SELECT 1 FROM cloud_identity WHERE id = 1);"
+        );
 
         Ok(Db(Mutex::new(conn)))
     }
@@ -1258,19 +441,20 @@ impl Db {
             path: r.get(2)?,
             cli: r.get(3)?,
             organization_id: r.get(4)?,
-            created_at: r.get(5)?,
-            project_id: r.get(6)?,
-            default_run_mode: r.get(7)?,
-            default_cli: r.get(8)?,
-            default_provider: r.get(9)?,
-            default_model: r.get(10)?,
-            script_setup: r.get(11)?,
-            script_run: r.get(12)?,
-            script_teardown: r.get(13)?,
-            script_auto_run: r.get::<_, i64>(14)? != 0,
-            repo_url: r.get(15)?,
-            description: r.get(16)?,
-            env_files: r.get(17)?,
+            org_id: r.get(5)?,
+            created_at: r.get(6)?,
+            project_id: r.get(7)?,
+            default_run_mode: r.get(8)?,
+            default_cli: r.get(9)?,
+            default_provider: r.get(10)?,
+            default_model: r.get(11)?,
+            script_setup: r.get(12)?,
+            script_run: r.get(13)?,
+            script_teardown: r.get(14)?,
+            script_auto_run: r.get::<_, i64>(15)? != 0,
+            repo_url: r.get(16)?,
+            description: r.get(17)?,
+            env_files: r.get(18)?,
         })
     }
 
@@ -1314,7 +498,7 @@ impl Db {
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, path, cli, organization_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces ORDER BY name")
+            .prepare("SELECT id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces ORDER BY name")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], Self::workspace_from_row)
@@ -1338,7 +522,7 @@ impl Db {
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE id = ?1",
+            "SELECT id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE id = ?1",
             [id],
             Self::workspace_from_row,
         )
@@ -1471,16 +655,18 @@ impl Db {
             last_run_cost_usd: r.get::<_, f64>(13).unwrap_or(0.0),
             last_run_tokens: r.get::<_, i64>(14).unwrap_or(0),
             last_run_session_id: r.get(15).unwrap_or(None),
-            exit_condition: r.get(16).unwrap_or(None),
-            max_attempts: r.get::<_, i64>(17).unwrap_or(1),
-            current_attempt: r.get::<_, i64>(18).unwrap_or(0),
+            agent_id: r.get(16).unwrap_or(None),
+            user_id: r.get(17).unwrap_or(None),
+            exit_condition: r.get(18).unwrap_or(None),
+            max_attempts: r.get::<_, i64>(19).unwrap_or(1),
+            current_attempt: r.get::<_, i64>(20).unwrap_or(0),
         })
     }
 
     pub fn list_jobs(&self, workspace_id: i64) -> Result<Vec<Job>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE workspace_id = ?1 ORDER BY name")
+            .prepare("SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, agent_id, user_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE workspace_id = ?1 ORDER BY name")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([workspace_id], Self::job_from_row)
@@ -1492,7 +678,7 @@ impl Db {
     pub fn due_jobs(&self, now: &str) -> Result<Vec<Job>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE enabled = 1 AND next_run IS NOT NULL AND next_run <= ?1")
+            .prepare("SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, agent_id, user_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE enabled = 1 AND next_run IS NOT NULL AND next_run <= ?1")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([now], Self::job_from_row)
@@ -1504,7 +690,7 @@ impl Db {
     pub fn get_job(&self, id: i64) -> Result<Job, String> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE id = ?1",
+            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, agent_id, user_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE id = ?1",
             [id],
             Self::job_from_row,
         )
@@ -1527,16 +713,17 @@ impl Db {
         exit_condition: Option<&str>,
         max_attempts: i64,
     ) -> Result<Job, String> {
+        let user_id = self.current_user_id();
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO jobs (workspace_id, name, command, schedule, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, exit_condition, max_attempts) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            rusqlite::params![workspace_id, name, command, schedule, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, exit_condition, max_attempts],
+            "INSERT INTO jobs (workspace_id, name, command, schedule, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, exit_condition, max_attempts, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            rusqlite::params![workspace_id, name, command, schedule, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, exit_condition, max_attempts, user_id],
         )
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         conn.query_row(
-            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE id = ?1",
+            "SELECT id, workspace_id, name, command, schedule, enabled, last_run, next_run, run_mode, run_config, trigger_type, trigger_config, allowed_connectors, last_run_cost_usd, last_run_tokens, last_run_session_id, agent_id, user_id, exit_condition, max_attempts, current_attempt FROM jobs WHERE id = ?1",
             [id],
             Self::job_from_row,
         )
@@ -1768,11 +955,12 @@ impl Db {
         job_id: Option<i64>,
         agent_id: Option<&str>,
     ) -> Result<(), String> {
+        let user_id = self.current_user_id();
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO session_history (workspace_id, session_id, cli, job_id, agent_id)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![workspace_id, session_id, cli, job_id, agent_id],
+            "INSERT INTO session_history (workspace_id, session_id, cli, job_id, agent_id, user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![workspace_id, session_id, cli, job_id, agent_id, user_id],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -1791,7 +979,11 @@ impl Db {
     pub fn list_session_history(&self, workspace_id: i64) -> Result<Vec<SessionLog>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, workspace_id, cli, started_at, ended_at, label, session_id FROM session_history WHERE workspace_id = ?1 ORDER BY started_at DESC LIMIT 30")
+            .prepare("SELECT id, workspace_id, cli, started_at, ended_at, label, session_id,
+                             tokens_prompt, tokens_completion, tokens_reasoning, cost_usd,
+                             model, provider, user_id, rate_prompt_per_1m, rate_cached_per_1m,
+                             rate_completion_per_1m, rate_reasoning_per_1m
+                      FROM session_history WHERE workspace_id = ?1 AND cli != 'shell' AND cli != '' ORDER BY started_at DESC LIMIT 50")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([workspace_id], |r| {
@@ -1803,6 +995,17 @@ impl Db {
                     ended_at: r.get(4)?,
                     label: r.get(5)?,
                     session_id: r.get(6).unwrap_or_default(),
+                    tokens_prompt: r.get(7).unwrap_or(0),
+                    tokens_completion: r.get(8).unwrap_or(0),
+                    tokens_reasoning: r.get(9).unwrap_or(0),
+                    cost_usd: r.get(10).unwrap_or(0.0),
+                    model: r.get(11).unwrap_or_default(),
+                    provider: r.get(12).unwrap_or_default(),
+                    user_id: r.get(13).ok(),
+                    rate_prompt_per_1m: r.get(14).ok(),
+                    rate_cached_per_1m: r.get(15).ok(),
+                    rate_completion_per_1m: r.get(16).ok(),
+                    rate_reasoning_per_1m: r.get(17).ok(),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1856,14 +1059,102 @@ impl Db {
                 },
             );
         if let Ok((tp, tc, tr, cost, model, provider, _)) = result {
+            let (rate_p, rate_cached, rate_c, rate_reasoning) = crate::usage::pricing_for(&model, &provider);
             let _ = conn.execute(
                 "UPDATE session_history SET
                    tokens_prompt = ?1, tokens_completion = ?2, tokens_reasoning = ?3,
-                   cost_usd = ?4, model = ?5, provider = ?6
-                 WHERE session_id = ?7",
-                rusqlite::params![tp, tc, tr, cost, model, provider, session_id],
+                   cost_usd = ?4, model = ?5, provider = ?6,
+                   rate_prompt_per_1m = ?7, rate_cached_per_1m = ?8, rate_completion_per_1m = ?9, rate_reasoning_per_1m = ?10
+                 WHERE session_id = ?11",
+                rusqlite::params![tp, tc, tr, cost, model, provider, rate_p, rate_cached, rate_c, rate_reasoning, session_id],
             );
         }
+    }
+
+    pub fn save_model_pricing(&self, list: &[(String, String, f64, f64, f64, f64)]) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        for (id, provider, prompt, cached, comp, reasoning) in list {
+            let _ = conn.execute(
+                "INSERT INTO model_pricing_cache (
+                    model_id, provider, prompt_per_1m, cached_per_1m, completion_per_1m, reasoning_per_1m, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+                ON CONFLICT(model_id) DO UPDATE SET
+                    provider = excluded.provider,
+                    prompt_per_1m = excluded.prompt_per_1m,
+                    cached_per_1m = excluded.cached_per_1m,
+                    completion_per_1m = excluded.completion_per_1m,
+                    reasoning_per_1m = excluded.reasoning_per_1m,
+                    updated_at = datetime('now')",
+                rusqlite::params![id, provider, prompt, cached, comp, reasoning],
+            );
+        }
+        Ok(())
+    }
+
+    pub fn get_cached_model_pricing(&self) -> Result<Vec<(String, String, f64, f64, f64, f64)>, String> {
+        let conn = self.0.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT model_id, provider, prompt_per_1m, cached_per_1m, completion_per_1m, reasoning_per_1m FROM model_pricing_cache")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Queries the sum of usage previously recorded for an underlying conversation (by clean_sid or workspace/cli)
+    /// excluding the current session_id, so resume sessions can record only the new delta.
+    pub fn get_previous_session_usage(
+        &self,
+        clean_sid: &str,
+        current_sid: &str,
+        workspace_id: i64,
+        cli: &str,
+    ) -> (i64, i64, i64, f64) {
+        let conn = match self.0.lock() {
+            Ok(c) => c,
+            Err(_) => return (0, 0, 0, 0.0),
+        };
+        if !clean_sid.is_empty() {
+            let pattern = format!("%{}%", clean_sid);
+            let res = conn.query_row(
+                "SELECT COALESCE(SUM(tokens_prompt), 0),
+                        COALESCE(SUM(tokens_completion), 0),
+                        COALESCE(SUM(tokens_reasoning), 0),
+                        COALESCE(SUM(cost_usd), 0.0)
+                 FROM session_history
+                 WHERE session_id LIKE ?1 AND session_id != ?2 AND ended_at IS NOT NULL",
+                rusqlite::params![&pattern, current_sid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            );
+            if let Ok(tuple) = res {
+                if tuple.0 > 0 || tuple.1 > 0 || tuple.3 > 0.0 {
+                    return tuple;
+                }
+            }
+        }
+        // Fallback: get usage of the most recent ended session for this workspace and cli
+        conn.query_row(
+            "SELECT tokens_prompt,
+                    tokens_completion,
+                    tokens_reasoning,
+                    cost_usd
+             FROM session_history
+             WHERE workspace_id = ?1 AND cli = ?2 AND session_id != ?3 AND ended_at IS NOT NULL
+             ORDER BY id DESC LIMIT 1",
+            rusqlite::params![workspace_id, cli, current_sid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap_or((0, 0, 0, 0.0))
     }
 
     /// Accumulate cost for one chat turn → update chat_sessions row.
@@ -1928,18 +1219,22 @@ impl Db {
         let cli_sql = if workspace_id.is_some() {
             "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                     sh.last_output, sh.started_at, sh.started_at,
-                    sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd, sh.agent_id
+                    sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd, sh.agent_id,
+                    sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
              FROM session_history sh
              JOIN workspaces w ON w.id = sh.workspace_id
              WHERE sh.job_id IS NULL AND sh.agent_id IS NULL AND sh.workspace_id = ?1
+               AND sh.cli != 'shell' AND sh.cli != ''
              ORDER BY sh.started_at DESC LIMIT 50"
         } else {
             "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                     sh.last_output, sh.started_at, sh.started_at,
-                    sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd, sh.agent_id
+                    sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd, sh.agent_id,
+                    sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
              FROM session_history sh
              JOIN workspaces w ON w.id = sh.workspace_id
              WHERE sh.job_id IS NULL AND sh.agent_id IS NULL
+               AND sh.cli != 'shell' AND sh.cli != ''
              ORDER BY sh.started_at DESC LIMIT 50"
         };
         {
@@ -1961,7 +1256,8 @@ impl Db {
                     (SELECT content FROM chat_messages m WHERE m.session_id = cs.id AND m.role = 'assistant'
                      ORDER BY m.id DESC LIMIT 1),
                     cs.created_at, cs.updated_at,
-                    cs.tokens_prompt + cs.tokens_completion, cs.cost_usd, cs.job_id, cs.agent_id
+                    cs.tokens_prompt + cs.tokens_completion, cs.cost_usd, cs.job_id, cs.agent_id,
+                    cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m
              FROM chat_sessions cs
              JOIN workspaces w ON w.project_id = cs.project_id
              WHERE cs.job_id IS NULL AND cs.agent_id IS NULL AND w.id = ?1
@@ -1971,7 +1267,8 @@ impl Db {
                     (SELECT content FROM chat_messages m WHERE m.session_id = cs.id AND m.role = 'assistant'
                      ORDER BY m.id DESC LIMIT 1),
                     cs.created_at, cs.updated_at,
-                    cs.tokens_prompt + cs.tokens_completion, cs.cost_usd, cs.job_id, cs.agent_id
+                    cs.tokens_prompt + cs.tokens_completion, cs.cost_usd, cs.job_id, cs.agent_id,
+                    cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m
              FROM chat_sessions cs
              JOIN workspaces w ON w.project_id = cs.project_id
              WHERE cs.job_id IS NULL AND cs.agent_id IS NULL
@@ -2001,7 +1298,8 @@ impl Db {
             .prepare(
                 "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                         sh.last_output, sh.started_at, sh.started_at,
-                        sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd
+                        sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd, sh.agent_id,
+                        sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
                  FROM session_history sh
                  JOIN workspaces w ON w.id = sh.workspace_id
                  WHERE sh.job_id = ?1
@@ -2028,7 +1326,8 @@ impl Db {
                 "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                         sh.last_output, sh.started_at, sh.started_at,
                         sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning,
-                        sh.cost_usd, sh.agent_id
+                        sh.cost_usd, sh.agent_id,
+                        sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
                  FROM session_history sh
                  JOIN workspaces w ON w.id = sh.workspace_id
                  WHERE sh.job_id IS NOT NULL AND sh.agent_id IS NULL
@@ -2071,7 +1370,8 @@ impl Db {
             .query_row(
                 "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                     sh.last_output, sh.started_at, sh.started_at,
-                    sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd
+                    sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd, sh.agent_id,
+                    sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
              FROM session_history sh
              JOIN workspaces w ON w.id = sh.workspace_id
              WHERE sh.session_id = ?1",
@@ -2082,13 +1382,15 @@ impl Db {
         if cli_item.is_some() {
             return Ok(cli_item);
         }
+
         // Fall back to chat session
         let chat_item = conn.query_row(
             "SELECT cs.id, w.id, w.name, 'chat', cs.provider, cs.model,
                     (SELECT content FROM chat_messages m WHERE m.session_id = cs.id AND m.role = 'assistant'
                      ORDER BY m.id DESC LIMIT 1),
                     cs.created_at, cs.updated_at,
-                    cs.tokens_prompt + cs.tokens_completion, cs.cost_usd, cs.job_id
+                    cs.tokens_prompt + cs.tokens_completion, cs.cost_usd, cs.job_id, cs.agent_id,
+                    cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m
              FROM chat_sessions cs
              JOIN workspaces w ON w.project_id = cs.project_id
              WHERE cs.id = ?1",
@@ -2116,7 +1418,12 @@ impl Db {
             cost_usd: r.get::<_, f64>(10).unwrap_or(0.0),
             job_id: None,
             agent_id: r.get::<_, Option<String>>(11).unwrap_or(None),
+            user_id: r.get::<_, Option<String>>(12).unwrap_or(None),
             resume_id: session_id,
+            rate_prompt_per_1m: r.get(13).ok(),
+            rate_cached_per_1m: r.get(14).ok(),
+            rate_completion_per_1m: r.get(15).ok(),
+            rate_reasoning_per_1m: r.get(16).ok(),
         })
     }
 
@@ -2137,7 +1444,12 @@ impl Db {
             cost_usd: r.get::<_, f64>(10).unwrap_or(0.0),
             job_id: r.get(11).unwrap_or(None),
             agent_id: r.get::<_, Option<String>>(12).unwrap_or(None),
+            user_id: r.get::<_, Option<String>>(13).unwrap_or(None),
             resume_id: id,
+            rate_prompt_per_1m: r.get(14).ok(),
+            rate_cached_per_1m: r.get(15).ok(),
+            rate_completion_per_1m: r.get(16).ok(),
+            rate_reasoning_per_1m: r.get(17).ok(),
         })
     }
 
@@ -2181,7 +1493,7 @@ impl Db {
     pub fn find_workspace_by_name(&self, name: &str) -> Result<Workspace, String> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE LOWER(name) = LOWER(?1)",
+            "SELECT id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE LOWER(name) = LOWER(?1)",
             [name],
             Self::workspace_from_row,
         )
@@ -2199,11 +1511,33 @@ impl Db {
         .flatten()
     }
 
+    #[allow(dead_code)]
     pub fn set_workspace_project_id(&self, id: i64, project_id: &str) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
             "UPDATE workspaces SET project_id = ?1 WHERE id = ?2",
             (project_id, id),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn set_workspace_cloud_link(&self, id: i64, project_id: &str, org_id: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE workspaces SET project_id = ?1, org_id = ?2 WHERE id = ?3",
+            (project_id, org_id, id),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn set_workspace_org_id(&self, id: i64, org_id: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE workspaces SET org_id = ?1 WHERE id = ?2",
+            (org_id, id),
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -2228,6 +1562,12 @@ impl Db {
         .ok()
     }
 
+    pub fn current_user_id(&self) -> Option<String> {
+        let json = self.get_cloud_identity()?;
+        let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+        v["user"]["id"].as_str().map(String::from)
+    }
+
     pub fn clear_cloud_identity(&self) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute("DELETE FROM cloud_identity WHERE id = 1", [])
@@ -2241,17 +1581,17 @@ impl Db {
     pub fn clear_cloud_cache(&self) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute_batch(
-            "DELETE FROM llm_keys_cache;
-             DELETE FROM connectors_cache;
+            "DELETE FROM project_llm_keys;
+             DELETE FROM org_llm_keys;
+             DELETE FROM account_llm_keys;
+             DELETE FROM project_connectors;
+             DELETE FROM org_connectors;
+             DELETE FROM account_connectors;
              DELETE FROM project_org_cache;
-             DELETE FROM skill_index_cache;
-             DELETE FROM org_skill_cache;
-             DELETE FROM memory_index_cache;
-             DELETE FROM org_memory_cache;
-             DELETE FROM wiki_index_cache;
              DELETE FROM project_usage;
              DELETE FROM org_usage;
-             DELETE FROM account_usage;",
+             DELETE FROM account_usage;
+             DELETE FROM user_usage;",
         )
         .map_err(|e| e.to_string())
     }
@@ -2455,7 +1795,8 @@ impl Db {
                     "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                             sh.last_output, sh.started_at, sh.started_at,
                             sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning,
-                            sh.cost_usd, sh.agent_id
+                            sh.cost_usd, sh.agent_id,
+                            sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
                      FROM session_history sh
                      JOIN workspaces w ON w.id = sh.workspace_id
                      WHERE sh.workspace_id = ?1 AND sh.agent_id = ?2
@@ -2482,7 +1823,8 @@ impl Db {
                              AND m.role = 'assistant' ORDER BY m.id DESC LIMIT 1),
                             cs.created_at, cs.updated_at,
                             cs.tokens_prompt + cs.tokens_completion, cs.cost_usd,
-                            cs.job_id, cs.agent_id
+                            cs.job_id, cs.agent_id,
+                            cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m
                      FROM chat_sessions cs
                      JOIN workspaces w ON w.project_id = cs.project_id
                      WHERE w.id = ?1 AND cs.agent_id = ?2
@@ -2512,8 +1854,9 @@ impl Db {
             "INSERT OR REPLACE INTO usage_events
                 (id, project_id, org_id, user_id, session_id, model, provider, cli,
                  tokens_prompt, tokens_prompt_cached, tokens_completion, tokens_reasoning,
-                 cost_usd, cache_hit_rate, estimated, synced, started_at, ended_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,0,?16,?17)",
+                 cost_usd, cache_hit_rate, estimated, synced, started_at, ended_at,
+                 rate_prompt_per_1m, rate_cached_per_1m, rate_completion_per_1m, rate_reasoning_per_1m)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,0,?16,?17,?18,?19,?20,?21)",
             rusqlite::params![
                 ev.id,
                 ev.project_id,
@@ -2532,6 +1875,10 @@ impl Db {
                 ev.estimated as i64,
                 ev.started_at,
                 ev.ended_at,
+                ev.rate_prompt_per_1m.unwrap_or(0.0),
+                ev.rate_cached_per_1m.unwrap_or(0.0),
+                ev.rate_completion_per_1m.unwrap_or(0.0),
+                ev.rate_reasoning_per_1m.unwrap_or(0.0),
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -2544,7 +1891,8 @@ impl Db {
             .prepare(
                 "SELECT id, project_id, org_id, user_id, session_id, model, provider, cli,
                         tokens_prompt, tokens_prompt_cached, tokens_completion, tokens_reasoning,
-                        cost_usd, cache_hit_rate, estimated, started_at, ended_at
+                        cost_usd, cache_hit_rate, estimated, started_at, ended_at,
+                        rate_prompt_per_1m, rate_cached_per_1m, rate_completion_per_1m, rate_reasoning_per_1m
                  FROM usage_events WHERE synced = 0 ORDER BY created_at",
             )
             .map_err(|e| e.to_string())?;
@@ -2568,6 +1916,10 @@ impl Db {
                     estimated: r.get::<_, i64>(14)? != 0,
                     started_at: r.get(15)?,
                     ended_at: r.get(16)?,
+                    rate_prompt_per_1m: r.get(17).ok(),
+                    rate_cached_per_1m: r.get(18).ok(),
+                    rate_completion_per_1m: r.get(19).ok(),
+                    rate_reasoning_per_1m: r.get(20).ok(),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2588,11 +1940,88 @@ impl Db {
         tx.commit().map_err(|e| e.to_string())
     }
 
+    pub fn list_usage_events_for_level(&self, level: &str, id: &str) -> Vec<UsageEvent> {
+        let conn = match self.0.lock() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let sql = match level {
+            "project" => "SELECT id, project_id, org_id, user_id, session_id, model, provider, cli,
+                                tokens_prompt, tokens_prompt_cached, tokens_completion, tokens_reasoning,
+                                cost_usd, cache_hit_rate, estimated, started_at, ended_at,
+                                rate_prompt_per_1m, rate_cached_per_1m, rate_completion_per_1m, rate_reasoning_per_1m
+                         FROM usage_events WHERE project_id = ?1 ORDER BY created_at",
+            "org" => "SELECT id, project_id, org_id, user_id, session_id, model, provider, cli,
+                            tokens_prompt, tokens_prompt_cached, tokens_completion, tokens_reasoning,
+                            cost_usd, cache_hit_rate, estimated, started_at, ended_at,
+                            rate_prompt_per_1m, rate_cached_per_1m, rate_completion_per_1m, rate_reasoning_per_1m
+                     FROM usage_events
+                     WHERE org_id = ?1
+                        OR ( (org_id IS NULL OR org_id = '') AND (
+                             project_id IN (SELECT project_id FROM project_org_cache WHERE org_id = ?1)
+                             OR project_id IN (SELECT project_id FROM workspaces WHERE organization_id = ?1 OR organization_id IN (SELECT id FROM organizations WHERE id = ?1))
+                           )
+                        )
+                     ORDER BY created_at",
+            "user" => "SELECT id, project_id, org_id, user_id, session_id, model, provider, cli,
+                                tokens_prompt, tokens_prompt_cached, tokens_completion, tokens_reasoning,
+                                cost_usd, cache_hit_rate, estimated, started_at, ended_at,
+                                rate_prompt_per_1m, rate_cached_per_1m, rate_completion_per_1m, rate_reasoning_per_1m
+                         FROM usage_events WHERE (?1 = '' OR user_id = ?1) ORDER BY created_at",
+            "account" => "SELECT id, project_id, org_id, user_id, session_id, model, provider, cli,
+                                tokens_prompt, tokens_prompt_cached, tokens_completion, tokens_reasoning,
+                                cost_usd, cache_hit_rate, estimated, started_at, ended_at,
+                                rate_prompt_per_1m, rate_cached_per_1m, rate_completion_per_1m, rate_reasoning_per_1m
+                         FROM usage_events ORDER BY created_at",
+            _ => return Vec::new(),
+        };
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let row_mapper = |r: &rusqlite::Row| -> rusqlite::Result<UsageEvent> {
+            Ok(UsageEvent {
+                id: r.get(0)?,
+                project_id: r.get(1)?,
+                org_id: r.get(2)?,
+                user_id: r.get(3)?,
+                session_id: r.get(4)?,
+                model: r.get(5)?,
+                provider: r.get(6)?,
+                cli: r.get(7)?,
+                tokens_prompt: r.get(8)?,
+                tokens_prompt_cached: r.get(9)?,
+                tokens_completion: r.get(10)?,
+                tokens_reasoning: r.get(11)?,
+                cost_usd: r.get(12)?,
+                cache_hit_rate: r.get(13)?,
+                estimated: r.get::<_, i64>(14)? != 0,
+                started_at: r.get(15)?,
+                ended_at: r.get(16)?,
+                rate_prompt_per_1m: r.get(17).ok(),
+                rate_cached_per_1m: r.get(18).ok(),
+                rate_completion_per_1m: r.get(19).ok(),
+                rate_reasoning_per_1m: r.get(20).ok(),
+            })
+        };
+
+        let result = if level == "account" {
+            stmt.query_map([], row_mapper)
+        } else {
+            stmt.query_map([id], row_mapper)
+        };
+
+        match result {
+            Ok(iter) => iter.flatten().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Read one aggregate row as a JSON object (numeric columns as numbers,
     /// the `*_json` columns parsed into nested values). `table` must be one of
-    /// project_usage|org_usage|account_usage. Returns None if absent.
+    /// project_usage|org_usage|account_usage|user_usage. Returns None if absent.
     pub fn get_usage_row(&self, table: &str, id: &str) -> Option<serde_json::Value> {
-        if !matches!(table, "project_usage" | "org_usage" | "account_usage") {
+        if !matches!(table, "project_usage" | "org_usage" | "account_usage" | "user_usage") {
             return None;
         }
         let conn = self.0.lock().unwrap();
@@ -2637,7 +2066,7 @@ impl Db {
     /// Upsert one aggregate row from a JSON object (the shape produced by
     /// `get_usage_row` / the usage aggregation core).
     pub fn put_usage_row(&self, table: &str, row: &serde_json::Value) -> Result<(), String> {
-        if !matches!(table, "project_usage" | "org_usage" | "account_usage") {
+        if !matches!(table, "project_usage" | "org_usage" | "account_usage" | "user_usage") {
             return Err("invalid usage table".into());
         }
         let conn = self.0.lock().unwrap();
@@ -2693,51 +2122,102 @@ impl Db {
     ) -> Result<(), String> {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM llm_keys_cache WHERE scope = ?1 AND scope_id = ?2",
-            (scope, scope_id),
-        )
-        .map_err(|e| e.to_string())?;
-        for k in keys {
-            tx.execute(
-                "INSERT INTO llm_keys_cache
-                    (scope, scope_id, provider, credentials_encrypted, base_url, extra_env, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![
-                    scope,
-                    scope_id,
-                    k.provider,
-                    k.credentials_encrypted,
-                    k.base_url,
-                    k.extra_env,
-                    synced_at,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
+
+        match scope {
+            "project" => {
+                let _ = tx.execute("DELETE FROM project_llm_keys WHERE project_id = ?1", [scope_id]);
+                for k in keys {
+                    let _ = tx.execute(
+                        "INSERT INTO project_llm_keys (project_id, provider, credentials_encrypted, base_url, extra_env, synced_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        rusqlite::params![scope_id, k.provider, k.credentials_encrypted, k.base_url, k.extra_env, synced_at],
+                    );
+                }
+            }
+            "org" => {
+                let _ = tx.execute("DELETE FROM org_llm_keys WHERE org_id = ?1", [scope_id]);
+                for k in keys {
+                    let _ = tx.execute(
+                        "INSERT INTO org_llm_keys (org_id, provider, credentials_encrypted, base_url, extra_env, synced_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        rusqlite::params![scope_id, k.provider, k.credentials_encrypted, k.base_url, k.extra_env, synced_at],
+                    );
+                }
+            }
+            "account" => {
+                let _ = tx.execute("DELETE FROM account_llm_keys WHERE user_id = ?1", [scope_id]);
+                for k in keys {
+                    let _ = tx.execute(
+                        "INSERT INTO account_llm_keys (user_id, provider, credentials_encrypted, base_url, extra_env, synced_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        rusqlite::params![scope_id, k.provider, k.credentials_encrypted, k.base_url, k.extra_env, synced_at],
+                    );
+                }
+            }
+            _ => {}
         }
+
         tx.commit().map_err(|e| e.to_string())
     }
 
     pub fn get_cached_llm_keys(&self, scope: &str, scope_id: &str) -> Vec<CachedLlmKey> {
         let conn = self.0.lock().unwrap();
-        let Ok(mut stmt) = conn.prepare(
-            "SELECT provider, credentials_encrypted, base_url, extra_env
-             FROM llm_keys_cache WHERE scope = ?1 AND scope_id = ?2 ORDER BY provider",
-        ) else {
-            return Vec::new();
+        let query_res: rusqlite::Result<Vec<CachedLlmKey>> = match scope {
+            "project" => {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT provider, credentials_encrypted, base_url, extra_env
+                     FROM project_llm_keys WHERE project_id = ?1 ORDER BY provider",
+                ) {
+                    stmt.query_map([scope_id], |r| {
+                        Ok(CachedLlmKey {
+                            provider: r.get(0)?,
+                            credentials_encrypted: r.get(1)?,
+                            base_url: r.get(2)?,
+                            extra_env: r.get(3)?,
+                        })
+                    }).map(|iter| iter.flatten().collect())
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            "org" => {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT provider, credentials_encrypted, base_url, extra_env
+                     FROM org_llm_keys WHERE org_id = ?1 ORDER BY provider",
+                ) {
+                    stmt.query_map([scope_id], |r| {
+                        Ok(CachedLlmKey {
+                            provider: r.get(0)?,
+                            credentials_encrypted: r.get(1)?,
+                            base_url: r.get(2)?,
+                            extra_env: r.get(3)?,
+                        })
+                    }).map(|iter| iter.flatten().collect())
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            "account" => {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT provider, credentials_encrypted, base_url, extra_env
+                     FROM account_llm_keys WHERE user_id = ?1 ORDER BY provider",
+                ) {
+                    stmt.query_map([scope_id], |r| {
+                        Ok(CachedLlmKey {
+                            provider: r.get(0)?,
+                            credentials_encrypted: r.get(1)?,
+                            base_url: r.get(2)?,
+                            extra_env: r.get(3)?,
+                        })
+                    }).map(|iter| iter.flatten().collect())
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            _ => Ok(Vec::new()),
         };
-        let rows = stmt.query_map((scope, scope_id), |r| {
-            Ok(CachedLlmKey {
-                provider: r.get(0)?,
-                credentials_encrypted: r.get(1)?,
-                base_url: r.get(2)?,
-                extra_env: r.get(3)?,
-            })
-        });
-        match rows {
-            Ok(iter) => iter.flatten().collect(),
-            Err(_) => Vec::new(),
-        }
+
+        query_res.unwrap_or_default()
     }
 
     pub fn replace_cached_connectors(
@@ -2749,53 +2229,102 @@ impl Db {
     ) -> Result<(), String> {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM connectors_cache WHERE scope = ?1 AND scope_id = ?2",
-            (scope, scope_id),
-        )
-        .map_err(|e| e.to_string())?;
-        for c in connectors {
-            tx.execute(
-                "INSERT INTO connectors_cache
-                    (scope, scope_id, service, status, credentials_encrypted, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    scope,
-                    scope_id,
-                    c.service,
-                    c.status,
-                    c.credentials_encrypted,
-                    synced_at,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
+
+        match scope {
+            "project" => {
+                let _ = tx.execute("DELETE FROM project_connectors WHERE project_id = ?1", [scope_id]);
+                for c in connectors {
+                    let _ = tx.execute(
+                        "INSERT INTO project_connectors (project_id, service, status, credentials_encrypted, synced_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![scope_id, c.service, c.status.as_deref().unwrap_or("configured"), c.credentials_encrypted, synced_at],
+                    );
+                }
+            }
+            "org" => {
+                let _ = tx.execute("DELETE FROM org_connectors WHERE org_id = ?1", [scope_id]);
+                for c in connectors {
+                    let _ = tx.execute(
+                        "INSERT INTO org_connectors (org_id, service, status, credentials_encrypted, synced_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![scope_id, c.service, c.status.as_deref().unwrap_or("configured"), c.credentials_encrypted, synced_at],
+                    );
+                }
+            }
+            "account" => {
+                let _ = tx.execute("DELETE FROM account_connectors WHERE user_id = ?1", [scope_id]);
+                for c in connectors {
+                    let _ = tx.execute(
+                        "INSERT INTO account_connectors (user_id, service, status, credentials_encrypted, synced_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![scope_id, c.service, c.status.as_deref().unwrap_or("configured"), c.credentials_encrypted, synced_at],
+                    );
+                }
+            }
+            _ => {}
         }
+
         tx.commit().map_err(|e| e.to_string())
     }
 
     pub fn get_cached_connectors(&self, scope: &str, scope_id: &str) -> Vec<CachedConnector> {
         let conn = self.0.lock().unwrap();
-        let Ok(mut stmt) = conn.prepare(
-            "SELECT service, status, credentials_encrypted
-             FROM connectors_cache WHERE scope = ?1 AND scope_id = ?2 ORDER BY service",
-        ) else {
-            return Vec::new();
+        let query_res: rusqlite::Result<Vec<CachedConnector>> = match scope {
+            "project" => {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT service, status, credentials_encrypted
+                     FROM project_connectors WHERE project_id = ?1 ORDER BY service",
+                ) {
+                    stmt.query_map([scope_id], |r| {
+                        Ok(CachedConnector {
+                            service: r.get(0)?,
+                            status: r.get(1)?,
+                            credentials_encrypted: r.get(2)?,
+                        })
+                    }).map(|iter| iter.flatten().collect())
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            "org" => {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT service, status, credentials_encrypted
+                     FROM org_connectors WHERE org_id = ?1 ORDER BY service",
+                ) {
+                    stmt.query_map([scope_id], |r| {
+                        Ok(CachedConnector {
+                            service: r.get(0)?,
+                            status: r.get(1)?,
+                            credentials_encrypted: r.get(2)?,
+                        })
+                    }).map(|iter| iter.flatten().collect())
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            "account" => {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT service, status, credentials_encrypted
+                     FROM account_connectors WHERE user_id = ?1 ORDER BY service",
+                ) {
+                    stmt.query_map([scope_id], |r| {
+                        Ok(CachedConnector {
+                            service: r.get(0)?,
+                            status: r.get(1)?,
+                            credentials_encrypted: r.get(2)?,
+                        })
+                    }).map(|iter| iter.flatten().collect())
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            _ => Ok(Vec::new()),
         };
-        let rows = stmt.query_map((scope, scope_id), |r| {
-            Ok(CachedConnector {
-                service: r.get(0)?,
-                status: r.get(1)?,
-                credentials_encrypted: r.get(2)?,
-            })
-        });
-        match rows {
-            Ok(iter) => iter.flatten().collect(),
-            Err(_) => Vec::new(),
-        }
+
+        query_res.unwrap_or_default()
     }
 
-    /// Upsert a single connector entry into the local cache. Used as a fallback
-    /// when the project is not yet synced to cloud (no Turso FK target exists).
+    /// Upsert a single connector entry into the local database.
     pub fn upsert_connector_cache(
         &self,
         scope: &str,
@@ -2805,17 +2334,45 @@ impl Db {
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        conn.execute(
-            "INSERT INTO connectors_cache
-                 (scope, scope_id, service, status, credentials_encrypted, synced_at)
-             VALUES (?1, ?2, ?3, 'local', ?4, ?5)
-             ON CONFLICT(scope, scope_id, service) DO UPDATE SET
-                 status = 'local',
-                 credentials_encrypted = excluded.credentials_encrypted,
-                 synced_at = excluded.synced_at",
-            rusqlite::params![scope, scope_id, service, credentials_encrypted, ts],
-        )
-        .map_err(|e| e.to_string())?;
+        match scope {
+            "project" => {
+                let _ = conn.execute(
+                    "INSERT INTO project_connectors
+                         (project_id, service, status, credentials_encrypted, synced_at)
+                     VALUES (?1, ?2, 'local', ?3, ?4)
+                     ON CONFLICT(project_id, service) DO UPDATE SET
+                         status = 'local',
+                         credentials_encrypted = excluded.credentials_encrypted,
+                         synced_at = excluded.synced_at",
+                    rusqlite::params![scope_id, service, credentials_encrypted, ts],
+                );
+            }
+            "org" => {
+                let _ = conn.execute(
+                    "INSERT INTO org_connectors
+                         (org_id, service, status, credentials_encrypted, synced_at)
+                     VALUES (?1, ?2, 'local', ?3, ?4)
+                     ON CONFLICT(org_id, service) DO UPDATE SET
+                         status = 'local',
+                         credentials_encrypted = excluded.credentials_encrypted,
+                         synced_at = excluded.synced_at",
+                    rusqlite::params![scope_id, service, credentials_encrypted, ts],
+                );
+            }
+            "account" => {
+                let _ = conn.execute(
+                    "INSERT INTO account_connectors
+                         (user_id, service, status, credentials_encrypted, synced_at)
+                     VALUES (?1, ?2, 'local', ?3, ?4)
+                     ON CONFLICT(user_id, service) DO UPDATE SET
+                         status = 'local',
+                         credentials_encrypted = excluded.credentials_encrypted,
+                         synced_at = excluded.synced_at",
+                    rusqlite::params![scope_id, service, credentials_encrypted, ts],
+                );
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -2845,6 +2402,16 @@ impl Db {
         .ok()
     }
 
+    pub fn get_project_name(&self, project_id: &str) -> Option<String> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row(
+            "SELECT name FROM workspaces WHERE project_id = ?1",
+            [project_id],
+            |r| r.get(0),
+        )
+        .ok()
+    }
+
     fn chat_message_from_row(r: &rusqlite::Row) -> rusqlite::Result<ChatMessage> {
         Ok(ChatMessage {
             id: r.get(0)?,
@@ -2854,7 +2421,8 @@ impl Db {
             content: r.get(4)?,
             provider: r.get(5)?,
             model: r.get(6)?,
-            created_at: r.get(7)?,
+            user_id: r.get(7).ok(),
+            created_at: r.get(8)?,
         })
     }
 
@@ -2872,6 +2440,7 @@ impl Db {
             first_user: r.get(9)?,
             provider: r.get(10)?,
             model: r.get(11)?,
+            user_id: r.get(12).ok(),
         })
     }
 
@@ -2882,15 +2451,17 @@ impl Db {
             (SELECT content FROM chat_messages m WHERE m.session_id = s.id ORDER BY m.id DESC LIMIT 1),
             (SELECT content FROM chat_messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.id ASC LIMIT 1),
             (SELECT provider FROM chat_messages m WHERE m.session_id = s.id AND m.provider IS NOT NULL ORDER BY m.id DESC LIMIT 1),
-            (SELECT model FROM chat_messages m WHERE m.session_id = s.id AND m.model IS NOT NULL ORDER BY m.id DESC LIMIT 1)
+            (SELECT model FROM chat_messages m WHERE m.session_id = s.id AND m.model IS NOT NULL ORDER BY m.id DESC LIMIT 1),
+            s.user_id
          FROM chat_sessions s";
 
     pub fn create_chat_session(&self, project_id: &str) -> Result<ChatSession, String> {
+        let user_id = self.current_user_id();
         let conn = self.0.lock().unwrap();
         let id = ulid::Ulid::new().to_string();
         conn.execute(
-            "INSERT INTO chat_sessions (id, project_id) VALUES (?1, ?2)",
-            rusqlite::params![id, project_id],
+            "INSERT INTO chat_sessions (id, project_id, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, project_id, user_id],
         )
         .map_err(|e| e.to_string())?;
         conn.query_row(
@@ -2924,6 +2495,7 @@ impl Db {
         provider: Option<&str>,
         model: Option<&str>,
     ) -> Result<ChatMessage, String> {
+        let user_id = self.current_user_id();
         let conn = self.0.lock().unwrap();
         let project_id: String = conn
             .query_row(
@@ -2933,9 +2505,9 @@ impl Db {
             )
             .map_err(|_| "chat session not found".to_string())?;
         conn.execute(
-            "INSERT INTO chat_messages (session_id, project_id, role, content, provider, model)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![session_id, project_id, role, content, provider, model],
+            "INSERT INTO chat_messages (session_id, project_id, role, content, provider, model, user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![session_id, project_id, role, content, provider, model, user_id],
         )
         .map_err(|e| e.to_string())?;
         conn.execute(
@@ -2945,7 +2517,7 @@ impl Db {
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
         conn.query_row(
-            "SELECT id, session_id, project_id, role, content, provider, model, created_at
+            "SELECT id, session_id, project_id, role, content, provider, model, user_id, created_at
              FROM chat_messages WHERE id = ?1",
             [id],
             Self::chat_message_from_row,
@@ -2964,7 +2536,7 @@ impl Db {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT id, session_id, project_id, role, content, provider, model, created_at
+                "SELECT id, session_id, project_id, role, content, provider, model, user_id, created_at
                  FROM chat_messages WHERE session_id = ?1 ORDER BY id",
             )
             .map_err(|e| e.to_string())?;
@@ -3018,6 +2590,7 @@ impl Db {
         session_id: &str,
         messages: &[crate::chat::ChatMsg],
     ) -> Result<(), String> {
+        let user_id = self.current_user_id();
         let conn = self.0.lock().unwrap();
         let project_id: String = conn
             .query_row(
@@ -3035,8 +2608,8 @@ impl Db {
 
         for msg in messages {
             conn.execute(
-                "INSERT INTO chat_messages (session_id, project_id, role, content) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![session_id, project_id, msg.role, msg.content],
+                "INSERT INTO chat_messages (session_id, project_id, role, content, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![session_id, project_id, msg.role, msg.content, user_id],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -3068,7 +2641,7 @@ impl Db {
     pub fn get_workspace(&self, id: i64) -> Result<Workspace, String> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE id = ?1",
+            "SELECT id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE id = ?1",
             [id],
             Self::workspace_from_row,
         )
@@ -3189,8 +2762,9 @@ impl Db {
         Ok(())
     }
 
-    // --- Phase 18: skills (local mirror of Turso project_skill_index) ---
+    // --- Phase 18: skills (project and org level) ---
 
+    #[allow(dead_code)]
     pub fn replace_cached_skills(
         &self,
         project_id: &str,
@@ -3200,14 +2774,14 @@ impl Db {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         tx.execute(
-            "DELETE FROM skill_index_cache WHERE project_id = ?1",
+            "DELETE FROM project_skills WHERE project_id = ?1",
             [project_id],
         )
         .map_err(|e| e.to_string())?;
         for s in skills {
             tx.execute(
-                "INSERT INTO skill_index_cache (project_id, skill_name, tags, scope, active, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO project_skills (workspace_id, name, tags, scope, active, project_id, updated_at)
+                 VALUES ((SELECT id FROM workspaces WHERE project_id = ?1 LIMIT 1), ?2, ?3, ?4, ?5, ?1, ?6)",
                 rusqlite::params![project_id, s.skill_name, s.tags, s.scope, s.active as i64, synced_at],
             )
             .map_err(|e| e.to_string())?;
@@ -3218,8 +2792,8 @@ impl Db {
     pub fn get_cached_skills(&self, project_id: &str) -> Vec<CachedSkill> {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT skill_name, tags, scope, active FROM skill_index_cache
-             WHERE project_id = ?1 ORDER BY skill_name",
+            "SELECT name, tags, scope, active FROM project_skills
+             WHERE project_id = ?1 ORDER BY name",
         ) else {
             return Vec::new();
         };
@@ -3237,6 +2811,7 @@ impl Db {
         }
     }
 
+    #[allow(dead_code)]
     pub fn replace_cached_org_skills(
         &self,
         org_id: &str,
@@ -3245,11 +2820,11 @@ impl Db {
     ) -> Result<(), String> {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM org_skill_cache WHERE org_id = ?1", [org_id])
+        tx.execute("DELETE FROM org_skills WHERE org_id = ?1", [org_id])
             .map_err(|e| e.to_string())?;
         for s in skills {
             tx.execute(
-                "INSERT INTO org_skill_cache (org_id, skill_name, tags, skill_catalog_id, author, synced_at)
+                "INSERT INTO org_skills (org_id, skill_name, tags, skill_catalog_id, author, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![org_id, s.skill_name, s.tags, s.skill_catalog_id, s.author, synced_at],
             )
@@ -3261,7 +2836,7 @@ impl Db {
     pub fn get_cached_org_skills(&self, org_id: &str) -> Vec<CachedOrgSkill> {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT skill_name, tags, skill_catalog_id, author FROM org_skill_cache WHERE org_id = ?1 ORDER BY skill_name",
+            "SELECT skill_name, tags, skill_catalog_id, author FROM org_skills WHERE org_id = ?1 ORDER BY skill_name",
         ) else {
             return Vec::new();
         };
@@ -3294,7 +2869,7 @@ impl Db {
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO memory_entries
+            "INSERT INTO project_memory
                 (workspace_id, category, slug, title, summary, tags, file_path, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
              ON CONFLICT(workspace_id, category, slug) DO UPDATE SET
@@ -3318,7 +2893,7 @@ impl Db {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
             "SELECT category, slug, title, summary, tags, file_path, updated_at
-             FROM memory_entries WHERE workspace_id = ?1 ORDER BY category, slug",
+             FROM project_memory WHERE workspace_id = ?1 ORDER BY category, slug",
         ) else {
             return Vec::new();
         };
@@ -3347,7 +2922,7 @@ impl Db {
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "DELETE FROM memory_entries WHERE workspace_id = ?1 AND category = ?2 AND slug = ?3",
+            "DELETE FROM project_memory WHERE workspace_id = ?1 AND category = ?2 AND slug = ?3",
             (workspace_id, category, slug),
         )
         .map_err(|e| e.to_string())?;
@@ -3357,13 +2932,14 @@ impl Db {
     pub fn delete_memory_category(&self, workspace_id: i64, category: &str) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "DELETE FROM memory_entries WHERE workspace_id = ?1 AND category = ?2",
+            "DELETE FROM project_memory WHERE workspace_id = ?1 AND category = ?2",
             (workspace_id, category),
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn replace_cached_memory(
         &self,
         project_id: &str,
@@ -3373,15 +2949,15 @@ impl Db {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         tx.execute(
-            "DELETE FROM memory_index_cache WHERE project_id = ?1",
+            "DELETE FROM project_memory WHERE project_id = ?1",
             [project_id],
         )
         .map_err(|e| e.to_string())?;
         for m in entries {
             tx.execute(
-                "INSERT INTO memory_index_cache
-                    (project_id, category, slug, title, summary, tags, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO project_memory
+                    (workspace_id, project_id, category, slug, title, summary, tags, updated_at)
+                 VALUES ((SELECT id FROM workspaces WHERE project_id = ?1 LIMIT 1), ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
                     project_id, m.category, m.slug, m.title, m.summary, m.tags, synced_at
                 ],
@@ -3394,7 +2970,7 @@ impl Db {
     pub fn get_cached_memory(&self, project_id: &str) -> Vec<CachedMemory> {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT category, slug, title, summary, tags FROM memory_index_cache
+            "SELECT category, slug, title, summary, tags FROM project_memory
              WHERE project_id = ?1 ORDER BY category, slug",
         ) else {
             return Vec::new();
@@ -3414,6 +2990,7 @@ impl Db {
         }
     }
 
+    #[allow(dead_code)]
     pub fn replace_cached_org_memory(
         &self,
         org_id: &str,
@@ -3422,11 +2999,11 @@ impl Db {
     ) -> Result<(), String> {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM org_memory_cache WHERE org_id = ?1", [org_id])
+        tx.execute("DELETE FROM org_memory WHERE org_id = ?1", [org_id])
             .map_err(|e| e.to_string())?;
         for m in entries {
             tx.execute(
-                "INSERT INTO org_memory_cache (org_id, slug, title, body, tags, synced_at)
+                "INSERT INTO org_memory (org_id, slug, title, body, tags, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![org_id, m.slug, m.title, m.body, m.tags, synced_at],
             )
@@ -3438,7 +3015,7 @@ impl Db {
     pub fn get_cached_org_memory(&self, org_id: &str) -> Vec<CachedOrgMemory> {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT slug, title, body, tags FROM org_memory_cache WHERE org_id = ?1 ORDER BY slug",
+            "SELECT slug, title, body, tags FROM org_memory WHERE org_id = ?1 ORDER BY slug",
         ) else {
             return Vec::new();
         };
@@ -3469,7 +3046,7 @@ impl Db {
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO wiki_pages
+            "INSERT INTO project_wiki
                 (workspace_id, slug, title, summary, tags, file_path, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
              ON CONFLICT(workspace_id, slug) DO UPDATE SET
@@ -3485,7 +3062,7 @@ impl Db {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
             "SELECT slug, title, summary, tags, file_path, updated_at
-             FROM wiki_pages WHERE workspace_id = ?1 ORDER BY title",
+             FROM project_wiki WHERE workspace_id = ?1 ORDER BY title",
         ) else {
             return Vec::new();
         };
@@ -3508,13 +3085,14 @@ impl Db {
     pub fn delete_wiki_page(&self, workspace_id: i64, slug: &str) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "DELETE FROM wiki_pages WHERE workspace_id = ?1 AND slug = ?2",
+            "DELETE FROM project_wiki WHERE workspace_id = ?1 AND slug = ?2",
             (workspace_id, slug),
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn replace_cached_wiki(
         &self,
         project_id: &str,
@@ -3524,17 +3102,17 @@ impl Db {
         let mut conn = self.0.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         tx.execute(
-            "DELETE FROM wiki_index_cache WHERE project_id = ?1",
+            "DELETE FROM project_wiki WHERE project_id = ?1",
             [project_id],
         )
         .map_err(|e| e.to_string())?;
         for p in pages {
             tx.execute(
-                "INSERT INTO wiki_index_cache
-                    (project_id, slug, title, summary, tags, content, synced_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO project_wiki
+                    (workspace_id, project_id, slug, title, summary, tags, updated_at)
+                 VALUES ((SELECT id FROM workspaces WHERE project_id = ?1 LIMIT 1), ?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
-                    project_id, p.slug, p.title, p.summary, p.tags, p.content, synced_at
+                    project_id, p.slug, p.title, p.summary, p.tags, synced_at
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -3545,7 +3123,7 @@ impl Db {
     pub fn get_cached_wiki(&self, project_id: &str) -> Vec<CachedWiki> {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT slug, title, summary, tags, content FROM wiki_index_cache
+            "SELECT slug, title, summary, tags FROM project_wiki
              WHERE project_id = ?1 ORDER BY title",
         ) else {
             return Vec::new();
@@ -3556,7 +3134,7 @@ impl Db {
                 title: r.get(1)?,
                 summary: r.get(2)?,
                 tags: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                content: r.get(4)?,
+                content: String::new(),
             })
         });
         match rows {
@@ -3565,7 +3143,7 @@ impl Db {
         }
     }
 
-    // ── Session log files (Phase B) ───────────────────────────────────────────
+    // ── Session log files (Phase B / 3-Tier Hierarchy) ────────────────────────
 
     pub fn insert_session_log(
         &self,
@@ -3581,12 +3159,14 @@ impl Db {
         tokens: i64,
         summary: &str,
     ) -> Result<SessionLogFile, String> {
+        let user_id = self.current_user_id();
         let conn = self.0.lock().unwrap();
+        // Insert into project_session_logs
         conn.execute(
-            "INSERT INTO session_logs
+            "INSERT INTO project_session_logs
                (id, workspace_id, file_path, agent_id, session_id, date,
-                agent_name, model, cost_usd, tokens, summary)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                agent_name, model, cost_usd, tokens, summary, user_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             rusqlite::params![
                 id,
                 workspace_id,
@@ -3598,13 +3178,37 @@ impl Db {
                 model,
                 cost_usd,
                 tokens,
-                summary
+                summary,
+                user_id
             ],
         )
         .map_err(|e| e.to_string())?;
+
+        // Also dual-write to legacy session_logs table for backward compatibility
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO session_logs
+               (id, workspace_id, file_path, agent_id, session_id, date,
+                agent_name, model, cost_usd, tokens, summary, user_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            rusqlite::params![
+                id,
+                workspace_id,
+                file_path,
+                agent_id,
+                session_id,
+                date,
+                agent_name,
+                model,
+                cost_usd,
+                tokens,
+                summary,
+                user_id
+            ],
+        );
+
         let created_at: String = conn
             .query_row(
-                "SELECT created_at FROM session_logs WHERE id = ?1",
+                "SELECT created_at FROM project_session_logs WHERE id = ?1",
                 [id],
                 |r| r.get(0),
             )
@@ -3622,6 +3226,7 @@ impl Db {
             tokens,
             summary: summary.to_string(),
             cloud_id: None,
+            user_id,
             created_at,
         })
     }
@@ -3636,21 +3241,35 @@ impl Db {
         file_path: &str,
         summary: &str,
     ) -> Result<(), String> {
+        let user_id = self.current_user_id();
         let conn = self.0.lock().unwrap();
         let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
         conn.execute(
-            "INSERT OR IGNORE INTO session_logs \
-             (id, workspace_id, file_path, session_id, date, agent_name, model, cost_usd, tokens, summary) \
-             VALUES (?1, ?2, ?3, ?1, ?4, 'chat', '', 0.0, 0, ?5)",
-            rusqlite::params![session_id, workspace_id, file_path, date, summary],
+            "INSERT OR IGNORE INTO project_session_logs \
+             (id, workspace_id, file_path, session_id, date, agent_name, model, cost_usd, tokens, summary, user_id) \
+             VALUES (?1, ?2, ?3, ?1, ?4, 'chat', '', 0.0, 0, ?5, ?6)",
+            rusqlite::params![session_id, workspace_id, file_path, date, summary, user_id],
         )
         .map_err(|e| e.to_string())?;
         // Always refresh summary + path (latest compaction wins)
         conn.execute(
-            "UPDATE session_logs SET summary = ?1, file_path = ?2 WHERE id = ?3",
+            "UPDATE project_session_logs SET summary = ?1, file_path = ?2 WHERE id = ?3",
             rusqlite::params![summary, file_path, session_id],
         )
         .map_err(|e| e.to_string())?;
+
+        // Dual-write to session_logs for legacy compatibility
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO session_logs \
+             (id, workspace_id, file_path, session_id, date, agent_name, model, cost_usd, tokens, summary, user_id) \
+             VALUES (?1, ?2, ?3, ?1, ?4, 'chat', '', 0.0, 0, ?5, ?6)",
+            rusqlite::params![session_id, workspace_id, file_path, date, summary, user_id],
+        );
+        let _ = conn.execute(
+            "UPDATE session_logs SET summary = ?1, file_path = ?2 WHERE id = ?3",
+            rusqlite::params![summary, file_path, session_id],
+        );
+
         Ok(())
     }
 
@@ -3658,8 +3277,8 @@ impl Db {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
             "SELECT id, workspace_id, file_path, agent_id, session_id, date,
-                    agent_name, model, cost_usd, tokens, summary, cloud_id, created_at
-             FROM session_logs
+                    agent_name, model, cost_usd, tokens, summary, cloud_id, created_at, user_id
+             FROM project_session_logs
              WHERE workspace_id = ?1
              ORDER BY date DESC, created_at DESC",
         ) else {
@@ -3680,27 +3299,91 @@ impl Db {
                 summary: r.get(10)?,
                 cloud_id: r.get(11)?,
                 created_at: r.get(12)?,
+                user_id: r.get(13).ok(),
             })
         });
         match rows {
-            Ok(iter) => iter.flatten().collect(),
+            Ok(iter) => {
+                let items: Vec<SessionLogFile> = iter.flatten().collect();
+                if !items.is_empty() {
+                    return items;
+                }
+                // Fallback to legacy session_logs if project_session_logs has nothing yet
+                if let Ok(mut legacy_stmt) = conn.prepare(
+                    "SELECT id, workspace_id, file_path, agent_id, session_id, date,
+                            agent_name, model, cost_usd, tokens, summary, cloud_id, created_at, user_id
+                     FROM session_logs
+                     WHERE workspace_id = ?1
+                     ORDER BY date DESC, created_at DESC",
+                ) {
+                    let leg_rows = legacy_stmt.query_map([workspace_id], |r| {
+                        Ok(SessionLogFile {
+                            id: r.get(0)?,
+                            workspace_id: r.get(1)?,
+                            file_path: r.get(2)?,
+                            agent_id: r.get(3)?,
+                            session_id: r.get(4)?,
+                            date: r.get(5)?,
+                            agent_name: r.get(6)?,
+                            model: r.get(7)?,
+                            cost_usd: r.get(8)?,
+                            tokens: r.get(9)?,
+                            summary: r.get(10)?,
+                            cloud_id: r.get(11)?,
+                            created_at: r.get(12)?,
+                            user_id: r.get(13).ok(),
+                        })
+                    });
+                    if let Ok(leg_iter) = leg_rows {
+                        return leg_iter.flatten().collect();
+                    }
+                }
+                Vec::new()
+            }
             Err(_) => Vec::new(),
         }
     }
 
     pub fn delete_session_log_file(&self, id: &str) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
-        conn.execute("DELETE FROM session_logs WHERE id = ?1", [id])
-            .map_err(|e| e.to_string())?;
+        let _ = conn.execute("DELETE FROM project_session_logs WHERE id = ?1", [id]);
+        let _ = conn.execute("DELETE FROM session_logs WHERE id = ?1", [id]);
         Ok(())
     }
 
     #[allow(dead_code)]
     pub fn get_session_log_by_session_id(&self, session_id: &str) -> Option<SessionLogFile> {
         let conn = self.0.lock().unwrap();
+        if let Ok(res) = conn.query_row(
+            "SELECT id, workspace_id, file_path, agent_id, session_id, date,
+                    agent_name, model, cost_usd, tokens, summary, cloud_id, created_at, user_id
+             FROM project_session_logs WHERE session_id = ?1 LIMIT 1",
+            [session_id],
+            |r| {
+                Ok(SessionLogFile {
+                    id: r.get(0)?,
+                    workspace_id: r.get(1)?,
+                    file_path: r.get(2)?,
+                    agent_id: r.get(3)?,
+                    session_id: r.get(4)?,
+                    date: r.get(5)?,
+                    agent_name: r.get(6)?,
+                    model: r.get(7)?,
+                    cost_usd: r.get(8)?,
+                    tokens: r.get(9)?,
+                    summary: r.get(10)?,
+                    cloud_id: r.get(11)?,
+                    created_at: r.get(12)?,
+                    user_id: r.get(13).ok(),
+                })
+            },
+        ) {
+            return Some(res);
+        }
+
         conn.query_row(
             "SELECT id, workspace_id, file_path, agent_id, session_id, date,
-                    agent_name, model, cost_usd, tokens, summary, cloud_id, created_at
+                    agent_name, model, cost_usd, tokens, summary, cloud_id, created_at, user_id
              FROM session_logs WHERE session_id = ?1 LIMIT 1",
             [session_id],
             |r| {
@@ -3718,10 +3401,191 @@ impl Db {
                     summary: r.get(10)?,
                     cloud_id: r.get(11)?,
                     created_at: r.get(12)?,
+                    user_id: r.get(13).ok(),
                 })
             },
         )
         .ok()
+    }
+
+    // ── Org Session Logs (Org Scope) ──────────────────────────────────────────
+
+    #[allow(dead_code)]
+    pub fn list_org_session_logs(&self, org_id: &str) -> Vec<OrgSessionLogRow> {
+        let conn = self.0.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT id, org_id, project_id, session_id, date,
+                    agent_name, model, cost_usd, tokens, summary, user_id, created_at
+             FROM org_session_logs
+             WHERE org_id = ?1
+             ORDER BY date DESC, created_at DESC",
+        ) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map([org_id], |r| {
+            Ok(OrgSessionLogRow {
+                id: r.get(0)?,
+                org_id: r.get(1)?,
+                project_id: r.get(2)?,
+                session_id: r.get(3)?,
+                date: r.get(4)?,
+                agent_name: r.get(5)?,
+                model: r.get(6)?,
+                cost_usd: r.get(7)?,
+                tokens: r.get(8)?,
+                summary: r.get(9)?,
+                user_id: r.get(10).ok(),
+                created_at: r.get(11)?,
+            })
+        });
+        match rows {
+            Ok(iter) => iter.flatten().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn insert_org_session_log(
+        &self,
+        id: &str,
+        org_id: &str,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        date: &str,
+        agent_name: &str,
+        model: &str,
+        cost_usd: f64,
+        tokens: i64,
+        summary: &str,
+    ) -> Result<OrgSessionLogRow, String> {
+        let user_id = self.current_user_id();
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "INSERT INTO org_session_logs
+                (id, org_id, project_id, session_id, date, agent_name, model, cost_usd, tokens, summary, user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![id, org_id, project_id, session_id, date, agent_name, model, cost_usd, tokens, summary, user_id],
+        )
+        .map_err(|e| e.to_string())?;
+        let created_at: String = conn
+            .query_row(
+                "SELECT created_at FROM org_session_logs WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(OrgSessionLogRow {
+            id: id.to_string(),
+            org_id: org_id.to_string(),
+            project_id: project_id.map(|s| s.to_string()),
+            session_id: session_id.map(|s| s.to_string()),
+            date: date.to_string(),
+            agent_name: agent_name.to_string(),
+            model: model.to_string(),
+            cost_usd,
+            tokens,
+            summary: summary.to_string(),
+            user_id,
+            created_at,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn delete_org_session_log(&self, id: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute("DELETE FROM org_session_logs WHERE id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ── Account Session Logs (Account Scope) ──────────────────────────────────
+
+    #[allow(dead_code)]
+    pub fn list_account_session_logs(&self, user_id: &str) -> Vec<AccountSessionLogRow> {
+        let conn = self.0.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT id, user_id, file_path, agent_id, session_id, date,
+                    agent_name, model, cost_usd, tokens, summary, created_at
+             FROM session_logs
+             WHERE user_id = ?1
+             ORDER BY date DESC, created_at DESC",
+        ) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map([user_id], |r| {
+            Ok(AccountSessionLogRow {
+                id: r.get(0)?,
+                user_id: r.get(1)?,
+                file_path: r.get(2)?,
+                agent_id: r.get(3)?,
+                session_id: r.get(4)?,
+                date: r.get(5)?,
+                agent_name: r.get(6)?,
+                model: r.get(7)?,
+                cost_usd: r.get(8)?,
+                tokens: r.get(9)?,
+                summary: r.get(10)?,
+                created_at: r.get(11)?,
+            })
+        });
+        match rows {
+            Ok(iter) => iter.flatten().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn insert_account_session_log(
+        &self,
+        id: &str,
+        user_id: &str,
+        file_path: &str,
+        agent_id: Option<&str>,
+        session_id: Option<&str>,
+        date: &str,
+        agent_name: &str,
+        model: &str,
+        cost_usd: f64,
+        tokens: i64,
+        summary: &str,
+    ) -> Result<AccountSessionLogRow, String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "INSERT INTO session_logs
+                (id, user_id, file_path, agent_id, session_id, date, agent_name, model, cost_usd, tokens, summary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![id, user_id, file_path, agent_id, session_id, date, agent_name, model, cost_usd, tokens, summary],
+        )
+        .map_err(|e| e.to_string())?;
+        let created_at: String = conn
+            .query_row(
+                "SELECT created_at FROM session_logs WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(AccountSessionLogRow {
+            id: id.to_string(),
+            user_id: user_id.to_string(),
+            file_path: file_path.to_string(),
+            agent_id: agent_id.map(|s| s.to_string()),
+            session_id: session_id.map(|s| s.to_string()),
+            date: date.to_string(),
+            agent_name: agent_name.to_string(),
+            model: model.to_string(),
+            cost_usd,
+            tokens,
+            summary: summary.to_string(),
+            created_at,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn delete_account_session_log(&self, id: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute("DELETE FROM session_logs WHERE id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     // ── Skill catalog cache (Phase C) ─────────────────────────────────────────
@@ -3729,7 +3593,7 @@ impl Db {
     pub fn upsert_skill_catalog_cache(&self, entry: &CatalogSkillEntry) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO skill_catalog_cache
+            "INSERT INTO skill_catalog
                (id, name, description, category, tags, github_url, readme, author, stars, synced_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
              ON CONFLICT(name) DO UPDATE SET
@@ -3759,7 +3623,7 @@ impl Db {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
             "SELECT id, name, description, category, tags, github_url, readme, author, stars, synced_at
-             FROM skill_catalog_cache ORDER BY name",
+             FROM skill_catalog ORDER BY name",
         ) else {
             return Vec::new();
         };
@@ -3785,7 +3649,7 @@ impl Db {
 
     pub fn clear_skill_catalog_cache(&self) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
-        conn.execute("DELETE FROM skill_catalog_cache", [])
+        conn.execute("DELETE FROM skill_catalog", [])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -3802,12 +3666,12 @@ impl Db {
         let id = ulid::Ulid::new().to_string();
 
         let _ = conn.execute(
-            "DELETE FROM installed_plugins_cache WHERE scope = ?1 AND scope_id = ?2 AND plugin_id = ?3",
+            "DELETE FROM installed_plugins WHERE scope = ?1 AND scope_id = ?2 AND plugin_id = ?3",
             rusqlite::params![scope, scope_id, &entry.id],
         );
 
         conn.execute(
-            "INSERT INTO installed_plugins_cache (
+            "INSERT INTO installed_plugins (
                 id, scope, scope_id, plugin_id, version,
                 skill_ids, agent_ids, mcp_ids, command_ids, hook_ids, rule_ids, connector_ids,
                 skills_url, agents_url, mcp_url, commands_url, hooks_url, rules_url
@@ -3845,7 +3709,7 @@ impl Db {
         let conn = self.0.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
             "SELECT id, scope, scope_id, plugin_id, installed_at, version, skill_ids, agent_ids, mcp_ids, command_ids, hook_ids, rule_ids, connector_ids
-             FROM installed_plugins_cache WHERE scope = ?1 AND scope_id = ?2 ORDER BY installed_at DESC",
+             FROM installed_plugins WHERE scope = ?1 AND scope_id = ?2 ORDER BY installed_at DESC",
         ) else {
             return Vec::new();
         };
@@ -3880,7 +3744,7 @@ impl Db {
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "DELETE FROM installed_plugins_cache WHERE scope = ?1 AND scope_id = ?2 AND plugin_id = ?3",
+            "DELETE FROM installed_plugins WHERE scope = ?1 AND scope_id = ?2 AND plugin_id = ?3",
             rusqlite::params![scope, scope_id, plugin_id],
         )
         .map_err(|e| e.to_string())?;
@@ -3891,7 +3755,7 @@ impl Db {
         let conn = self.0.lock().unwrap();
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM installed_plugins_cache WHERE scope = ?1 AND scope_id = ?2 AND plugin_id = ?3",
+                "SELECT COUNT(*) FROM installed_plugins WHERE scope = ?1 AND scope_id = ?2 AND plugin_id = ?3",
                 rusqlite::params![scope, scope_id, plugin_id],
                 |r| r.get(0),
             )
@@ -3901,7 +3765,7 @@ impl Db {
     pub fn upsert_plugin_cache(&self, e: &PluginCacheEntry) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO plugins_cache (id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, rules_url, rule_ids, connector_auth, featured, synced_at)
+            "INSERT INTO plugins (id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, rules_url, rule_ids, connector_auth, featured, synced_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
              ON CONFLICT(id) DO UPDATE SET
                name=excluded.name, description=excluded.description, author=excluded.author, version=excluded.version,
@@ -3919,38 +3783,37 @@ impl Db {
     }
 
     pub fn list_plugins_cache(&self, category: Option<&str>) -> Vec<PluginCacheEntry> {
-        let conn = self.0.lock().unwrap();
+        let Ok(conn) = self.0.lock() else { return vec![]; };
         let sql = if category.is_some() {
-            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins_cache WHERE category = ? ORDER BY name"
+            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins WHERE category = ? ORDER BY name"
         } else {
-            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins_cache ORDER BY name"
+            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins ORDER BY name"
         };
-        let mut stmt = conn.prepare(sql).unwrap();
+        let Ok(mut stmt) = conn.prepare(sql) else { return vec![]; };
         let iter = if let Some(c) = category {
             stmt.query_map([c], Self::map_plugin_cache)
         } else {
             stmt.query_map([], Self::map_plugin_cache)
         };
-        iter.unwrap().filter_map(|r| r.ok()).collect()
+        let Ok(rows) = iter else { return vec![]; };
+        rows.filter_map(|r| r.ok()).collect()
     }
 
     pub fn get_plugin_cache(&self, id: &str) -> Option<PluginCacheEntry> {
-        let conn = self.0.lock().unwrap();
+        let Ok(conn) = self.0.lock() else { return None; };
         conn.query_row(
-            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins_cache WHERE id = ?1",
+            "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins WHERE id = ?1",
             [id],
             Self::map_plugin_cache,
         ).ok()
     }
 
     pub fn search_plugins_cache(&self, query: &str) -> Vec<PluginCacheEntry> {
-        let conn = self.0.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins_cache WHERE name LIKE ?1 OR description LIKE ?1 ORDER BY name").unwrap();
+        let Ok(conn) = self.0.lock() else { return vec![]; };
+        let Ok(mut stmt) = conn.prepare("SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins WHERE name LIKE ?1 OR description LIKE ?1 ORDER BY name") else { return vec![]; };
         let q = format!("%{}%", query);
-        stmt.query_map([&q], Self::map_plugin_cache)
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect()
+        let Ok(rows) = stmt.query_map([&q], Self::map_plugin_cache) else { return vec![]; };
+        rows.filter_map(|r| r.ok()).collect()
     }
 
     fn map_plugin_cache(row: &rusqlite::Row) -> rusqlite::Result<PluginCacheEntry> {
@@ -3987,16 +3850,16 @@ impl Db {
     pub fn upsert_connector_catalog(&self, e: &ConnectorCatalogEntry) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO connector_catalog_cache (id, name, description, category, auth_type, oauth_url, api_key_fields, docs_url, icon_url, scope, install_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, category=excluded.category, auth_type=excluded.auth_type, oauth_url=excluded.oauth_url, api_key_fields=excluded.api_key_fields, docs_url=excluded.docs_url, icon_url=excluded.icon_url, scope=excluded.scope, install_count=excluded.install_count",
+            "INSERT INTO connector_catalog (id, name, description, category, auth_type, oauth_url, api_key_fields, docs_url, icon_url, scope, install_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, category=excluded.category, auth_type=excluded.auth_type, oauth_url=excluded.oauth_url, api_key_fields=excluded.api_key_fields, docs_url=excluded.docs_url, icon_url=excluded.icon_url, scope=excluded.scope, install_count=excluded.install_count",
             rusqlite::params![e.id, e.name, e.description, e.category, e.auth_type, e.oauth_url, e.api_key_fields, e.docs_url, e.icon_url, e.scope, e.install_count],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub fn list_connector_catalog(&self) -> Vec<ConnectorCatalogEntry> {
-        let conn = self.0.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, description, category, auth_type, oauth_url, api_key_fields, docs_url, icon_url, scope, install_count FROM connector_catalog_cache ORDER BY name").unwrap();
-        stmt.query_map([], |r| {
+        let Ok(conn) = self.0.lock() else { return vec![]; };
+        let Ok(mut stmt) = conn.prepare("SELECT id, name, description, category, auth_type, oauth_url, api_key_fields, docs_url, icon_url, scope, install_count FROM connector_catalog ORDER BY name") else { return vec![]; };
+        let Ok(rows) = stmt.query_map([], |r| {
             Ok(ConnectorCatalogEntry {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -4012,35 +3875,34 @@ impl Db {
                 synced_at: None,
                 created_at: None,
             })
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect()
+        }) else { return vec![]; };
+        rows.filter_map(|r| r.ok()).collect()
     }
 
     pub fn upsert_mcp_catalog(&self, e: &McpCatalogEntry) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO mcp_catalog_cache (id, name, description, author, category, type, url, command, args, env, required_env_vars, github_url, icon_url, docs_url, install_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, author=excluded.author, category=excluded.category, type=excluded.type, url=excluded.url, command=excluded.command, args=excluded.args, env=excluded.env, required_env_vars=excluded.required_env_vars, github_url=excluded.github_url, icon_url=excluded.icon_url, docs_url=excluded.docs_url, install_count=excluded.install_count",
+            "INSERT INTO mcp_catalog (id, name, description, author, category, type, url, command, args, env, required_env_vars, github_url, icon_url, docs_url, install_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, author=excluded.author, category=excluded.category, type=excluded.type, url=excluded.url, command=excluded.command, args=excluded.args, env=excluded.env, required_env_vars=excluded.required_env_vars, github_url=excluded.github_url, icon_url=excluded.icon_url, docs_url=excluded.docs_url, install_count=excluded.install_count",
             rusqlite::params![e.id, e.name, e.description, e.author, e.category, e.r#type, e.url, e.command, e.args, e.env, e.required_env_vars, e.github_url, e.icon_url, e.docs_url, e.install_count],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub fn list_mcp_catalog(&self, category: Option<&str>) -> Vec<McpCatalogEntry> {
-        let conn = self.0.lock().unwrap();
+        let Ok(conn) = self.0.lock() else { return vec![]; };
         let sql = if category.is_some() {
-            "SELECT id, name, description, author, category, type, url, command, args, env, required_env_vars, github_url, icon_url, docs_url, install_count FROM mcp_catalog_cache WHERE category = ? ORDER BY name"
+            "SELECT id, name, description, author, category, type, url, command, args, env, required_env_vars, github_url, icon_url, docs_url, install_count FROM mcp_catalog WHERE category = ? ORDER BY name"
         } else {
-            "SELECT id, name, description, author, category, type, url, command, args, env, required_env_vars, github_url, icon_url, docs_url, install_count FROM mcp_catalog_cache ORDER BY name"
+            "SELECT id, name, description, author, category, type, url, command, args, env, required_env_vars, github_url, icon_url, docs_url, install_count FROM mcp_catalog ORDER BY name"
         };
-        let mut stmt = conn.prepare(sql).unwrap();
+        let Ok(mut stmt) = conn.prepare(sql) else { return vec![]; };
         let iter = if let Some(c) = category {
             stmt.query_map([c], Self::map_mcp)
         } else {
             stmt.query_map([], Self::map_mcp)
         };
-        iter.unwrap().filter_map(|r| r.ok()).collect()
+        let Ok(rows) = iter else { return vec![]; };
+        rows.filter_map(|r| r.ok()).collect()
     }
 
     fn map_mcp(r: &rusqlite::Row) -> rusqlite::Result<McpCatalogEntry> {
@@ -4068,16 +3930,16 @@ impl Db {
     pub fn upsert_commands_catalog(&self, e: &CommandsCatalogEntry) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO commands_catalog_cache (id, name, slash, description, author, category, github_url, content, icon_url, install_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name, slash=excluded.slash, description=excluded.description, author=excluded.author, category=excluded.category, github_url=excluded.github_url, content=excluded.content, icon_url=excluded.icon_url, install_count=excluded.install_count",
+            "INSERT INTO commands_catalog (id, name, slash, description, author, category, github_url, content, icon_url, install_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name, slash=excluded.slash, description=excluded.description, author=excluded.author, category=excluded.category, github_url=excluded.github_url, content=excluded.content, icon_url=excluded.icon_url, install_count=excluded.install_count",
             rusqlite::params![e.id, e.name, e.slash, e.description, e.author, e.category, e.github_url, e.content, e.icon_url, e.install_count],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub fn list_commands_catalog(&self) -> Vec<CommandsCatalogEntry> {
-        let conn = self.0.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, slash, description, author, category, github_url, content, icon_url, install_count FROM commands_catalog_cache ORDER BY name").unwrap();
-        stmt.query_map([], |r| {
+        let Ok(conn) = self.0.lock() else { return vec![]; };
+        let Ok(mut stmt) = conn.prepare("SELECT id, name, slash, description, author, category, github_url, content, icon_url, install_count FROM commands_catalog ORDER BY name") else { return vec![]; };
+        let Ok(rows) = stmt.query_map([], |r| {
             Ok(CommandsCatalogEntry {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -4092,35 +3954,34 @@ impl Db {
                 synced_at: None,
                 created_at: None,
             })
-        })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .collect()
+        }) else { return vec![]; };
+        rows.filter_map(|r| r.ok()).collect()
     }
 
     pub fn upsert_hooks_catalog(&self, e: &HooksCatalogEntry) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO hooks_catalog_cache (id, name, description, author, hook_type, github_url, content, icon_url, install_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, author=excluded.author, hook_type=excluded.hook_type, github_url=excluded.github_url, content=excluded.content, icon_url=excluded.icon_url, install_count=excluded.install_count",
+            "INSERT INTO hooks_catalog (id, name, description, author, hook_type, github_url, content, icon_url, install_count) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, author=excluded.author, hook_type=excluded.hook_type, github_url=excluded.github_url, content=excluded.content, icon_url=excluded.icon_url, install_count=excluded.install_count",
             rusqlite::params![e.id, e.name, e.description, e.author, e.hook_type, e.github_url, e.content, e.icon_url, e.install_count],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub fn list_hooks_catalog(&self, hook_type: Option<&str>) -> Vec<HooksCatalogEntry> {
-        let conn = self.0.lock().unwrap();
+        let Ok(conn) = self.0.lock() else { return vec![]; };
         let sql = if hook_type.is_some() {
-            "SELECT id, name, description, author, hook_type, github_url, content, icon_url, install_count FROM hooks_catalog_cache WHERE hook_type = ? ORDER BY name"
+            "SELECT id, name, description, author, hook_type, github_url, content, icon_url, install_count FROM hooks_catalog WHERE hook_type = ? ORDER BY name"
         } else {
-            "SELECT id, name, description, author, hook_type, github_url, content, icon_url, install_count FROM hooks_catalog_cache ORDER BY name"
+            "SELECT id, name, description, author, hook_type, github_url, content, icon_url, install_count FROM hooks_catalog ORDER BY name"
         };
-        let mut stmt = conn.prepare(sql).unwrap();
+        let Ok(mut stmt) = conn.prepare(sql) else { return vec![]; };
         let iter = if let Some(t) = hook_type {
             stmt.query_map([t], Self::map_hooks)
         } else {
             stmt.query_map([], Self::map_hooks)
         };
-        iter.unwrap().filter_map(|r| r.ok()).collect()
+        let Ok(rows) = iter else { return vec![]; };
+        rows.filter_map(|r| r.ok()).collect()
     }
 
     fn map_hooks(r: &rusqlite::Row) -> rusqlite::Result<HooksCatalogEntry> {
@@ -4261,3 +4122,4 @@ pub struct WorkspacePlugin {
     pub rule_ids: String,
     pub connector_ids: String,
 }
+

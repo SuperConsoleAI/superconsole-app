@@ -243,6 +243,13 @@ function Shell() {
         ) : sidebarState === "rail" ? (
           <SidebarRail
             workspaces={orgWorkspaces}
+            organizations={organizations}
+            activeOrgId={activeOrgId}
+            onOrgChange={(id) => {
+              setActiveOrgId(id);
+              navigate({ to: "/" });
+            }}
+            onNewOrg={addOrganization}
             activeId={activeId}
             liveSessions={liveWorkspaceIds}
             unreadCount={unread}

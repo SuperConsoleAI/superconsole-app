@@ -10,7 +10,7 @@ export function Logo() {
       <path
         d="M10 12l5 4-5 4"
         fill="none"
-        stroke="#1a1a18"
+        stroke="currentColor"
         strokeWidth="2.2"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -18,7 +18,7 @@ export function Logo() {
       <path
         d="M16 20h7"
         fill="none"
-        stroke="#1a1a18"
+        stroke="currentColor"
         strokeWidth="2.2"
         strokeLinecap="round"
       />

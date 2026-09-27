@@ -1,17 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CalendarClock,
-  CalendarDays,
   ChevronLeft,
   ChevronRight,
   History,
-  List,
-  ListTodo,
   Loader2,
   MessageSquare,
   Pencil,
   Play,
-  Plus,
   TerminalSquare,
   Trash2,
 } from "lucide-react";
@@ -32,12 +28,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { PresetIcon } from "@/components/PresetIcon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
@@ -206,12 +196,57 @@ export function TasksView({
   }, [refresh]);
 
   useEffect(() => {
+    window.dispatchEvent(new CustomEvent("tasks-tab-sync", { detail: tab }));
+  }, [tab]);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("tasks-org-sync", { detail: orgFilter }));
+  }, [orgFilter]);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("tasks-proj-sync", { detail: projFilter }));
+  }, [projFilter]);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("tasks-view-sync", { detail: view }));
+  }, [view]);
+
+  useEffect(() => {
+    const onTab = (e: any) => setTab(e.detail);
+    const onOrg = (e: any) => { setOrgFilter(e.detail); setProjFilter("all"); };
+    const onProj = (e: any) => setProjFilter(e.detail);
+    const onView = (e: any) => setView(e.detail);
+    const onAdd = () => setShowAddTask(true);
+    const onNavMounted = () => {
+      window.dispatchEvent(new CustomEvent("tasks-tab-sync", { detail: tab }));
+      window.dispatchEvent(new CustomEvent("tasks-org-sync", { detail: orgFilter }));
+      window.dispatchEvent(new CustomEvent("tasks-proj-sync", { detail: projFilter }));
+      window.dispatchEvent(new CustomEvent("tasks-view-sync", { detail: view }));
+    };
+
+    window.addEventListener("tasks-tab-change", onTab);
+    window.addEventListener("tasks-org-change", onOrg);
+    window.addEventListener("tasks-proj-change", onProj);
+    window.addEventListener("tasks-view-change", onView);
+    window.addEventListener("tasks-add-open", onAdd);
+    window.addEventListener("tasks-nav-mounted", onNavMounted);
+
+    return () => {
+      window.removeEventListener("tasks-tab-change", onTab);
+      window.removeEventListener("tasks-org-change", onOrg);
+      window.removeEventListener("tasks-proj-change", onProj);
+      window.removeEventListener("tasks-view-change", onView);
+      window.removeEventListener("tasks-add-open", onAdd);
+      window.removeEventListener("tasks-nav-mounted", onNavMounted);
+    };
+  }, [tab, orgFilter, projFilter, view]);
+
+  useEffect(() => {
     if (tab === "activity") loadActivity();
   }, [tab, loadActivity]);
 
   const wsById = useMemo(() => new Map(workspaces.map((w) => [w.id, w])), [workspaces]);
   const wsName = (id: number) => wsById.get(id)?.name ?? "unknown";
-  const orgName = (id: number) => orgs.find((o) => o.id === id)?.name ?? organizations.find((o) => o.id === id)?.name ?? "Org";
 
   const orgWorkspaces = useMemo(
     () => orgFilter === "all" ? workspaces : workspaces.filter((w) => w.organization_id === orgFilter),
@@ -254,8 +289,6 @@ export function TasksView({
     }
   };
 
-  const setOrg = (id: number | "all") => { setOrgFilter(id); setProjFilter("all"); };
-
   // Calendar cells
   const cells = useMemo(() => {
     const year = month.getFullYear();
@@ -293,93 +326,6 @@ export function TasksView({
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card/60 px-5">
-        {/* Left toggle */}
-        <div className="flex gap-0.5 rounded-lg border bg-background p-0.5">
-          <button
-            onClick={() => setTab("tasks")}
-            className={cn(
-              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-              tab === "tasks" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
-            )}
-          >
-            <span className="flex items-center gap-1.5">
-              <ListTodo className="h-3.5 w-3.5" strokeWidth={1} />
-              Tasks
-            </span>
-          </button>
-          <button
-            onClick={() => setTab("activity")}
-            className={cn(
-              "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-              tab === "activity" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
-            )}
-          >
-            <span className="flex items-center gap-1.5">
-              <History className="h-3.5 w-3.5" strokeWidth={1} />
-              Activity
-            </span>
-          </button>
-        </div>
-
-        <div className="ml-auto flex items-center gap-2">
-          {/* Org filter */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-7 font-normal">
-                {orgFilter === "all" ? "All orgs" : orgName(orgFilter)}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setOrg("all")}>All orgs</DropdownMenuItem>
-              {allOrgs.map((o) => (
-                <DropdownMenuItem key={o.id} onClick={() => setOrg(o.id)}>{o.name}</DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          {/* Project filter */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="h-7 font-normal">
-                {projFilter === "all" ? "All projects" : wsName(projFilter)}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setProjFilter("all")}>All projects</DropdownMenuItem>
-              {orgWorkspaces.map((w) => (
-                <DropdownMenuItem key={w.id} onClick={() => setProjFilter(w.id)}>{w.name}</DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          {tab === "tasks" && (
-            <>
-              {/* View toggle (Tasks tab only) */}
-              <div className="flex gap-0.5 rounded-lg border bg-background p-0.5">
-                <Button variant={view === "list" ? "secondary" : "ghost"} size="icon" className="h-6 w-6" onClick={() => setView("list")} title="List">
-                  <List className="h-3.5 w-3.5" strokeWidth={1} />
-                </Button>
-                <Button variant={view === "calendar" ? "secondary" : "ghost"} size="icon" className="h-6 w-6" onClick={() => setView("calendar")} title="Calendar">
-                  <CalendarDays className="h-3.5 w-3.5" strokeWidth={1} />
-                </Button>
-              </div>
-
-              {/* Add Task */}
-              <Button
-                size="sm"
-                variant="default"
-                className="h-7 gap-1.5 px-3 text-xs ring-1"
-                onClick={() => setShowAddTask(true)}
-              >
-                <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                Add task
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
 
       {/* Add Task Dialog */}
       <Dialog open={showAddTask && tab === "tasks"} onOpenChange={(o) => !o && setShowAddTask(false)}>

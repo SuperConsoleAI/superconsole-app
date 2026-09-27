@@ -1,12 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { useRouter } from "@tanstack/react-router";
+import { useRouter, useNavigate } from "@tanstack/react-router";
 import {
   Bot,
   Brain,
   CalendarClock,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   FileText,
   GitBranch,
   GitCommit,
@@ -14,7 +12,6 @@ import {
   PanelLeft,
   PanelRight,
   Play,
-  RefreshCw,
   ScrollText,
   SquareSlash,
   Upload,
@@ -38,7 +35,18 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useWorkspaces } from "@/lib/workspace-context";
 import { type Workspace, type GitStatus, api } from "@/lib/api";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
+
+import {
+  InboxNavbar,
+  TasksNavbar,
+  SessionsNavbar,
+  UsageNavbar,
+  AgentsNavbar,
+  CustomizeNavbar,
+  SettingsNavbar,
+} from "@/components/navbars";
 
 interface TopBarProps {
   isProjectPage?: boolean;
@@ -60,7 +68,11 @@ export function TopBar({
   titleSuffix,
 }: TopBarProps) {
   const router = useRouter();
-  const { openScriptTab } = useWorkspaces();
+  const navigate = useNavigate();
+  const { openScriptTab, workspaces } = useWorkspaces();
+  const currentWorkspace = workspace ?? (workspaces.length > 0 ? workspaces[0] : null);
+  const pathname = router.state.location.pathname;
+
   const [jobsOpen, setJobsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
@@ -124,10 +136,45 @@ export function TopBar({
     if (workspace) pollGitStatus(workspace.id);
   };
 
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    async function initFullscreen() {
+      try {
+        const appWindow = getCurrentWindow();
+        const fs = await appWindow.isFullscreen();
+        setIsFullscreen(fs);
+
+        unlisten = await appWindow.onResized(async () => {
+          try {
+            const isFs = await appWindow.isFullscreen();
+            setIsFullscreen(isFs);
+          } catch {}
+        });
+      } catch {
+        setIsFullscreen(Boolean(document.fullscreenElement));
+      }
+    }
+
+    initFullscreen();
+
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", handleFsChange);
+
+    return () => {
+      if (unlisten) unlisten();
+      document.removeEventListener("fullscreenchange", handleFsChange);
+    };
+  }, []);
+
   return (
     <header
       data-tauri-drag-region
-      className="relative z-10 flex h-[38px] shrink-0 items-center gap-1 border-b bg-card/60 pl-[78px] pr-2 backdrop-blur"
+      className="relative z-10 flex h-[2.5rem] shrink-0 items-center border-b bg-card/60 backdrop-blur"
     >
       <div
         className={cn(
@@ -146,90 +193,97 @@ export function TopBar({
         />
       )}
 
-      <div className="flex items-center mb-1">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn("h-7 w-7", !sidebarOpen && "text-primary")}
-              onClick={onToggleSidebar}
-            >
-              <PanelLeft className="h-4 w-4" strokeWidth={1} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{sidebarOpen ? "Hide sidebar" : "Show sidebar"}</TooltipContent>
-        </Tooltip>
-
-        <div className={cn("shrink-0 transition-all", sidebarOpen ? "w-[58px]" : "w-0")} />
-
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={() => {
-            router.invalidate();
-            window.dispatchEvent(new CustomEvent("app-refresh"));
-          }}
-          title="Refresh page"
-        >
-          <RefreshCw className="h-4 w-4" strokeWidth={1} />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={() => router.history.back()}
-        >
-          <ChevronLeft className="h-4 w-4" strokeWidth={1} />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={() => router.history.forward()}
-        >
-          <ChevronRight className="h-4 w-4" strokeWidth={1} />
-        </Button>
-      </div>
-
-      {workspace && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className={cn(
-              "flex min-w-0 cursor-default items-center gap-1.5 pointer-events-auto",
-              !(sidebarOpen || filesOpen) && "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2",
-              (sidebarOpen || filesOpen) && "ml-4"
-            )}>
-              <span className="truncate text-xs font-medium">
-                {workspace.name}{titleSuffix ? ` — ${titleSuffix}` : ""}
-              </span>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>{workspace.path}</TooltipContent>
-        </Tooltip>
-      )}
-
-      <div className="ml-auto flex items-center gap-1">
-        <div id="topbar-portal" className="flex items-center gap-2 mr-1" />
-        {/* ── Git: Initialize Git (non-repo) ─────────── */}
-        {workspace && isProjectPage && isGitRepo === false && (
+      {/* Left controls container — exactly matches sidebar width (w-64 = 256px) when open */}
+      <div
+        className={cn(
+          "flex items-center shrink-0 transition-all",
+          isFullscreen ? "pl-3" : "pl-[84px]",
+          sidebarOpen ? "w-64 pr-3 justify-between" : "w-auto pr-3"
+        )}
+      >
+        <div className="flex items-center gap-2 min-w-0">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
-                variant="outline"
-                size="sm"
-                className="h-6 px-2.5 text-[11px] gap-1.5 text-muted-foreground hover:text-foreground"
-                onClick={handleInitGit}
-                disabled={initializingGit}
+                variant="ghost"
+                size="icon"
+                className={cn("h-6 w-6 shrink-0", !sidebarOpen && "text-primary")}
+                onClick={onToggleSidebar}
               >
-                <GitBranch className="h-3 w-3" strokeWidth={1.5} />
-                {initializingGit ? "Initializing…" : "Initialize Git"}
+                <PanelLeft className="h-4 w-4" strokeWidth={1} />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Initialize git repository in this workspace</TooltipContent>
+            <TooltipContent>{sidebarOpen ? "Hide sidebar" : "Show sidebar"}</TooltipContent>
           </Tooltip>
-        )}
+          <button
+            type="button"
+            onClick={() => navigate({ to: "/" })}
+            className="truncate font-brand text-[15px] font-semibold tracking-tight text-foreground select-none hover:opacity-80 transition-opacity cursor-pointer text-left"
+            title="Dashboard"
+          >
+            Super<span className="font-normal text-muted-foreground">Console</span>
+          </button>
+        </div>
+      </div>
+
+      {!sidebarOpen && (
+        <div className="h-4 w-px bg-border/80 shrink-0 self-center" />
+      )}
+
+      {!isProjectPage ? (
+        <div className="flex min-w-0 flex-1 items-center px-5">
+          {pathname === "/tasks" && <TasksNavbar />}
+          {pathname === "/inbox" && <InboxNavbar />}
+          {pathname === "/sessions" && <SessionsNavbar />}
+          {pathname === "/usage" && <UsageNavbar />}
+          {pathname === "/agents" && <AgentsNavbar />}
+          {pathname === "/customize" && <CustomizeNavbar />}
+          {pathname === "/settings" && <SettingsNavbar />}
+        </div>
+      ) : (
+        workspace && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div
+                className={cn(
+                  "flex min-w-0 cursor-default items-center gap-1.5 pointer-events-auto",
+                  !(sidebarOpen || filesOpen) &&
+                    "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2",
+                  (sidebarOpen || filesOpen) && "ml-4"
+                )}
+              >
+                <span className="truncate text-xs font-medium">
+                  {workspace.name}
+                  {titleSuffix ? ` — ${titleSuffix}` : ""}
+                </span>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>{workspace.path}</TooltipContent>
+          </Tooltip>
+        )
+      )}
+
+      {isProjectPage && (
+        <div className="ml-auto flex items-center gap-1 pr-4">
+          <div id="topbar-portal" className="flex items-center gap-2 mr-1" />
+          {/* ── Git: Initialize Git (non-repo) ─────────── */}
+          {workspace && isGitRepo === false && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 px-2.5 text-[11px] gap-1.5 text-muted-foreground hover:text-foreground"
+                  onClick={handleInitGit}
+                  disabled={initializingGit}
+                >
+                  <GitBranch className="h-3 w-3" strokeWidth={1.5} />
+                  {initializingGit ? "Initializing…" : "Initialize Git"}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Initialize git repository in this workspace</TooltipContent>
+            </Tooltip>
+          )}
 
         {/* ── Git: single split button ───────────────────── */}
         {workspace && isProjectPage && gitStatus && (() => {
@@ -310,119 +364,122 @@ export function TopBar({
         })()}
 
         {workspace && isProjectPage && (
-          <>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-6 p-0 overflow-hidden gap-0">
-                  <div className="flex h-full items-center px-1.5 hover:bg-accent">
-                    <span className="text-[11px] font-medium text-muted-foreground">Manage</span>
-                  </div>
-                  <div className="h-full w-px bg-border shrink-0" />
-                  <div className="flex h-full items-center px-1 hover:bg-accent">
-                    <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
-                  </div>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem
-                  onClick={() =>
-                    workspace.script_run.trim()
-                      ? openScriptTab(workspace.id, "Run", workspace.script_run)
-                      : null
-                  }
-                  disabled={!workspace.script_run.trim()}
-                >
-                  <Play className="mr-2 h-4 w-4" />
-                  <span>Run script</span>
-                </DropdownMenuItem>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="h-6 p-0 overflow-hidden gap-0">
+                <div className="flex h-full items-center px-1.5 hover:bg-accent">
+                  <span className="text-[11px] font-medium text-muted-foreground">Manage</span>
+                </div>
+                <div className="h-full w-px bg-border shrink-0" />
+                <div className="flex h-full items-center px-1 hover:bg-accent">
+                  <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+                </div>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem
+                onClick={() =>
+                  workspace.script_run?.trim()
+                    ? openScriptTab(workspace.id, "Run", workspace.script_run)
+                    : null
+                }
+                disabled={!workspace.script_run?.trim()}
+              >
+                <Play className="mr-2 h-4 w-4" />
+                <span>Run script</span>
+              </DropdownMenuItem>
 
-                <DropdownMenuItem onClick={() => setSkillsOpen(true)}>
-                  <ScrollText className="mr-2 h-4 w-4" />
-                  <span>Skills</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setCommandsOpen(true)}>
-                  <SquareSlash className="mr-2 h-4 w-4" />
-                  <span>Commands</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setMemoryOpen(true)}>
-                  <Brain className="mr-2 h-4 w-4" />
-                  <span>Memory</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setWikiOpen(true)}>
-                  <Library className="mr-2 h-4 w-4" />
-                  <span>Wiki</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setContextOpen(true)}>
-                  <FileText className="mr-2 h-4 w-4" />
-                  <span>Context</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setJobsOpen(true)}>
-                  <CalendarClock className="mr-2 h-4 w-4" />
-                  <span>Schedule</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setAgentsOpen(true)}>
-                  <Bot className="mr-2 h-4 w-4" />
-                  <span>Agents</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant={filesOpen ? "secondary" : "ghost"}
-                  size="icon"
-                  className={cn("h-7 w-7", filesOpen && "text-primary")}
-                  onClick={onToggleFiles}
-                >
-                  <PanelRight className="h-4 w-4" strokeWidth={1} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Files</TooltipContent>
-            </Tooltip>
-          </>
+              <DropdownMenuItem onClick={() => setSkillsOpen(true)}>
+                <ScrollText className="mr-2 h-4 w-4" />
+                <span>Skills</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setCommandsOpen(true)}>
+                <SquareSlash className="mr-2 h-4 w-4" />
+                <span>Commands</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setMemoryOpen(true)}>
+                <Brain className="mr-2 h-4 w-4" />
+                <span>Memory</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setWikiOpen(true)}>
+                <Library className="mr-2 h-4 w-4" />
+                <span>Wiki</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setContextOpen(true)}>
+                <FileText className="mr-2 h-4 w-4" />
+                <span>Context</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setJobsOpen(true)}>
+                <CalendarClock className="mr-2 h-4 w-4" />
+                <span>Schedule</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setAgentsOpen(true)}>
+                <Bot className="mr-2 h-4 w-4" />
+                <span>Agents</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
-      </div>
 
-      <div
-        className="shrink-0 transition-all duration-0"
-        style={{ width: filesOpen ? "var(--file-panel-width, 256px)" : "0px" }}
-      />
+        {workspace && isProjectPage && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={filesOpen ? "secondary" : "ghost"}
+                size="icon"
+                className={cn("h-6 w-6", filesOpen && "text-primary")}
+                onClick={onToggleFiles}
+              >
+                <PanelRight className="h-4 w-4" strokeWidth={1} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Files</TooltipContent>
+          </Tooltip>
+        )}
+        </div>
+      )}
 
-      {workspace && (
+      {isProjectPage && (
+        <div
+          className="shrink-0 transition-all duration-0"
+          style={{ width: filesOpen ? "var(--file-panel-width, 256px)" : "0px" }}
+        />
+      )}
+
+      {currentWorkspace && (
         <>
-          <JobsDialog workspaceId={workspace.id} open={jobsOpen} onOpenChange={setJobsOpen} />
+          <JobsDialog workspaceId={currentWorkspace.id} open={jobsOpen} onOpenChange={setJobsOpen} />
           <AgentsDialog
-            workspaceId={workspace.id}
+            workspaceId={currentWorkspace.id}
             open={agentsOpen}
             onOpenChange={setAgentsOpen}
           />
           <SkillsDialog
-            workspaceId={workspace.id}
+            workspaceId={currentWorkspace.id}
             open={skillsOpen}
             onOpenChange={setSkillsOpen}
           />
           <CommandDialog
-            workspaceId={workspace.id}
+            workspaceId={currentWorkspace.id}
             open={commandsOpen}
             onOpenChange={setCommandsOpen}
           />
           <MemoryDialog
-            workspaceId={workspace.id}
+            workspaceId={currentWorkspace.id}
             open={memoryOpen}
             onOpenChange={setMemoryOpen}
           />
           <WikiDialog
-            workspaceId={workspace.id}
+            workspaceId={currentWorkspace.id}
             open={wikiOpen}
             onOpenChange={setWikiOpen}
           />
           <ContextDialog
-            workspaceId={workspace.id}
+            workspaceId={currentWorkspace.id}
             open={contextOpen}
             onOpenChange={setContextOpen}
           />
-          {gitStatus && (
+          {workspace && gitStatus && (
             <GitDialog
               workspaceId={workspace.id}
               gitStatus={gitStatus}

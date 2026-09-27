@@ -161,9 +161,9 @@ export function ComposerPlusMenu({
         <button
           onClick={() => toggleConnector(service)}
           aria-label={on ? "Disable" : "Enable"}
-          className={`ml-3 relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none ${on ? "bg-primary" : "bg-input"}`}
+          className={`ml-3 relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none ${on ? "bg-toggle-box hover:bg-toggle-box-hover" : "bg-input"}`}
         >
-          <span className={`pointer-events-none block h-3 w-3 rounded-full bg-background shadow-lg ring-0 transition-transform ${on ? "translate-x-3" : "translate-x-0"}`} />
+          <span className={`pointer-events-none block h-3 w-3 rounded-full bg-toggle-circle shadow-lg ring-0 transition-transform ${on ? "translate-x-3" : "translate-x-0"}`} />
         </button>
       </div>
     );
