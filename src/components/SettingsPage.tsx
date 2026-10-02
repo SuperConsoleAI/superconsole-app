@@ -13,8 +13,6 @@ import {
   Copy,
   CreditCard,
   Database,
-  Eye,
-  EyeOff,
   FileCode,
   Globe,
   HardDrive,
@@ -40,14 +38,12 @@ import {
   Workflow,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { open } from "@tauri-apps/plugin-dialog";
 import {
   api,
   CLI_PRESETS,
   LLM_PROVIDERS,
   ORG_ROLES,
   PROJECT_ROLES,
-  type LlmKeyView,
   type MemberView,
   type SlashCommand,
 } from "@/lib/api";
@@ -60,13 +56,19 @@ import {
   PublicProfileSection,
   OffPlatformSection,
 } from "@/components/settings/profile";
+import { GeneralSection } from "@/components/settings/general";
+import { PresetsSection } from "@/components/settings/presets";
+import { LlmKeyEditor } from "@/components/settings/models";
+import {
+  AccountEnvironmentSection,
+  EnvironmentSection,
+} from "@/components/settings/environment";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { PresetIcon } from "@/components/PresetIcon";
 import { useTheme } from "@/components/theme-provider";
 
 import { LibrarySection } from "@/components/libraryx";
@@ -84,7 +86,6 @@ const NAV: Record<TopTab, string[]> = {
     "Terminal",
     "Environment",
     "Models",
-    "Commands",
     "Integrations",
     "Connectors",
     "LocalDB",
@@ -492,7 +493,14 @@ function Content({
   if (tab === "account") {
     switch (section) {
       case "General":
-        return <AccountGeneralSection />;
+        return (
+          <div className="flex flex-col gap-6">
+            <GeneralSection onNavigateSection={onNavigateSection} />
+            <div className="rounded-xl border border-border/80 bg-card p-4 shadow-xs">
+              <ApiKeysSection />
+            </div>
+          </div>
+        );
       case "Profile":
         return auth ? (
           <ProfileSection user={auth.user} onNavigateSection={onNavigateSection} />
@@ -502,7 +510,8 @@ function Content({
       case "Appearance":
         return <AppearanceSection />;
       case "Terminal":
-        return <TerminalSection />;
+      case "Presets":
+        return <PresetsSection user={auth?.user} />;
       case "Environment":
         return <AccountEnvironmentSection />;
       case "Models":
@@ -693,46 +702,6 @@ function SignInPrompt({ label }: { label: string }) {
   );
 }
 
-function AccountGeneralSection() {
-  const { auth, signOut } = useAuth();
-
-  return (
-    <div className="flex flex-col gap-6">
-      {auth && (
-        <div className="rounded-lg border bg-card px-4 py-3">
-          <p className="text-xs text-muted-foreground">Signed in as</p>
-          <p className="mt-0.5 text-sm font-medium">{auth.user.email}</p>
-          {(auth.user.full_name || auth.user.name) && (
-            <p className="text-xs text-muted-foreground">{auth.user.full_name || auth.user.name}</p>
-          )}
-          {auth.user.username && (
-            <p className="text-xs font-mono text-muted-foreground">@{auth.user.username}</p>
-          )}
-          <div className="mt-3 flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                window.dispatchEvent(
-                  new CustomEvent("settings-tab-change", { detail: "profile" })
-                );
-              }}
-            >
-              <CircleUser className="mr-1.5 h-3.5 w-3.5" />
-              Edit Profile
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => signOut()}>
-              Sign out
-            </Button>
-          </div>
-        </div>
-      )}
-
-      <UpdatesSection />
-      <ApiKeysSection />
-    </div>
-  );
-}
 
 
 function NotificationsSection() {
@@ -745,33 +714,6 @@ function NotificationsSection() {
           Native desktop alerts for completed jobs and inbox items are coming
           soon.
         </p>
-      </div>
-    </div>
-  );
-}
-
-function TerminalSection() {
-  return (
-    <div className="flex flex-col gap-4">
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        Terminal presets are the agent CLIs you can launch in a workspace. Each
-        opens a full interactive session in its own tab.
-      </p>
-      <div className="flex flex-col gap-1.5">
-        {CLI_PRESETS.map((p) => (
-          <div
-            key={p.id}
-            className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2.5"
-          >
-            <PresetIcon preset={p.id} className="h-5 w-5" />
-            <div className="min-w-0">
-              <span className="block text-[13px] font-medium">{p.label}</span>
-              <span className="block truncate font-mono text-[11px] text-muted-foreground">
-                {p.id}
-              </span>
-            </div>
-          </div>
-        ))}
       </div>
     </div>
   );
@@ -964,392 +906,6 @@ function ProjectGeneralSection({
   );
 }
 
-function EnvFilesList({
-  files,
-  onChange,
-  scopeNote,
-}: {
-  files: string[];
-  onChange: (next: string[]) => Promise<void>;
-  scopeNote: string;
-}) {
-  const [error, setError] = useState<string | null>(null);
-  const [pasted, setPasted] = useState("");
-
-  const persist = async (next: string[]) => {
-    setError(null);
-    try {
-      await onChange(next);
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  const add = async () => {
-    try {
-      const picked = await open({ multiple: true });
-      if (!picked) return;
-      const paths = Array.isArray(picked) ? picked : [picked];
-      const next = [...files];
-      for (const p of paths) if (!next.includes(p)) next.push(p);
-      await persist(next);
-    } catch {
-      /* cancelled */
-    }
-  };
-
-  const addPath = async () => {
-    const p = pasted.trim();
-    if (!p || files.includes(p)) {
-      setPasted("");
-      return;
-    }
-    await persist([...files, p]);
-    setPasted("");
-  };
-
-  return (
-    <div className="flex flex-col gap-2">
-      <h3 className="text-sm font-medium">Env files</h3>
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        {scopeNote} In the native file picker, press Cmd+Shift+. to show hidden
-        files.
-      </p>
-      {files.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          {files.map((f) => (
-            <div
-              key={f}
-              className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
-            >
-              <span className="min-w-0 flex-1 truncate font-mono text-[12px]" title={f}>
-                {f}
-              </span>
-              <Button
-                size="icon"
-                variant="ghost"
-                className="h-7 w-7 shrink-0"
-                onClick={() => persist(files.filter((x) => x !== f))}
-              >
-                <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="flex items-center gap-2">
-        <Button size="sm" variant="outline" onClick={add}>
-          <Plus className="h-3.5 w-3.5" />
-          Add env file
-        </Button>
-        <span className="text-[11px] text-muted-foreground">or paste a path</span>
-      </div>
-      <div className="flex gap-2">
-        <Input
-          value={pasted}
-          onChange={(e) => setPasted(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addPath()}
-          placeholder="/absolute/path/to/.env"
-          className="h-8 flex-1 font-mono text-xs"
-        />
-        <Button size="sm" variant="outline" disabled={!pasted.trim()} onClick={addPath}>
-          Add path
-        </Button>
-      </div>
-      {error && <p className="text-xs text-destructive">{error}</p>}
-    </div>
-  );
-}
-
-function parseFiles(json: string | undefined): string[] {
-  try {
-    return JSON.parse(json || "[]");
-  } catch {
-    return [];
-  }
-}
-
-function keyIsSecret(key: string): boolean {
-  const u = key.toUpperCase();
-  return ["PASSWORD", "SECRET", "KEY", "TOKEN", "API"].some((p) => u.includes(p));
-}
-
-interface EnvVar {
-  key: string;
-  value: string;
-  is_secret: boolean;
-}
-
-function EnvVarEditor({
-  title,
-  hint,
-  entries,
-  onUpsert,
-  onDelete,
-}: {
-  title: string;
-  hint: string;
-  entries: EnvVar[];
-  onUpsert: (key: string, value: string) => Promise<void>;
-  onDelete: (key: string) => Promise<void>;
-}) {
-  const [revealed, setRevealed] = useState<Set<string>>(new Set());
-  const [editing, setEditing] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [newKey, setNewKey] = useState("");
-  const [newValue, setNewValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const run = async (fn: () => Promise<void>) => {
-    setError(null);
-    try {
-      await fn();
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  const toggleReveal = (key: string) =>
-    setRevealed((prev) => {
-      const next = new Set(prev);
-      next.has(key) ? next.delete(key) : next.add(key);
-      return next;
-    });
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div>
-        <h3 className="text-sm font-medium">{title}</h3>
-        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{hint}</p>
-      </div>
-
-      {entries.length === 0 && !adding && (
-        <p className="text-xs text-muted-foreground">No variables yet.</p>
-      )}
-
-      {entries.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          {entries.map((e) => {
-            const masked = e.is_secret && !revealed.has(e.key);
-            return (
-              <div
-                key={e.key}
-                className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
-              >
-                <span className="w-44 shrink-0 truncate font-mono text-[12px] font-medium">
-                  {e.key}
-                </span>
-                {editing === e.key ? (
-                  <Input
-                    value={editValue}
-                    autoFocus
-                    onChange={(ev) => setEditValue(ev.target.value)}
-                    onKeyDown={(ev) => {
-                      if (ev.key === "Enter") {
-                        run(() => onUpsert(e.key, editValue));
-                        setEditing(null);
-                      }
-                      if (ev.key === "Escape") setEditing(null);
-                    }}
-                    onBlur={() => {
-                      run(() => onUpsert(e.key, editValue));
-                      setEditing(null);
-                    }}
-                    className="h-7 flex-1 font-mono text-xs"
-                  />
-                ) : (
-                  <button
-                    className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-muted-foreground"
-                    onClick={() => {
-                      setEditing(e.key);
-                      setEditValue(e.value);
-                    }}
-                  >
-                    {masked ? "••••••••••" : e.value || <span className="italic">(empty)</span>}
-                  </button>
-                )}
-                <div className="flex shrink-0 items-center gap-0.5">
-                  {e.is_secret && (
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7"
-                      onClick={() => toggleReveal(e.key)}
-                    >
-                      {masked ? (
-                        <Eye className="h-3.5 w-3.5" />
-                      ) : (
-                        <EyeOff className="h-3.5 w-3.5" />
-                      )}
-                    </Button>
-                  )}
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7"
-                    onClick={() => run(() => onDelete(e.key))}
-                  >
-                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-                  </Button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {adding ? (
-        <div className="flex items-center gap-2">
-          <Input
-            value={newKey}
-            onChange={(e) => setNewKey(e.target.value)}
-            placeholder="KEY"
-            className="h-8 w-44 shrink-0 font-mono text-xs"
-          />
-          <Input
-            value={newValue}
-            onChange={(e) => setNewValue(e.target.value)}
-            placeholder="value"
-            className="h-8 flex-1 font-mono text-xs"
-          />
-          <Button
-            size="sm"
-            disabled={!newKey.trim()}
-            onClick={() => {
-              run(() => onUpsert(newKey.trim(), newValue));
-              setNewKey("");
-              setNewValue("");
-              setAdding(false);
-            }}
-          >
-            Add
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => setAdding(false)}>
-            Cancel
-          </Button>
-        </div>
-      ) : (
-        <Button size="sm" variant="outline" className="w-fit" onClick={() => setAdding(true)}>
-          <Plus className="h-3.5 w-3.5" />
-          Add variable
-        </Button>
-      )}
-
-      {error && <p className="text-xs text-destructive">{error}</p>}
-    </div>
-  );
-}
-
-function EnvFilesBlock({ workspaceId }: { workspaceId: number }) {
-  const { workspaces, updateWorkspaceFields } = useWorkspaces();
-  const ws = workspaces.find((w) => w.id === workspaceId);
-  return (
-    <EnvFilesList
-      files={parseFiles(ws?.env_files)}
-      scopeNote="Load environment variables into every CLI session for this project."
-      onChange={async (next) => {
-        await api.setWorkspaceEnvFiles(workspaceId, next);
-        await updateWorkspaceFields(workspaceId, { env_files: JSON.stringify(next) });
-      }}
-    />
-  );
-}
-
-function AccountEnvironmentSection() {
-  const [files, setFiles] = useState<string[]>([]);
-  const [vars, setVars] = useState<EnvVar[]>([]);
-
-  const parseVars = (json: string | undefined): EnvVar[] => {
-    try {
-      const arr = JSON.parse(json || "[]") as { key: string; value: string }[];
-      return arr.map((v) => ({ ...v, is_secret: keyIsSecret(v.key) }));
-    } catch {
-      return [];
-    }
-  };
-
-  useEffect(() => {
-    api
-      .getSettings()
-      .then((s) => {
-        setFiles(parseFiles(s.account_env_files));
-        setVars(parseVars(s.account_env_vars));
-      })
-      .catch(console.error);
-  }, []);
-
-  const persistVars = async (next: EnvVar[]) => {
-    await api.setSetting(
-      "account_env_vars",
-      JSON.stringify(next.map(({ key, value }) => ({ key, value }))),
-    );
-    setVars(next);
-  };
-
-  return (
-    <div className="flex flex-col gap-6">
-      <EnvVarEditor
-        title="Account variables"
-        hint="Loaded into every CLI session across all projects on this machine. Stored locally."
-        entries={vars}
-        onUpsert={async (key, value) => {
-          const next = vars.some((v) => v.key === key)
-            ? vars.map((v) => (v.key === key ? { ...v, value } : v))
-            : [...vars, { key, value, is_secret: keyIsSecret(key) }];
-          await persistVars(next);
-        }}
-        onDelete={async (key) => persistVars(vars.filter((v) => v.key !== key))}
-      />
-      <EnvFilesList
-        files={files}
-        scopeNote="Load environment variables into every CLI session, across all projects on this machine."
-        onChange={async (next) => {
-          await api.setSetting("account_env_files", JSON.stringify(next));
-          setFiles(next);
-        }}
-      />
-    </div>
-  );
-}
-
-function EnvironmentSection({ workspaceId }: { workspaceId: number }) {
-  const [entries, setEntries] = useState<import("@/lib/api").EnvEntry[]>([]);
-
-  const load = async () => {
-    try {
-      setEntries(await api.readEnvFile(workspaceId));
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  useEffect(() => {
-    setEntries([]);
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId]);
-
-  return (
-    <div className="flex flex-col gap-6">
-      <EnvVarEditor
-        title="Workspace .env"
-        hint="Variables loaded into every CLI session for this project. Stored in the workspace .env file."
-        entries={entries.map((e) => ({ key: e.key, value: e.value, is_secret: e.is_secret }))}
-        onUpsert={async (key, value) => {
-          await api.setEnvEntry(workspaceId, key, value);
-          await load();
-        }}
-        onDelete={async (key) => {
-          await api.deleteEnvEntry(workspaceId, key);
-          await load();
-        }}
-      />
-      <EnvFilesBlock workspaceId={workspaceId} />
-    </div>
-  );
-}
-
 function ScriptField({
   title,
   hint,
@@ -1452,10 +1008,7 @@ function AppearanceSection() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h3 className="text-sm font-medium">Theme</h3>
-        <p className="mb-3 text-xs text-muted-foreground">
-          SuperConsole ships two themes tuned for long agent sessions.
-        </p>
+        <h3 className="mb-3 text-sm font-medium">Theme</h3>
         <div className="flex gap-3">
           {(["light", "dark"] as const).map((t) => (
             <button
@@ -1485,54 +1038,6 @@ function AppearanceSection() {
   );
 }
 
-function UpdatesSection() {
-  const [version, setVersion] = useState("");
-  const [status, setStatus] = useState<string | null>(null);
-  const [checking, setChecking] = useState(false);
-
-  useEffect(() => {
-    import("@tauri-apps/api/app").then(({ getVersion }) =>
-      getVersion().then(setVersion).catch(() => {}),
-    );
-  }, []);
-
-  const checkUpdates = async () => {
-    setChecking(true);
-    setStatus(null);
-    try {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
-      if (update) {
-        setStatus(`Update available: v${update.version}. Downloading...`);
-        await update.downloadAndInstall();
-        setStatus("Update installed. Restart SuperConsole to apply.");
-      } else {
-        setStatus("You're on the latest version.");
-      }
-    } catch {
-      setStatus(
-        "Update check failed. Updates require a configured release endpoint and signing key.",
-      );
-    } finally {
-      setChecking(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between rounded-lg border bg-card px-4 py-3">
-        <div>
-          <p className="text-sm font-medium">SuperConsole</p>
-          <p className="text-xs text-muted-foreground">Version {version || "..."}</p>
-        </div>
-        <Button size="sm" variant="outline" onClick={checkUpdates} disabled={checking}>
-          {checking ? "Checking..." : "Check for updates"}
-        </Button>
-      </div>
-      {status && <p className="text-xs text-muted-foreground">{status}</p>}
-    </div>
-  );
-}
 
 function useSettings() {
   const [settings, setSettings] = useState<Record<string, string>>({});
@@ -1601,6 +1106,8 @@ function IntegrationsSection() {
 const SECURITY_POINTS = [
   "Encrypted before leaving your device (AES-256-GCM)",
   "We never see your plaintext keys",
+  "Go Local mode: Zero cloud credential synchronization — keeps model API keys and connector secrets strictly on-device",
+  "UserDB support: Dedicated isolated per-account user database schemas",
   "Stored as encrypted data in your private database",
   "Decrypted only in memory when your agent needs them",
   "Signing out removes all keys from this machine",
@@ -2116,156 +1623,7 @@ function MessagingSection({ projectId }: { projectId: string }) {
 
 // ConnectorManager is defined in @/components/connectors/ConnectorManager
 // and re-exported above in the import block.
-function LlmKeyEditor({
-  scope,
-  scopeId,
-  description,
-}: {
-  scope: import("@/lib/api").LlmScope;
-  scopeId: string;
-  description: string;
-}) {
-  const [keys, setKeys] = useState<LlmKeyView[]>([]);
-  const [provider, setProvider] = useState<string>(LLM_PROVIDERS[0].id);
-  const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [model, setModel] = useState("");
-  const [extraEnv, setExtraEnv] = useState("");
-  const [error, setError] = useState<string | null>(null);
 
-  const load = async () => {
-    try {
-      setKeys(await api.listLlmKeys(scope, scopeId));
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  useEffect(() => {
-    setKeys([]);
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, scopeId]);
-
-  useEffect(() => {
-    const existing = keys.find((k) => k.provider === provider);
-    setApiKey("");
-    setBaseUrl(existing?.base_url ?? "");
-    setModel(existing?.model ?? "");
-    setExtraEnv(existing?.extra_env ?? "");
-  }, [provider, keys]);
-
-  const current = keys.find((k) => k.provider === provider);
-
-  const save = async () => {
-    setError(null);
-    try {
-      await api.setLlmKey(
-        scope,
-        scopeId,
-        provider,
-        apiKey,
-        baseUrl || null,
-        model || null,
-        extraEnv || null,
-      );
-      await load();
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  const remove = async (p: string) => {
-    setError(null);
-    try {
-      await api.deleteLlmKey(scope, scopeId, p);
-      await load();
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-4">
-      <p className="text-xs leading-relaxed text-muted-foreground">{description}</p>
-
-      {keys.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          {keys.map((k) => (
-            <div
-              key={k.provider}
-              className="flex items-center justify-between rounded-lg border bg-card px-3 py-2"
-            >
-              <div>
-                <span className="block text-[13px] font-medium capitalize">
-                  {k.provider}
-                </span>
-                <span className="block text-[11px] text-muted-foreground">
-                  {k.has_key ? "Key set" : "No key"}
-                  {k.base_url ? ` · ${k.base_url}` : ""}
-                  {k.model ? ` · ${k.model}` : ""}
-                </span>
-              </div>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs text-muted-foreground"
-                onClick={() => remove(k.provider)}
-              >
-                Remove
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="flex flex-col gap-2 rounded-lg border bg-card p-3">
-        <select
-          value={provider}
-          onChange={(e) => setProvider(e.target.value)}
-          className="h-8 rounded-md border bg-background px-2 text-[13px]"
-        >
-          {LLM_PROVIDERS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-        <Input
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder={current?.has_key ? "•••• set (leave blank to keep)" : "API key"}
-          type="password"
-          className="h-8 font-mono text-xs"
-        />
-        <Input
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder="Base URL (optional)"
-          className="h-8 font-mono text-xs"
-        />
-        <Input
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          placeholder="Default model (optional)"
-          className="h-8 font-mono text-xs"
-        />
-        <textarea
-          value={extraEnv}
-          onChange={(e) => setExtraEnv(e.target.value)}
-          placeholder="Extra env vars (KEY=VALUE per line, optional)"
-          rows={3}
-          className="rounded-md border bg-background px-2 py-1.5 font-mono text-xs"
-        />
-        <div>
-          <SaveButton onSave={save} />
-        </div>
-      </div>
-
-      {error && <p className="text-xs text-destructive">{error}</p>}
-    </div>
-  );
-}
 
 type GlobalCmdEditing = {
   name: string;

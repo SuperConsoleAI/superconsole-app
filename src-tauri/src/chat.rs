@@ -90,7 +90,7 @@ fn context_limit_for_model(model: &str) -> u64 {
         128_000
     } else if model.contains("gpt-4o-mini") {
         128_000
-    } else if model.contains("gemini-2") {
+    } else if model.contains("gemini") {
         1_000_000
     } else {
         128_000 // safe fallback
@@ -793,9 +793,14 @@ fn parse_sse_line(provider: &str, line: &str) -> Option<Sse> {
 
     match provider {
         "anthropic" => match v["type"].as_str() {
-            Some("content_block_delta") => Some(Sse::Token(
-                v["delta"]["text"].as_str().unwrap_or("").to_string(),
-            )),
+            Some("content_block_delta") => {
+                let text = v["delta"]["text"]
+                    .as_str()
+                    .or_else(|| v["delta"]["thinking"].as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Some(Sse::Token(text))
+            }
             Some("message_stop") => Some(Sse::Done),
             _ => None,
         },
@@ -812,23 +817,73 @@ fn parse_sse_line(provider: &str, line: &str) -> Option<Sse> {
             Some(Sse::Token(text))
         }
         // OpenAI-compatible (openai, openrouter, local)
-        _ => Some(Sse::Token(
-            v["choices"][0]["delta"]["content"]
+        _ => {
+            let text = v["choices"][0]["delta"]["content"]
                 .as_str()
+                .or_else(|| v["choices"][0]["delta"]["reasoning_content"].as_str())
                 .unwrap_or("")
-                .to_string(),
-        )),
+                .to_string();
+            Some(Sse::Token(text))
+        }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn apply_reasoning(body: &mut Value, provider: &str, reasoning: Option<&str>) {
     let Some(level) = reasoning else { return };
+    if level == "off" {
+        return;
+    }
     match provider {
-        // OpenAI reasoning models take a flat `reasoning_effort`.
-        "openai" => body["reasoning_effort"] = json!(level),
+        // OpenAI reasoning models take a flat `reasoning_effort` ("low" | "medium" | "high").
+        "openai" => {
+            let effort = match level {
+                "low" => "low",
+                "medium" => "medium",
+                _ => "high",
+            };
+            body["reasoning_effort"] = json!(effort);
+        }
         // OpenRouter normalizes a `reasoning` object across models.
-        "openrouter" => body["reasoning"] = json!({ "effort": level }),
+        "openrouter" => {
+            let effort = match level {
+                "extra" => "xhigh",
+                other => other,
+            };
+            body["reasoning"] = json!({ "effort": effort });
+        }
+        "anthropic" => {
+            let budget = match level {
+                "low" => 2048,
+                "medium" => 4096,
+                "high" => 16384,
+                "max" => 32768,
+                "extra" => 64000,
+                _ => 4096,
+            };
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": budget
+            });
+            if body["max_tokens"].as_i64().unwrap_or(4096) <= budget {
+                body["max_tokens"] = json!(budget + 4096);
+            }
+        }
+        "gemini" => {
+            let budget = match level {
+                "low" => 2048,
+                "medium" => 4096,
+                "high" => 16384,
+                "max" => 32768,
+                "extra" => 65536,
+                _ => 4096,
+            };
+            body["generationConfig"] = json!({
+                "thinkingConfig": {
+                    "thinkingBudget": budget
+                }
+            });
+        }
         _ => {}
     }
 }
@@ -860,6 +915,7 @@ fn build_request(
             if !system.is_empty() {
                 body["system"] = json!(system);
             }
+            apply_reasoning(&mut body, provider, reasoning);
             Ok(client
                 .post(url)
                 .header("x-api-key", key.unwrap_or(""))
@@ -889,6 +945,7 @@ fn build_request(
             if !system.is_empty() {
                 body["systemInstruction"] = json!({ "parts": [{ "text": system }] });
             }
+            apply_reasoning(&mut body, provider, reasoning);
             Ok(client.post(url).json(&body))
         }
         _ => {
@@ -951,6 +1008,7 @@ fn build_turn_request(
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
+        apply_reasoning(&mut body, provider, reasoning);
         Ok(client
             .post(url)
             .header("x-api-key", key.unwrap_or(""))

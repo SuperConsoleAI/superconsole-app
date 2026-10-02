@@ -1,6 +1,6 @@
 [package]
 name = "superconsole"
-version = "0.1.0"
+version = "0.0.5"
 description = "SuperConsole - agentic workspace desktop app"
 authors = ["you"]
 edition = "2021"
@@ -35,7 +35,7 @@ hkdf = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 tauri-plugin-process = "2"
-libsql = "0.9"
+libsql = { version = "0.9", default-features = false, features = ["remote", "tls"] }
 
 [dev-dependencies]
 tempfile = "3"

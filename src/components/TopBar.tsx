@@ -50,6 +50,7 @@ import {
 
 interface TopBarProps {
   isProjectPage?: boolean;
+  isDashboard?: boolean;
   titleSuffix?: string;
   workspace: Workspace | null;
   filesOpen: boolean;
@@ -65,6 +66,7 @@ export function TopBar({
   onToggleFiles,
   onToggleSidebar,
   isProjectPage,
+  isDashboard = false,
   titleSuffix,
 }: TopBarProps) {
   const router = useRouter();
@@ -89,6 +91,102 @@ export function TopBar({
   const [isGitRepo, setIsGitRepo] = useState<boolean | null>(null); // null = unknown
   const [initializingGit, setInitializingGit] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Window controls for Windows/Linux
+  const [showWinControls, setShowWinControls] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const userAgent = navigator.userAgent || "";
+    const platform = (navigator as any).userAgentData?.platform || navigator.platform || "";
+    const isMac = userAgent.includes("Mac") || platform.includes("Mac");
+    const isTouch = /Android|iPhone|iPad|iPod|Mobile/i.test(userAgent);
+    if (!isMac && !isTouch) {
+      setShowWinControls(true);
+      try {
+        const appWin = getCurrentWindow();
+        appWin.isMaximized().then(setIsMaximized).catch(() => {});
+        const unlisten = appWin.onResized(() => {
+          appWin.isMaximized().then(setIsMaximized).catch(() => {});
+        });
+        return () => {
+          unlisten.then((fn) => fn()).catch(() => {});
+        };
+      } catch {
+        // running outside Tauri
+      }
+    }
+  }, []);
+
+  const handleMinimize = async () => {
+    try {
+      await getCurrentWindow().minimize();
+    } catch {}
+  };
+
+  const handleMaximize = async () => {
+    try {
+      await getCurrentWindow().toggleMaximize();
+      const max = await getCurrentWindow().isMaximized();
+      setIsMaximized(max);
+    } catch {}
+  };
+
+  const handleClose = async () => {
+    try {
+      await getCurrentWindow().close();
+    } catch {}
+  };
+
+  const handleMouseDown = async (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (
+      target.closest("button") ||
+      target.closest("input") ||
+      target.closest("textarea") ||
+      target.closest("a") ||
+      target.closest("[role='menuitem']") ||
+      target.closest("[role='button']") ||
+      target.closest("[data-no-drag]")
+    ) {
+      return;
+    }
+    try {
+      await getCurrentWindow().startDragging();
+    } catch {}
+  };
+
+  const handleDoubleClick = async (e: React.MouseEvent) => {
+    // On macOS, the OS natively handles double-clicking on data-tauri-drag-region.
+    // Firing toggleMaximize() in JS on macOS creates a race condition where the window
+    // expands and immediately snaps back to normal size.
+    const userAgent = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+    const platform = typeof navigator !== "undefined" ? (navigator as any).userAgentData?.platform || navigator.platform || "" : "";
+    const isMac = userAgent.includes("Mac") || platform.includes("Mac");
+    if (isMac) return;
+
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (
+      target.closest("button") ||
+      target.closest("input") ||
+      target.closest("textarea") ||
+      target.closest("a") ||
+      target.closest("[role='menuitem']") ||
+      target.closest("[role='button']") ||
+      target.closest("[data-no-drag]")
+    ) {
+      return;
+    }
+    try {
+      const win = getCurrentWindow();
+      await win.toggleMaximize();
+      const max = await win.isMaximized();
+      setIsMaximized(max);
+    } catch {}
+  };
 
   const pollGitStatus = async (wsId: number) => {
     try {
@@ -174,7 +272,12 @@ export function TopBar({
   return (
     <header
       data-tauri-drag-region
-      className="relative z-10 flex h-[2.5rem] shrink-0 items-center border-b bg-card/60 backdrop-blur"
+      onMouseDown={handleMouseDown}
+      onDoubleClick={handleDoubleClick}
+      className={cn(
+        "relative z-10 flex h-[2.5rem] shrink-0 items-center select-none",
+        isDashboard ? "border-b-0 bg-transparent" : "border-b bg-card/60 backdrop-blur"
+      )}
     >
       <div
         className={cn(
@@ -230,7 +333,8 @@ export function TopBar({
         <div className="h-4 w-px bg-border/80 shrink-0 self-center" />
       )}
 
-      {!isProjectPage ? (
+      {!isDashboard && (
+        !isProjectPage ? (
         <div className="flex min-w-0 flex-1 items-center px-5">
           {pathname === "/tasks" && <TasksNavbar />}
           {pathname === "/inbox" && <InboxNavbar />}
@@ -261,7 +365,13 @@ export function TopBar({
             <TooltipContent>{workspace.path}</TooltipContent>
           </Tooltip>
         )
-      )}
+      ))}
+
+      {/* Draggable spacer to fill remaining horizontal space and allow moving the window */}
+      <div
+        data-tauri-drag-region
+        className="flex-1 h-full min-w-[20px] pointer-events-auto self-stretch"
+      />
 
       {isProjectPage && (
         <div className="ml-auto flex items-center gap-1 pr-4">
@@ -444,6 +554,55 @@ export function TopBar({
           className="shrink-0 transition-all duration-0"
           style={{ width: filesOpen ? "var(--file-panel-width, 256px)" : "0px" }}
         />
+      )}
+
+      {showWinControls && (
+        <div
+          className="ml-auto flex h-full items-center shrink-0 border-l border-border/40 select-none z-50 pointer-events-auto"
+          style={{ WebkitAppRegion: "no-drag" } as any}
+        >
+          <button
+            type="button"
+            onClick={handleMinimize}
+            className="flex h-full w-10 items-center justify-center text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors cursor-pointer"
+            title="Minimize"
+            aria-label="Minimize"
+          >
+            <svg width="10" height="1" viewBox="0 0 10 1">
+              <rect width="10" height="1" fill="currentColor" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={handleMaximize}
+            className="flex h-full w-10 items-center justify-center text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors cursor-pointer"
+            title={isMaximized ? "Restore" : "Maximize"}
+            aria-label={isMaximized ? "Restore" : "Maximize"}
+          >
+            {isMaximized ? (
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+                <rect x="2.5" y="0.5" width="7" height="7" />
+                <polyline points="0.5,2.5 0.5,9.5 7.5,9.5" />
+              </svg>
+            ) : (
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1">
+                <rect x="0.5" y="0.5" width="9" height="9" />
+              </svg>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={handleClose}
+            className="flex h-full w-10 items-center justify-center text-muted-foreground hover:bg-[#e81123] hover:text-white transition-colors cursor-pointer"
+            title="Close"
+            aria-label="Close"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" stroke="currentColor" strokeWidth="1.2">
+              <line x1="0.5" y1="0.5" x2="9.5" y2="9.5" />
+              <line x1="9.5" y1="0.5" x2="0.5" y2="9.5" />
+            </svg>
+          </button>
+        </div>
       )}
 
       {currentWorkspace && (

@@ -10,6 +10,7 @@ import {
   User,
   Users,
   Eye,
+  EyeOff,
   X,
   Copy,
   Check,
@@ -55,6 +56,19 @@ export const LocalDBData: React.FC<LocalDBDataProps> = ({
     value: any;
   } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [revealedCells, setRevealedCells] = useState<Set<string>>(new Set());
+
+  const toggleRevealCell = (cellKey: string) => {
+    setRevealedCells((prev) => {
+      const next = new Set(prev);
+      if (next.has(cellKey)) {
+        next.delete(cellKey);
+      } else {
+        next.add(cellKey);
+      }
+      return next;
+    });
+  };
 
   const totalPages = data ? Math.ceil(data.totalCount / pageSize) : 1;
   const startRow = data && data.totalCount > 0 ? (page - 1) * pageSize + 1 : 0;
@@ -71,7 +85,7 @@ export const LocalDBData: React.FC<LocalDBDataProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const renderCellContent = (col: string, val: any) => {
+  const renderCellContent = (col: string, val: any, rowIdx: number, row: any[]) => {
     if (val === null || val === undefined) {
       return <span className="text-muted-foreground/60 italic">NULL</span>;
     }
@@ -89,6 +103,80 @@ export const LocalDBData: React.FC<LocalDBDataProps> = ({
         </span>
       );
     }
+
+    const lowerCol = col.toLowerCase();
+    const isSecretCol = [
+      "credentials_encrypted",
+      "credentials_enc",
+      "token_encrypted",
+      "api_token",
+      "token",
+      "password",
+      "secret",
+    ].includes(lowerCol);
+
+    let isSecretRow = false;
+    if (lowerCol === "value" && data?.columns) {
+      const isSecretIdx = data.columns.findIndex((c) => c.toLowerCase() === "is_secret");
+      if (isSecretIdx !== -1) {
+        const flag = row[isSecretIdx];
+        isSecretRow = flag === 1 || flag === "1" || flag === true;
+      }
+    }
+
+    const isSecret = isSecretCol || isSecretRow;
+    const cellKey = `${rowIdx}:${col}`;
+    const isRevealed = revealedCells.has(cellKey);
+
+    if (isSecret && !isRevealed) {
+      return (
+        <div className="flex items-center gap-1.5 font-mono text-xs">
+          <span className="tracking-widest text-muted-foreground/70 select-none">••••••••••••</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleRevealCell(cellKey);
+            }}
+            className="p-0.5 rounded text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors"
+            title="Reveal secret"
+          >
+            <Eye className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      );
+    }
+
+    if (isSecret && isRevealed) {
+      const str = String(val);
+      return (
+        <div className="flex items-center gap-1.5 font-mono text-xs">
+          <span className="text-foreground max-w-[200px] truncate">{str}</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleRevealCell(cellKey);
+            }}
+            className="p-0.5 rounded text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors"
+            title="Mask secret"
+          >
+            <EyeOff className="w-3.5 h-3.5" />
+          </button>
+          {str.length > 50 && (
+            <button
+              type="button"
+              onClick={() => setInspectedCell({ col, value: str })}
+              className="text-primary hover:underline text-[11px]"
+              title="Inspect full value"
+            >
+              more
+            </button>
+          )}
+        </div>
+      );
+    }
+
     if (typeof val === "object") {
       const jsonStr = JSON.stringify(val);
       return (
@@ -266,7 +354,7 @@ export const LocalDBData: React.FC<LocalDBDataProps> = ({
                       key={cellIdx}
                       className="py-2 px-3 border-r border-border/60 max-w-xs whitespace-nowrap overflow-hidden text-ellipsis"
                     >
-                      {renderCellContent(data.columns[cellIdx], cell)}
+                      {renderCellContent(data.columns[cellIdx], cell, rowIdx, row)}
                     </td>
                   ))}
                 </tr>

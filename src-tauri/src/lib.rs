@@ -27,7 +27,9 @@ mod sync_manager;
 mod team;
 mod usage;
 mod userdb;
+mod vector_memory;
 mod wiki;
+
 
 use auth::AuthState;
 
@@ -97,6 +99,59 @@ async fn add_workspace(
     }
 
     Ok(ws)
+}
+
+#[tauri::command]
+async fn open_workspace_window(
+    app: AppHandle,
+    workspace_id: Option<i64>,
+    org_id: Option<String>,
+    title: Option<String>,
+) -> Result<(), String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri::{TitleBarStyle, WebviewUrl, WebviewWindowBuilder};
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let target_url = if let Some(ws_id) = workspace_id {
+            format!("/workspace/{}", ws_id)
+        } else if let Some(ref o_id) = org_id {
+            format!("/?org={}", o_id)
+        } else {
+            "/".to_string()
+        };
+        let label = format!("win-{}", timestamp);
+        let window_title = title.unwrap_or_else(|| "SuperConsole".to_string());
+
+        let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(target_url.into()))
+            .title(&window_title)
+            .inner_size(1280.0, 800.0)
+            .min_inner_size(900.0, 600.0)
+            .resizable(true)
+            .center();
+
+        #[cfg(target_os = "macos")]
+        {
+            builder = builder
+                .decorations(true)
+                .title_bar_style(TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .traffic_light_position(tauri::LogicalPosition::new(18.0, 22.0));
+        }
+
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        {
+            builder = builder.decorations(false);
+        }
+
+        let win = builder.build().map_err(|e| e.to_string())?;
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -218,7 +273,15 @@ async fn start_session(
     // Env loads after the workspace .env (applied inside pty::start_session) but
     // before cloud LLM keys/connectors, which win. Account scope is the base;
     // per-workspace files override it.
-    let mut env = pty::parse_env_vars_json(&account_env_vars);
+    let mut env = {
+        let db = app.state::<Db>();
+        let pairs = db.get_account_env_pairs();
+        if !pairs.is_empty() {
+            pairs
+        } else {
+            pty::parse_env_vars_json(&account_env_vars)
+        }
+    };
     env.extend(pty::extra_env_files(&ws_path, &account_env_files));
     env.extend(pty::extra_env_files(&ws_path, &env_files));
     env.extend(resolved.env);
@@ -346,6 +409,57 @@ async fn update_workspace(
         llm::push_project_settings(&pid, &ws).await;
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn update_workspace_flags(
+    db: State<'_, Db>,
+    id: i64,
+    is_active: Option<bool>,
+    is_public: Option<bool>,
+    show_usage: Option<bool>,
+    show_team: Option<bool>,
+) -> Result<Workspace, String> {
+    let ws = db.update_workspace_flags(id, is_active, is_public, show_usage, show_team)?;
+    if let Some(ref pid) = ws.project_id {
+        if let Ok(tcfg) = crate::cloud::turso_config() {
+            if let Ok(conn) = crate::cloud::libsql_connect(&tcfg).await {
+                if let Some(active) = is_active {
+                    let _ = conn
+                        .execute(
+                            "UPDATE projects SET is_active = ?1 WHERE id = ?2",
+                            libsql::params![active as i64, pid.clone()],
+                        )
+                        .await;
+                }
+                if let Some(public) = is_public {
+                    let _ = conn
+                        .execute(
+                            "UPDATE projects SET is_public = ?1 WHERE id = ?2",
+                            libsql::params![public as i64, pid.clone()],
+                        )
+                        .await;
+                }
+                if let Some(usage) = show_usage {
+                    let _ = conn
+                        .execute(
+                            "UPDATE projects SET show_usage = ?1 WHERE id = ?2",
+                            libsql::params![usage as i64, pid.clone()],
+                        )
+                        .await;
+                }
+                if let Some(team) = show_team {
+                    let _ = conn
+                        .execute(
+                            "UPDATE projects SET show_team = ?1 WHERE id = ?2",
+                            libsql::params![team as i64, pid.clone()],
+                        )
+                        .await;
+                }
+            }
+        }
+    }
+    Ok(ws)
 }
 
 #[tauri::command]
@@ -833,16 +947,47 @@ fn get_settings(db: State<Db>) -> Result<std::collections::HashMap<String, Strin
 
 #[tauri::command]
 fn set_setting(db: State<Db>, key: String, value: String) -> Result<(), String> {
-    const ALLOWED: &[&str] = &[
-        "telegram_token",
-        "telegram_chat_id",
-        "http_enabled",
-        "http_port",
-    ];
-    if !ALLOWED.contains(&key.as_str()) {
-        return Err(format!("Unknown setting '{}'", key));
+    let trimmed = key.trim();
+    if trimmed.is_empty() || trimmed.len() > 128 {
+        return Err(format!("Invalid setting key '{}'", key));
     }
-    db.set_setting(&key, &value)
+    db.set_setting(trimmed, &value)
+}
+
+#[tauri::command]
+fn get_env_vars(
+    db: State<Db>,
+    scope: Option<String>,
+    scope_id: Option<String>,
+) -> Result<Vec<crate::db::EnvVarRecord>, String> {
+    db.get_env_vars(scope.as_deref(), scope_id.as_deref())
+}
+
+#[tauri::command]
+fn set_env_var(
+    db: State<Db>,
+    scope: String,
+    scope_id: String,
+    key: String,
+    value: String,
+    is_secret: bool,
+    user_id: Option<String>,
+) -> Result<(), String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() || trimmed.len() > 128 {
+        return Err(format!("Invalid env key '{}'", key));
+    }
+    db.set_env_var(&scope, &scope_id, trimmed, &value, is_secret, user_id.as_deref())
+}
+
+#[tauri::command]
+fn delete_env_var(
+    db: State<Db>,
+    scope: String,
+    scope_id: String,
+    key: String,
+) -> Result<(), String> {
+    db.delete_env_var(&scope, Some(&scope_id), key.trim())
 }
 
 #[tauri::command]
@@ -1300,6 +1445,59 @@ fn delete_hook_cmd(db: State<Db>, workspace_id: i64, hook_type: String) -> Resul
     hooks::delete_hook(&ws.path, &hook_type)
 }
 
+#[tauri::command]
+async fn vector_memory_upsert(
+    store: State<'_, vector_memory::VectorMemoryStore>,
+    id: String,
+    workspace_id: i64,
+    category: String,
+    slug: String,
+    title: String,
+    summary: String,
+    content: String,
+    embedding: Vec<f32>,
+) -> Result<(), String> {
+    store
+        .upsert(
+            &id,
+            workspace_id,
+            &category,
+            &slug,
+            &title,
+            &summary,
+            &content,
+            &embedding,
+        )
+        .await
+}
+
+#[tauri::command]
+async fn vector_memory_search(
+    store: State<'_, vector_memory::VectorMemoryStore>,
+    workspace_id: Option<i64>,
+    embedding: Vec<f32>,
+    limit: Option<usize>,
+) -> Result<Vec<vector_memory::MemoryVectorMatch>, String> {
+    store.search(workspace_id, &embedding, limit.unwrap_or(5)).await
+}
+
+#[tauri::command]
+async fn vector_memory_list(
+    store: State<'_, vector_memory::VectorMemoryStore>,
+    workspace_id: Option<i64>,
+    limit: Option<usize>,
+) -> Result<Vec<vector_memory::MemoryVectorEntry>, String> {
+    store.list(workspace_id, limit.unwrap_or(50)).await
+}
+
+#[tauri::command]
+async fn vector_memory_delete(
+    store: State<'_, vector_memory::VectorMemoryStore>,
+    id: String,
+) -> Result<(), String> {
+    store.delete(&id).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Headless MCP stdio server: `superconsole mcp --session <token>`.
@@ -1330,6 +1528,13 @@ pub fn run() {
             app.manage(chat::ChatCancel::default());
             app.manage(auth_state);
             app.manage(remote::TelegramState::default());
+
+            let superconsole_db_path = app.path().app_data_dir()?.join("superconsole.db");
+            let vector_store = tauri::async_runtime::block_on(async {
+                vector_memory::VectorMemoryStore::init(&superconsole_db_path).await
+            }).map_err(|e| std::io::Error::other(e))?;
+            app.manage(vector_store);
+
             scheduler::spawn(app.handle().clone());
             sync_manager::spawn(app.handle().clone());
             remote::spawn_http(app.handle().clone());
@@ -1338,9 +1543,17 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 crate::usage::sync_openrouter_pricing(&handle_pricing).await;
             });
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            {
+                if let Some(main_win) = app.get_webview_window("main") {
+                    let _ = main_win.set_decorations(false);
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            open_workspace_window,
             list_workspaces,
             add_workspace,
             scaffold_superconsole_dir,
@@ -1355,6 +1568,7 @@ pub fn run() {
             list_slash_commands,
             update_workspace_cli,
             update_workspace,
+            update_workspace_flags,
             set_workspace_env_files,
             read_env_file,
             write_env_file,
@@ -1397,6 +1611,9 @@ pub fn run() {
             delete_inbox_item,
             get_settings,
             set_setting,
+            get_env_vars,
+            set_env_var,
+            delete_env_var,
             list_organizations,
             add_organization,
             set_inbox_status,
@@ -1409,6 +1626,7 @@ pub fn run() {
             llm::list_llm_keys,
             llm::set_llm_key,
             llm::delete_llm_key,
+            llm::test_llm_key,
             llm::list_openrouter_models,
             sync_cloud_cache,
             sync_org_cache,
@@ -1553,6 +1771,11 @@ pub fn run() {
             userdb::userdb_set_off_platform,
             userdb::userdb_get_status,
             userdb::userdb_sync_all,
+            // Vector Memory commands
+            vector_memory_upsert,
+            vector_memory_search,
+            vector_memory_list,
+            vector_memory_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

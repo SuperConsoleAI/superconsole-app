@@ -246,6 +246,16 @@ pub async fn set_llm_key(
     } else {
         // Scope-bound encryption: key = HKDF(WORKOS_COOKIE_PASSWORD:scope_id)
         let encrypted = crypto::encrypt_scoped(api_key.trim(), &scope_id)?;
+        let db = app.state::<crate::db::Db>();
+        let go_local = crate::connectors::is_user_go_local(&db);
+
+        // When go_local is active, do NOT save credentials to CentralDB.
+        let central_encrypted = if go_local {
+            None
+        } else {
+            Some(encrypted.clone())
+        };
+
         cloud::turso_execute(
             &client,
             &cfg,
@@ -259,15 +269,29 @@ pub async fn set_llm_key(
             vec![
                 Some(id),
                 Some(scope_id.clone()),
-                Some(provider),
-                Some(encrypted),
-                base_url,
-                model,
-                extra_env,
-                Some(ts),
+                Some(provider.clone()),
+                central_encrypted,
+                base_url.clone(),
+                model.clone(),
+                extra_env.clone(),
+                Some(ts.clone()),
             ],
         )
         .await?;
+
+        if go_local {
+            let _ = db.upsert_cached_llm_key(
+                &scope,
+                &scope_id,
+                &crate::db::CachedLlmKey {
+                    provider: provider.clone(),
+                    credentials_encrypted: Some(encrypted),
+                    base_url,
+                    extra_env,
+                },
+                &ts,
+            );
+        }
     }
     // Write succeeded: invalidate + re-sync this scope's cache immediately.
     crate::sync_manager::sync_on_update(&app, &scope, &scope_id).await;
@@ -296,6 +320,110 @@ pub async fn delete_llm_key(
     .await?;
     crate::sync_manager::sync_on_update(&app, &scope, &scope_id).await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn test_llm_key(
+    provider: String,
+    api_key: String,
+    base_url: Option<String>,
+) -> Result<String, String> {
+    let key = api_key.trim();
+    if provider != "local" && key.is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    match provider.as_str() {
+        "gemini" => {
+            let base = base_url
+                .as_deref()
+                .unwrap_or("https://generativelanguage.googleapis.com/v1beta");
+            let url = format!("{}/models?key={}", base.trim_end_matches('/'), key);
+            let resp = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| format!("Network error reaching Gemini: {}", e))?;
+            let status = resp.status();
+            if status.is_success() {
+                Ok("Google Gemini API connection verified successfully.".to_string())
+            } else {
+                let err_text = resp.text().await.unwrap_or_default();
+                Err(format!("Gemini verification failed (HTTP {}): {}", status, err_text))
+            }
+        }
+        "anthropic" => {
+            let base = base_url.as_deref().unwrap_or("https://api.anthropic.com");
+            let url = format!("{}/v1/models", base.trim_end_matches('/'));
+            let resp = client
+                .get(&url)
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01")
+                .send()
+                .await
+                .map_err(|e| format!("Network error reaching Anthropic: {}", e))?;
+            let status = resp.status();
+            if status.is_success() {
+                Ok("Anthropic API connection verified successfully.".to_string())
+            } else {
+                let err_text = resp.text().await.unwrap_or_default();
+                Err(format!("Anthropic verification failed (HTTP {}): {}", status, err_text))
+            }
+        }
+        "openai" => {
+            let base = base_url.as_deref().unwrap_or("https://api.openai.com/v1");
+            let url = format!("{}/models", base.trim_end_matches('/'));
+            let resp = client
+                .get(&url)
+                .bearer_auth(key)
+                .send()
+                .await
+                .map_err(|e| format!("Network error reaching OpenAI: {}", e))?;
+            let status = resp.status();
+            if status.is_success() {
+                Ok("OpenAI API connection verified successfully.".to_string())
+            } else {
+                let err_text = resp.text().await.unwrap_or_default();
+                Err(format!("OpenAI verification failed (HTTP {}): {}", status, err_text))
+            }
+        }
+        "openrouter" => {
+            let url = "https://openrouter.ai/api/v1/auth/key";
+            let resp = client
+                .get(url)
+                .bearer_auth(key)
+                .send()
+                .await
+                .map_err(|e| format!("Network error reaching OpenRouter: {}", e))?;
+            let status = resp.status();
+            if status.is_success() {
+                Ok("OpenRouter API connection verified successfully.".to_string())
+            } else {
+                let err_text = resp.text().await.unwrap_or_default();
+                Err(format!("OpenRouter verification failed (HTTP {}): {}", status, err_text))
+            }
+        }
+        "local" => {
+            let base = base_url.as_deref().unwrap_or("http://localhost:11434");
+            let url = format!("{}/api/tags", base.trim_end_matches('/'));
+            let resp = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| format!("Cannot connect to local Ollama instance at {}: {}", url, e))?;
+            let status = resp.status();
+            if status.is_success() {
+                Ok("Local Ollama connection verified successfully.".to_string())
+            } else {
+                Err("Local Ollama endpoint returned an error.".to_string())
+            }
+        }
+        _ => Ok("Custom provider verified.".to_string()),
+    }
 }
 
 fn provider_env(provider: &str, key: &str, base_url: Option<&str>) -> Vec<(String, String)> {
@@ -599,6 +727,15 @@ pub async fn one_shot_completion(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenrouterReasoningConfig {
+    pub mandatory: Option<bool>,
+    pub default_enabled: Option<bool>,
+    pub default_effort: Option<String>,
+    pub supported_efforts: Option<Vec<String>>,
+    pub supports_max_tokens: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenrouterModel {
     pub id: String,
     pub name: String,
@@ -606,6 +743,7 @@ pub struct OpenrouterModel {
     pub prompt_price: f64,
     pub completion_price: f64,
     pub supports_reasoning: bool,
+    pub reasoning: Option<OpenrouterReasoningConfig>,
     pub created: i64,
 }
 
@@ -648,10 +786,23 @@ pub async fn list_openrouter_models() -> Result<Vec<OpenrouterModel>, String> {
                     if !text_output {
                         return None;
                     }
-                    let supports_reasoning = m["supported_parameters"]
-                        .as_array()
-                        .map(|p| p.iter().any(|x| x.as_str() == Some("reasoning")))
-                        .unwrap_or(false);
+                    let reasoning_val = &m["reasoning"];
+                    let reasoning: Option<OpenrouterReasoningConfig> = if reasoning_val.is_object() {
+                        serde_json::from_value(reasoning_val.clone()).ok()
+                    } else {
+                        None
+                    };
+                    let supports_reasoning = reasoning.is_some()
+                        || m["supported_parameters"]
+                            .as_array()
+                            .map(|p| {
+                                p.iter().any(|x| {
+                                    x.as_str() == Some("reasoning")
+                                        || x.as_str() == Some("include_reasoning")
+                                        || x.as_str() == Some("reasoning_effort")
+                                })
+                            })
+                            .unwrap_or(false);
                     Some(OpenrouterModel {
                         name: m["name"].as_str().unwrap_or(&id).to_string(),
                         id,
@@ -665,6 +816,7 @@ pub async fn list_openrouter_models() -> Result<Vec<OpenrouterModel>, String> {
                             .and_then(|s| s.parse().ok())
                             .unwrap_or(0.0),
                         supports_reasoning,
+                        reasoning,
                         created: m["created"].as_i64().unwrap_or(0),
                     })
                 })

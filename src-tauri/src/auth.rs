@@ -55,6 +55,10 @@ pub struct AuthUser {
     pub show_usage: i64,
     #[serde(default)]
     pub off_platform: i64,
+    #[serde(default)]
+    pub go_local: i64,
+    #[serde(default = "default_empty_json_arr")]
+    pub presets: String,
 }
 
 fn default_empty_json_arr() -> String {
@@ -86,6 +90,8 @@ impl Default for AuthUser {
             show_projects: 1,
             show_usage: 1,
             off_platform: 0,
+            go_local: 0,
+            presets: default_empty_json_arr(),
         }
     }
 }
@@ -604,6 +610,8 @@ pub async fn update_user_profile(
     bio: Option<String>,
     is_public: Option<bool>,
     off_platform: Option<bool>,
+    go_local: Option<bool>,
+    presets: Option<Vec<String>>,
 ) -> Result<AuthInfo, String> {
     let mut info: AuthInfo = match db.get_cloud_identity() {
         Some(json) => serde_json::from_str(&json).map_err(|e| e.to_string())?,
@@ -643,30 +651,39 @@ pub async fn update_user_profile(
             let _ = db.upsert_userdb_config_row(&uid, &row.url, &row.token_encrypted, off_val);
         }
     }
+    if let Some(gl_flag) = go_local {
+        let gl_val = if gl_flag { 1 } else { 0 };
+        info.user.go_local = gl_val;
+        let _ = db.set_setting("go_local", if gl_flag { "1" } else { "0" });
+    }
+    if let Some(p) = presets {
+        let p_json = serde_json::to_string(&p).unwrap_or_else(|_| "[]".to_string());
+        info.user.presets = p_json.clone();
+        let _ = db.set_setting("user_presets", &p_json);
+    }
 
     if let Ok(cfg) = turso_config() {
-        let client = reqwest::Client::new();
-        let turso_res = turso_execute(
-            &client,
-            &cfg,
-            "UPDATE users SET username = ?, name = ?, logo_url = ?, bio = ?, is_public = ?, off_platform = ? WHERE id = ? OR workos_id = ? OR email = ?",
-            vec![
+        let conn = crate::cloud::libsql_connect(&cfg).await?;
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN go_local INTEGER NOT NULL DEFAULT 0", ()).await;
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN presets TEXT NOT NULL DEFAULT '[]'", ()).await;
+        conn.execute(
+            "UPDATE users SET username = ?1, name = ?2, logo_url = ?3, bio = ?4, is_public = ?5, off_platform = ?6, go_local = ?7, presets = ?8 WHERE id = ?9 OR workos_id = ?10 OR email = ?11",
+            libsql::params![
                 info.user.username.clone(),
                 info.user.name.clone().or_else(|| info.user.full_name.clone()),
                 info.user.logo_url.clone().or_else(|| info.user.avatar_url.clone()),
-                Some(info.user.bio.clone().unwrap_or_default()),
-                Some(info.user.is_public.to_string()),
-                Some(info.user.off_platform.to_string()),
-                Some(info.user.id.clone()),
-                Some(info.user.workos_id.clone()),
-                Some(info.user.email.clone()),
+                info.user.bio.clone().unwrap_or_default(),
+                info.user.is_public,
+                info.user.off_platform,
+                info.user.go_local,
+                info.user.presets.clone(),
+                info.user.id.clone(),
+                info.user.workos_id.clone(),
+                info.user.email.clone(),
             ],
-        ).await;
-
-        if let Err(e) = turso_res {
-            eprintln!("[Turso] update_user_profile error: {}", e);
-            return Err(format!("CentralDB update failed: {}", e));
-        }
+        )
+        .await
+        .map_err(|e| format!("CentralDB update failed: {}", e))?;
     }
 
     let payload = serde_json::to_string(&info).map_err(|e| e.to_string())?;

@@ -5,7 +5,6 @@ import remarkGfm from "remark-gfm";
 import { Copy, MessageSquare, Pencil, Plus, RefreshCw, Settings2, X } from "lucide-react";
 import {
   api,
-  CHAT_PROVIDERS,
   modelDisplayName,
   type ChatMessage,
   type ChatSession,
@@ -18,6 +17,11 @@ import { StatusFooter } from "@/components/StatusFooter";
 import { useAuth } from "@/lib/auth-context";
 import { useWorkspaces } from "@/lib/workspace-context";
 import { cn } from "@/lib/utils";
+import {
+  getGlobalDefaultProvider,
+  getGlobalDefaultModel,
+  DEFAULT_PROVIDER_CHANGE_EVENT,
+} from "@/components/settings/general";
 
 interface ChatViewProps {
   workspace: Workspace;
@@ -162,12 +166,18 @@ export function ChatView({
   const firstUserRef = useRef<string>("");
 
   const [provider, setProvider] = useState<string>(() => {
+    if (isDraft || isPicker) {
+      return getGlobalDefaultProvider();
+    }
     const saved = localStorage.getItem(storageKey);
-    return saved ? JSON.parse(saved).provider : CHAT_PROVIDERS[0].id;
+    return saved ? JSON.parse(saved).provider : getGlobalDefaultProvider();
   });
   const [model, setModel] = useState<string>(() => {
+    if (isDraft || isPicker) {
+      return getGlobalDefaultModel(getGlobalDefaultProvider());
+    }
     const saved = localStorage.getItem(storageKey);
-    return saved ? JSON.parse(saved).model : CHAT_PROVIDERS[0].models[0];
+    return saved ? JSON.parse(saved).model : getGlobalDefaultModel(provider);
   });
 
   const reqRef = useRef<string | null>(null);
@@ -177,12 +187,32 @@ export function ChatView({
 
   // Derive the context window limit from the model name (mirrors chat.rs context_limit_for_model).
   const contextLimit = (() => {
-    if (model.includes("claude-opus-4") || model.includes("claude-sonnet-4")) return 200_000;
+    if (
+      model.includes("claude-opus-4") ||
+      model.includes("claude-sonnet-4") ||
+      model.includes("claude-sonnet-5")
+    )
+      return 200_000;
     if (model.includes("claude-haiku")) return 200_000;
     if (model.includes("gpt-4o")) return 128_000;
-    if (model.includes("gemini-2")) return 1_000_000;
+    if (model.includes("gemini")) return 1_000_000;
     return 128_000;
   })();
+
+  // Keep live drafts in sync with global settings changes
+  useEffect(() => {
+    const onProviderChange = (e: Event) => {
+      const custom = e as CustomEvent<{ provider: string; model: string }>;
+      if (custom.detail) {
+        if ((isDraft || isPicker) && messages.length === 0 && !streaming && !sending) {
+          setProvider(custom.detail.provider);
+          setModel(custom.detail.model);
+        }
+      }
+    };
+    window.addEventListener(DEFAULT_PROVIDER_CHANGE_EVENT, onProviderChange);
+    return () => window.removeEventListener(DEFAULT_PROVIDER_CHANGE_EVENT, onProviderChange);
+  }, [isDraft, isPicker, messages.length, streaming, sending]);
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify({ provider, model }));
@@ -227,10 +257,17 @@ export function ChatView({
   useEffect(() => {
     if (sessionId) {
       api.listChatMessages(sessionId).then(setMessages).catch(() => {});
+      if (fixedSessionId) {
+        const s = sessions.find((sess) => sess.id === fixedSessionId);
+        if (s) {
+          if (s.provider) setProvider(s.provider);
+          if (s.model) setModel(s.model);
+        }
+      }
     } else {
       setMessages([]);
     }
-  }, [sessionId]);
+  }, [sessionId, fixedSessionId, sessions]);
 
   useEffect(() => {
     const unToken = listen<{ request_id: string; content: string }>("chat-token", (e) => {

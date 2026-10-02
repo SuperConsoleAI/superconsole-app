@@ -120,12 +120,25 @@ function Shell() {
   const settingsActive = !!matchRoute({ to: "/settings" });
 
   const activeId = params.workspaceId ? Number(params.workspaceId) : null;
+  const isDashboard = !activeId && !inboxActive && !tasksActive && !sessionsActive && !usageActive && !agentsActive && !customizeActive && !settingsActive;
   const activeWorkspace = workspaces.find((w) => w.id === activeId) ?? null;
   const activeTabs = activeId !== null ? (tabsByWs[activeId] ?? []) : [];
-  const activeTabId = activeId !== null ? (activeTabByWs[activeId] ?? "") : "";
+  const rawActiveTabId = activeId !== null ? (activeTabByWs[activeId] ?? "") : "";
+  const activeTabId =
+    rawActiveTabId && activeTabs.some((t) => t.id === rawActiveTabId)
+      ? rawActiveTabId
+      : (activeTabs[0]?.id ?? "");
   const filesOpen = search.files ?? false;
   const activeTab = activeTabs.find((t) => t.id === activeTabId);
   const openedFile = activeTab?.cli === "file" ? activeTab.relPath ?? null : null;
+
+  useEffect(() => {
+    if (activeId !== null && activeTabs.length > 0) {
+      if (!activeTabByWs[activeId] || !activeTabs.some((t) => t.id === activeTabByWs[activeId])) {
+        activateTab(activeId, activeTabs[0].id);
+      }
+    }
+  }, [activeId, activeTabs, activeTabByWs, activateTab]);
 
   let titleSuffix: string | undefined = undefined;
   if (activeWorkspace) {
@@ -212,6 +225,7 @@ function Shell() {
       <TopBar
         workspace={settingsActive ? null : (activeWorkspace ?? workspaces.find(w => w.id === Number((search as any).ws)) ?? null)}
         isProjectPage={!!activeWorkspace}
+        isDashboard={isDashboard}
         titleSuffix={titleSuffix}
         filesOpen={filesOpen}
         sidebarOpen={isSidebarOpen}
@@ -222,8 +236,10 @@ function Shell() {
         })}
         onToggleFiles={() =>
           activeWorkspace &&
-          goToWorkspace(activeWorkspace.id, {
-            files: !filesOpen,
+          navigate({
+            to: "/workspace/$workspaceId",
+            params: { workspaceId: String(activeWorkspace.id) },
+            search: { files: !filesOpen },
           })
         }
       />
@@ -343,8 +359,10 @@ function Shell() {
                         return true;
                       }}
                       onOpenFiles={() =>
-                        goToWorkspace(ws.id, {
-                          files: !filesOpen,
+                        navigate({
+                          to: "/workspace/$workspaceId",
+                          params: { workspaceId: String(ws.id) },
+                          search: { files: !filesOpen },
                         })
                       }
                     />
@@ -397,8 +415,10 @@ function Shell() {
                       onSessionState={setSessionState}
                       onSessionInfo={setSessionInfo}
                       onOpenFiles={() =>
-                        goToWorkspace(ws.id, {
-                          files: !filesOpen,
+                        navigate({
+                          to: "/workspace/$workspaceId",
+                          params: { workspaceId: String(ws.id) },
+                          search: { files: !filesOpen },
                         })
                       }
                     />
@@ -466,8 +486,11 @@ function Welcome() {
   const { setAddOpen, workspaces } = useWorkspaces();
   const firstRun = workspaces.length === 0;
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-6 text-center">
-      <img src={appIconUrl} className="h-16 w-16 drop-shadow-sm" alt="SuperConsole" />
+    <div
+      data-tauri-drag-region
+      className="absolute inset-0 flex flex-col items-center justify-center gap-6 text-center select-none"
+    >
+      <img src={appIconUrl} className="h-16 w-16 drop-shadow-sm pointer-events-none" alt="SuperConsole" />
       <div>
         <h1 className="font-display text-2xl font-semibold tracking-tight">
           Welcome to SuperConsole
@@ -496,7 +519,10 @@ function Welcome() {
         </div>
       )}
 
-      <Button onClick={() => setAddOpen(true)}>
+      <Button
+        onClick={() => setAddOpen(true)}
+        className="dark:bg-[#ffffff] dark:text-[#000000] dark:hover:bg-[#ffffff]/90"
+      >
         {firstRun ? "Add your first workspace" : "Add workspace"}
       </Button>
     </div>
@@ -822,9 +848,18 @@ const routeTree = rootRoute.addChildren([
   workspaceRoute,
 ]);
 
+const getInitialPath = () => {
+  if (typeof window === "undefined") return "/";
+  const path = window.location.pathname || "/";
+  const search = window.location.search || "";
+  const hash = window.location.hash || "";
+  const full = `${path}${search}${hash}`;
+  return full.startsWith("/") ? full : "/";
+};
+
 export const router = createRouter({
   routeTree,
-  history: createMemoryHistory({ initialEntries: ["/"] }),
+  history: createMemoryHistory({ initialEntries: [getInitialPath()] }),
 });
 
 declare module "@tanstack/react-router" {

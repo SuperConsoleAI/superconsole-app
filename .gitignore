@@ -17,12 +17,34 @@ dist-ssr
 /businesskit-old
 businesskit-old
 
-# Secrets
+# Secrets & Keys
 .env
 .env.*
 !.env.example
 .dev.vars
 .dev.vars.*
+/secret
+secret/
+*.key
+*.key.pub
+*.jks
+*.keystore
+key.properties
+keystore.properties
+*.sqlite
+*.db
+superconsole.db
+test-files/
+
+# Rust & Android Builds
+target/
+**/target/
+**/build/
+.gradle/
+**/.gradle/
+**/gen/android/.gradle/
+**/gen/android/app/build/
+
 
 # Cloudflare / build output
 .output

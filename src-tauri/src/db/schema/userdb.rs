@@ -49,6 +49,8 @@ pub const USER_SCHEMA_STATEMENTS: &[&str] = &[
         show_projects   INTEGER NOT NULL DEFAULT 1,
         show_usage      INTEGER NOT NULL DEFAULT 1,
         off_platform    INTEGER NOT NULL DEFAULT 0,
+        go_local        INTEGER NOT NULL DEFAULT 0,
+        presets         TEXT NOT NULL DEFAULT '[]',
         created_at      TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
@@ -57,6 +59,7 @@ pub const USER_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users (username)"#,
     r#"CREATE INDEX IF NOT EXISTS idx_users_public ON users (is_public, is_active)"#,
     r#"CREATE INDEX IF NOT EXISTS idx_users_off_platform ON users (off_platform)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_users_go_local ON users (go_local)"#,
 
     // ── organizations ─────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS organizations (
@@ -112,6 +115,10 @@ pub const USER_SCHEMA_STATEMENTS: &[&str] = &[
         script_auto_run     INTEGER NOT NULL DEFAULT 0,
         repo_url            TEXT NOT NULL DEFAULT '',
         description         TEXT NOT NULL DEFAULT '',
+        is_active           INTEGER NOT NULL DEFAULT 1,
+        is_public           INTEGER NOT NULL DEFAULT 0,
+        show_usage          INTEGER NOT NULL DEFAULT 1,
+        show_team           INTEGER NOT NULL DEFAULT 0,
         created_at          TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
@@ -561,6 +568,23 @@ pub const USER_SCHEMA_STATEMENTS: &[&str] = &[
         heatmap_365d                TEXT NOT NULL DEFAULT '{}',
         updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
+
+    // ── env_vars (Unified Environment Variables across account, org, project) ─
+    r#"CREATE TABLE IF NOT EXISTS env_vars (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope               TEXT NOT NULL CHECK (scope IN ('account', 'org', 'project')),
+        scope_id            TEXT NOT NULL,
+        key                 TEXT NOT NULL,
+        value               TEXT NOT NULL,
+        is_secret           INTEGER NOT NULL DEFAULT 0,
+        user_id             TEXT,
+        updated_by          TEXT,
+        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (scope, scope_id, key)
+    )"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_env_vars_scope ON env_vars (scope, scope_id)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_env_vars_user ON env_vars (user_id)"#,
 ];
 
 /// Provisions and initializes all canonical user database tables and indexes.
@@ -610,6 +634,7 @@ pub fn get_canonical_user_table_names() -> &'static [&'static str] {
         "org_usage",
         "account_usage",
         "user_usage",
+        "env_vars",
     ]
 }
 
@@ -656,6 +681,8 @@ mod tests {
             .collect();
 
         assert!(cols.contains(&"off_platform".to_string()));
+        assert!(cols.contains(&"go_local".to_string()));
+        assert!(cols.contains(&"presets".to_string()));
         assert!(cols.contains(&"social".to_string()));
         assert!(cols.contains(&"is_active".to_string()));
         assert!(cols.contains(&"is_public".to_string()));

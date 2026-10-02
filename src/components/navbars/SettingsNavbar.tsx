@@ -4,7 +4,7 @@
  * Allows switching between Account, Org, and Project configuration scopes.
  */
 import { useState, useEffect } from "react";
-import { Building2, Check, ChevronsUpDown, CircleUser, FolderClosed, User } from "lucide-react";
+import { Building2, Check, ChevronsUpDown, FolderClosed, User } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { api, type Workspace } from "@/lib/api";
 import {
@@ -75,7 +75,7 @@ export function SettingsNavbar() {
 
   return (
     <div className="flex w-full items-center justify-between gap-3">
-      {/* Left: Tab Switcher (Account | Org | Project) + Scoped Switcher — 26px outer container, 22px inner button, vertically centered */}
+      {/* Left: Tab Switcher (Account | Org | Project) + Scoped Switcher */}
       <div className="flex items-center gap-2">
         <div className="flex h-[26px] items-center gap-0.5 rounded-md border bg-background p-[1px]">
           <button
@@ -90,19 +90,6 @@ export function SettingsNavbar() {
           >
             <User className="h-3.5 w-3.5" strokeWidth={1.5} />
             <span>Account</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => handleTabChange("profile")}
-            className={cn(
-              "flex h-[22px] items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors leading-none",
-              tab === "profile"
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted"
-            )}
-          >
-            <CircleUser className="h-3.5 w-3.5" strokeWidth={1.5} />
-            <span>Profile</span>
           </button>
           <button
             type="button"

@@ -19,6 +19,7 @@ import {
   Zap,
 } from "lucide-react";
 import { api, type OpenrouterModel } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { ComposerPlusMenu } from "@/components/ComposerPlusMenu";
@@ -38,12 +39,54 @@ export interface Attachment {
 
 const TEXT_EXTS = ["md", "txt", "csv", "json", "yaml", "yml", "ts", "tsx", "js", "py", "rs"];
 
-const THINKING_LEVELS = [
-  { id: "off", label: "Thinking off" },
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High / Max" },
-] as const;
+export interface ThinkingLevelOption {
+  id: string;
+  label: string;
+  hint: string;
+}
+
+const EFFORT_METADATA: Record<string, { label: string; hint: string; order: number }> = {
+  off: { label: "Thinking off", hint: "Standard generation without thinking", order: 0 },
+  none: { label: "Thinking off", hint: "Standard generation without thinking", order: 0 },
+  minimal: { label: "Minimal", hint: "Minimal reasoning effort", order: 1 },
+  low: { label: "Low", hint: "Fast thoughts (low reasoning effort)", order: 2 },
+  medium: { label: "Medium", hint: "Balanced reasoning effort", order: 3 },
+  high: { label: "High", hint: "Deep multi-step reasoning", order: 4 },
+  xhigh: { label: "Extra", hint: "Extended maximum reasoning effort", order: 5 },
+  extra: { label: "Extra", hint: "Extended maximum reasoning effort", order: 5 },
+  max: { label: "Max", hint: "Maximum reasoning effort", order: 6 },
+};
+
+export const OPENAI_THINKING_LEVELS: readonly ThinkingLevelOption[] = [
+  { id: "off", label: "Thinking off", hint: "Standard generation without thinking" },
+  { id: "low", label: "Low", hint: "Fast thoughts (low reasoning effort)" },
+  { id: "medium", label: "Medium", hint: "Balanced reasoning effort" },
+  { id: "high", label: "High", hint: "Deep multi-step reasoning" },
+];
+
+export const GEMINI_THINKING_LEVELS: readonly ThinkingLevelOption[] = [
+  { id: "off", label: "Thinking off", hint: "Standard generation without thinking" },
+  { id: "low", label: "Low", hint: "Fast thoughts (~2K token budget)" },
+  { id: "medium", label: "Medium", hint: "Balanced reasoning (~4K token budget)" },
+  { id: "high", label: "High", hint: "Deep reasoning (~16K token budget)" },
+];
+
+export const ANTHROPIC_THINKING_LEVELS: readonly ThinkingLevelOption[] = [
+  { id: "off", label: "Thinking off", hint: "Standard generation without thinking" },
+  { id: "low", label: "Low", hint: "Fast thoughts (~2K token budget)" },
+  { id: "medium", label: "Medium", hint: "Balanced reasoning (~4K token budget)" },
+  { id: "high", label: "High", hint: "Deep reasoning (~16K token budget)" },
+  { id: "max", label: "Max", hint: "Comprehensive thoughts (~32K token budget)" },
+];
+
+export const DEFAULT_REASONING_LEVELS: readonly ThinkingLevelOption[] = [
+  { id: "off", label: "Thinking off", hint: "Standard generation without reasoning" },
+  { id: "low", label: "Low", hint: "Fast reasoning effort" },
+  { id: "medium", label: "Medium", hint: "Balanced reasoning effort" },
+  { id: "high", label: "High", hint: "Deep reasoning effort" },
+];
+
+export const THINKING_LEVELS = GEMINI_THINKING_LEVELS;
 
 const AGENT_MODES = [
   { id: "auto", label: "Auto", hint: "Tools run without approval" },
@@ -55,57 +98,209 @@ function basename(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
 
-// OpenAI reasoning support is curated; OpenRouter is detected live from the
-// model's supported_parameters.
-function openaiSupportsThinking(model: string): boolean {
-  return /gpt-5|^o1|^o3/.test(model.toLowerCase());
+// Determines if the current provider & model support extended thinking/reasoning
+export function modelSupportsThinking(
+  provider: string,
+  model: string,
+  orModel?: OpenrouterModel,
+): boolean {
+  if (orModel?.supports_reasoning) return true;
+
+  const m = (model || "").toLowerCase();
+  const p = (provider || "").toLowerCase();
+
+  // OpenAI reasoning models (o1, o3, gpt-5)
+  if (/gpt-5|^o1|^o3|o4|o1-|o3-/.test(m)) return true;
+
+  // Google Gemini thinking models (Gemini 2.5 Flash/Pro, Gemini 3.8 Flash, etc.)
+  if (
+    m.includes("gemini") &&
+    (m.includes("flash") || m.includes("pro") || m.includes("2.5") || m.includes("3.") || m.includes("thinking"))
+  ) {
+    return true;
+  }
+
+  // Anthropic Claude models with extended thinking (Claude 3.7 Sonnet, Claude Sonnet 4.5 / 5, Claude Opus 4)
+  if (
+    m.includes("claude") &&
+    (m.includes("3-7") || m.includes("3.7") || m.includes("sonnet-4") || m.includes("sonnet-5") || m.includes("opus-4"))
+  ) {
+    return true;
+  }
+
+  // DeepSeek R1 & reasoning models (Qwen reasoning, QwQ, etc.)
+  if (m.includes("r1") || m.includes("reason") || m.includes("think") || m.includes("qwq")) {
+    return true;
+  }
+
+  // OpenRouter / Local cross-vendor reasoning patterns
+  if (p === "openrouter" || p === "local") {
+    if (m.includes("deepseek") || m.includes("r1") || m.includes("grok-3")) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
-function fmtCtx(n: number): string {
+export function getThinkingLevelsForModel(
+  provider: string,
+  model: string,
+  orModel?: OpenrouterModel,
+): readonly ThinkingLevelOption[] {
+  // 1. If OpenRouter model metadata is available with explicit supported_efforts:
+  // This is the real ground truth from the OpenRouter API for this model.
+  if (orModel?.reasoning?.supported_efforts && orModel.reasoning.supported_efforts.length > 0) {
+    const efforts = orModel.reasoning.supported_efforts;
+    const items: ThinkingLevelOption[] = [];
+
+    // Only allow "Thinking off" if reasoning is not strictly mandatory for this model
+    if (!orModel.reasoning.mandatory && !efforts.some((e) => e === "none" || e === "off")) {
+      items.push({ id: "off", label: "Thinking off", hint: "Standard generation without thinking" });
+    }
+
+    // Sort according to effort intensity
+    const sorted = [...efforts].sort((a, b) => {
+      const ordA = EFFORT_METADATA[a.toLowerCase()]?.order ?? 99;
+      const ordB = EFFORT_METADATA[b.toLowerCase()]?.order ?? 99;
+      return ordA - ordB;
+    });
+
+    for (const eff of sorted) {
+      const norm = eff.toLowerCase();
+      if (norm === "none" || norm === "off") {
+        if (!items.some((i) => i.id === "off")) {
+          items.unshift({ id: "off", label: "Thinking off", hint: "Standard generation without thinking" });
+        }
+        continue;
+      }
+      const meta = EFFORT_METADATA[norm];
+      items.push({
+        id: eff,
+        label: meta ? meta.label : eff.charAt(0).toUpperCase() + eff.slice(1),
+        hint: meta ? meta.hint : `${eff} reasoning effort`,
+      });
+    }
+
+    return items;
+  }
+
+  // 2. If the model does not support thinking at all, return empty (hidden)
+  if (!modelSupportsThinking(provider, model, orModel)) {
+    return [];
+  }
+
+  const p = (provider || "").toLowerCase();
+  const m = (model || "").toLowerCase();
+
+  // Gemini models (Gemini 3.8 Flash, 2.5 Flash, 2.5 Pro) support low, medium, high
+  if (p === "gemini" || p === "google" || m.startsWith("google/") || m.includes("gemini")) {
+    return GEMINI_THINKING_LEVELS;
+  }
+
+  // OpenAI reasoning models only support low | medium | high
+  if (p === "openai" || m.startsWith("openai/") || /gpt-5|^o1|^o3|o4|o1-|o3-/.test(m)) {
+    return OPENAI_THINKING_LEVELS;
+  }
+
+  // Anthropic Claude models with extended thinking
+  if (p === "anthropic" || m.startsWith("anthropic/") || m.includes("claude")) {
+    return ANTHROPIC_THINKING_LEVELS;
+  }
+
+  return DEFAULT_REASONING_LEVELS;
+}
+
+export function fmtCtx(n: number): string {
   if (!n) return "";
   return n >= 1000 ? `${Math.round(n / 1000)}K` : `${n}`;
 }
 
-function fmtPrice(p: number): string {
+export function fmtPrice(p: number): string {
   return `$${(p * 1e6).toFixed(2)}`;
 }
 
 // Provider tabs surfaced in the model selector, in this order.
-const ALLOWED_VENDORS = ["anthropic", "openai", "openrouter", "google"];
+export const ALLOWED_VENDORS = ["google", "openrouter", "anthropic", "openai"];
 
 // Hide stale models from the per-provider tabs (OpenRouter tab is exempt).
-const MAX_MODEL_AGE_DAYS = 365;
+export const MAX_MODEL_AGE_DAYS = 365;
 
 // The "OpenRouter" tab is a curated cross-vendor flagship shortlist (incl. Grok,
 // Kimi, GLM) rather than the raw openrouter/* utility models.
-const FLAGSHIP_PATTERNS = [
+export const FLAGSHIP_PATTERNS = [
+  "gemini-3.8-flash",
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
   "claude-opus-4",
   "claude-sonnet-4",
   "gpt-5",
   "openai/o3",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
   "x-ai/grok",
   "moonshotai/kimi",
   "z-ai/glm",
 ];
 
-const VENDOR_LABELS: Record<string, string> = {
+export const VENDOR_LABELS: Record<string, string> = {
+  google: "Gemini",
+  openrouter: "OpenRouter",
   anthropic: "Anthropic",
   openai: "OpenAI",
-  openrouter: "OpenRouter",
-  google: "Gemini",
 };
 
-function vendorOf(id: string): string {
-  return id.includes("/") ? id.split("/")[0] : "other";
+export function providerDisplayName(provider: string): string {
+  const p = (provider || "").toLowerCase();
+  switch (p) {
+    case "gemini":
+    case "google":
+      return "Gemini";
+    case "openrouter":
+      return "OpenRouter";
+    case "anthropic":
+    case "claude":
+      return "Anthropic";
+    case "openai":
+      return "OpenAI";
+    case "local":
+    case "ollama":
+      return "Local";
+    default:
+      return provider ? provider.charAt(0).toUpperCase() + provider.slice(1) : "AI";
+  }
+}
+
+export function vendorFromProviderOrModel(provider: string, model: string): string {
+  const p = (provider || "").toLowerCase();
+  if (p === "gemini" || p === "google") return "google";
+  if (p === "openrouter") return "openrouter";
+  if (p === "anthropic" || p === "claude") return "anthropic";
+  if (p === "openai") return "openai";
+
+  const m = (model || "").toLowerCase();
+  if (m.includes("gemini")) return "google";
+  if (m.includes("claude")) return "anthropic";
+  if (m.includes("gpt") || m.includes("o1") || m.includes("o3")) return "openai";
+  if (m.includes("/")) {
+    const v = m.split("/")[0];
+    if (ALLOWED_VENDORS.includes(v)) return v;
+  }
+  return "google";
+}
+
+export function vendorOf(id: string): string {
+  if (id.includes("/")) return id.split("/")[0];
+  const m = id.toLowerCase();
+  if (m.includes("gemini")) return "google";
+  if (m.includes("claude")) return "anthropic";
+  if (m.includes("gpt") || m.startsWith("o1") || m.startsWith("o3")) return "openai";
+  return "other";
 }
 
 // Map a model's OpenRouter vendor to the app provider that should serve it
 // natively. Vendors we don't support first-party (x-ai, moonshotai, z-ai, meta…)
 // route through OpenRouter. The backend strips the `vendor/` prefix for native
 // providers before calling their API.
-function providerOfModel(id: string): string {
+export function providerOfModel(id: string): string {
   switch (vendorOf(id)) {
     case "anthropic":
       return "anthropic";
@@ -118,13 +313,27 @@ function providerOfModel(id: string): string {
   }
 }
 
-function vendorLabel(v: string): string {
+export function vendorLabel(v: string): string {
   return VENDOR_LABELS[v] ?? v.charAt(0).toUpperCase() + v.slice(1);
 }
 
 // OR model names are "Vendor: Model" — drop the redundant vendor prefix.
-function shortName(name: string): string {
+export function shortName(name: string): string {
   return name.includes(": ") ? name.split(": ").slice(1).join(": ") : name;
+}
+
+export function formatModelDisplay(modelId: string, orModel?: OpenrouterModel): string {
+  if (orModel) return shortName(orModel.name);
+  if (!modelId) return "select model";
+  if (modelId === "gemini-3.8-flash" || modelId === "google/gemini-3.8-flash") return "Gemini 3.8 Flash";
+  if (modelId === "gemini-2.5-flash" || modelId === "google/gemini-2.5-flash") return "Gemini 2.5 Flash";
+  if (modelId === "gemini-2.5-pro" || modelId === "google/gemini-2.5-pro") return "Gemini 2.5 Pro";
+  if (modelId === "claude-sonnet-4-5" || modelId === "anthropic/claude-sonnet-4.5") return "Claude Sonnet 5 / 4.5";
+  if (modelId === "claude-3-5-sonnet-latest") return "Claude 3.5 Sonnet";
+  if (modelId === "claude-opus-4-1" || modelId === "anthropic/claude-opus-4.1") return "Claude Opus";
+  if (modelId === "gpt-5" || modelId === "openai/gpt-5") return "GPT-5";
+  if (modelId === "gpt-4o" || modelId === "openai/gpt-4o") return "GPT-4o";
+  return modelId.includes("/") ? modelId.split("/")[1] : modelId;
 }
 
 interface ChatComposerProps {
@@ -232,8 +441,17 @@ export function ChatComposer({
     }
   };
 
-  const isOr = provider === "openrouter";
-  const orModel = orModels.find((m) => m.id === model);
+  const orModel = useMemo(() => {
+    if (!model) return undefined;
+    const target = model.toLowerCase();
+    return (
+      orModels.find((m) => m.id === model) ||
+      orModels.find((m) => m.id.toLowerCase() === target) ||
+      orModels.find((m) => m.id.toLowerCase() === `${provider}/${target}`.toLowerCase()) ||
+      orModels.find((m) => m.id.toLowerCase().endsWith(`/${target}`)) ||
+      orModels.find((m) => target.endsWith(`/${m.id.toLowerCase()}`))
+    );
+  }, [orModels, model, provider]);
   const vendorGroups = useMemo(() => {
     const cutoff = Date.now() / 1000 - MAX_MODEL_AGE_DAYS * 86400;
     const byCreatedDesc = (a: OpenrouterModel, b: OpenrouterModel) => b.created - a.created;
@@ -250,15 +468,53 @@ export function ChatComposer({
     const out: [string, OpenrouterModel[]][] = [];
     for (const v of ALLOWED_VENDORS) {
       if (v === "openrouter") {
-        if (flagship.length) out.push(["openrouter", flagship]);
-      } else if (byVendor.has(v)) {
+        if (flagship.length) {
+          out.push(["openrouter", flagship]);
+        } else {
+          out.push([
+            "openrouter",
+            [
+              { id: "google/gemini-3.8-flash", name: "Google: Gemini 3.8 Flash", context_length: 1000000, prompt_price: 0.15e-6, completion_price: 0.6e-6, supports_reasoning: true, created: Date.now() / 1000 },
+              { id: "anthropic/claude-sonnet-4.5", name: "Anthropic: Claude Sonnet 5 / 4.5", context_length: 200000, prompt_price: 3e-6, completion_price: 15e-6, supports_reasoning: true, created: Date.now() / 1000 },
+              { id: "openai/gpt-5", name: "OpenAI: GPT-5", context_length: 128000, prompt_price: 2.5e-6, completion_price: 10e-6, supports_reasoning: true, created: Date.now() / 1000 },
+            ],
+          ]);
+        }
+      } else if (byVendor.has(v) && byVendor.get(v)!.length > 0) {
         out.push([v, byVendor.get(v)!.sort(byCreatedDesc)]);
+      } else if (v === "google") {
+        out.push([
+          "google",
+          [
+            { id: "gemini-3.8-flash", name: "Google: Gemini 3.8 Flash", context_length: 1000000, prompt_price: 0.15e-6, completion_price: 0.6e-6, supports_reasoning: true, created: Date.now() / 1000 },
+            { id: "gemini-2.5-flash", name: "Google: Gemini 2.5 Flash", context_length: 1000000, prompt_price: 0.15e-6, completion_price: 0.6e-6, supports_reasoning: false, created: Date.now() / 1000 },
+            { id: "gemini-2.5-pro", name: "Google: Gemini 2.5 Pro", context_length: 1000000, prompt_price: 1.25e-6, completion_price: 5e-6, supports_reasoning: true, created: Date.now() / 1000 },
+          ],
+        ]);
+      } else if (v === "anthropic") {
+        out.push([
+          "anthropic",
+          [
+            { id: "claude-sonnet-4-5", name: "Anthropic: Claude Sonnet 5 / 4.5", context_length: 200000, prompt_price: 3e-6, completion_price: 15e-6, supports_reasoning: true, created: Date.now() / 1000 },
+            { id: "claude-3-5-sonnet-latest", name: "Anthropic: Claude 3.5 Sonnet", context_length: 200000, prompt_price: 3e-6, completion_price: 15e-6, supports_reasoning: false, created: Date.now() / 1000 },
+            { id: "claude-opus-4-1", name: "Anthropic: Claude Opus", context_length: 200000, prompt_price: 15e-6, completion_price: 75e-6, supports_reasoning: true, created: Date.now() / 1000 },
+          ],
+        ]);
+      } else if (v === "openai") {
+        out.push([
+          "openai",
+          [
+            { id: "gpt-5", name: "OpenAI: GPT-5", context_length: 128000, prompt_price: 2.5e-6, completion_price: 10e-6, supports_reasoning: true, created: Date.now() / 1000 },
+            { id: "gpt-4o", name: "OpenAI: GPT-4o", context_length: 128000, prompt_price: 2.5e-6, completion_price: 10e-6, supports_reasoning: false, created: Date.now() / 1000 },
+            { id: "o3", name: "OpenAI: o3", context_length: 200000, prompt_price: 10e-6, completion_price: 40e-6, supports_reasoning: true, created: Date.now() / 1000 },
+          ],
+        ]);
       }
     }
     return out;
   }, [orModels]);
 
-  const modelLabel = orModel ? shortName(orModel.name) : model || "select model";
+  const modelLabel = formatModelDisplay(model, orModel);
   const baseList =
     vendorGroups.find(([v]) => v === activeVendor)?.[1] ?? vendorGroups[0]?.[1] ?? [];
   // Search is scoped to the currently selected provider.
@@ -270,9 +526,17 @@ export function ChatComposer({
   const goSettingsTo = (_tab: "account" | "org" | "project", section: string) =>
     router.navigate({ to: "/customize", search: { ws: workspaceId, tab: section.toLowerCase() } });
   const selectModel = (id: string) => {
-    // The active tab decides the provider: the OpenRouter tab always routes via
-    // OpenRouter (even for a Claude/GPT model); native tabs use their provider.
-    setProvider(activeVendor === "openrouter" ? "openrouter" : providerOfModel(id));
+    const resolvedProvider =
+      activeVendor === "openrouter"
+        ? "openrouter"
+        : activeVendor === "google"
+          ? "gemini"
+          : activeVendor === "anthropic"
+            ? "anthropic"
+            : activeVendor === "openai"
+              ? "openai"
+              : providerOfModel(id);
+    setProvider(resolvedProvider);
     setModel(id);
     setCustomModel(false);
     setMenuOpen(false);
@@ -306,11 +570,38 @@ export function ChatComposer({
     taRef.current?.focus();
   };
 
-  const canThink = isOr ? !!orModel?.supports_reasoning : openaiSupportsThinking(model);
-  const thinkingLabel =
-    THINKING_LEVELS.find((l) => l.id === reasoning)?.label ?? "Low";
+  const thinkingLevels = useMemo(
+    () => getThinkingLevelsForModel(provider, model, orModel),
+    [provider, model, orModel],
+  );
+  const canThink = thinkingLevels.length > 0;
+  const activeThinkingItem = thinkingLevels.find((l) => l.id === reasoning);
+  const thinkingLabel = activeThinkingItem
+    ? activeThinkingItem.label
+    : reasoning === "off"
+      ? "Off"
+      : reasoning;
+  const isThinkingActive = canThink && reasoning !== "off";
   const agentLabel = AGENT_MODES.find((m) => m.id === agentMode)?.label ?? "Auto";
   const canSend = input.trim().length > 0 || attachments.length > 0;
+
+  // Keep reasoning aligned with the active model's capabilities & requirements
+  useEffect(() => {
+    if (thinkingLevels.length === 0) return;
+    if (orModel?.reasoning?.mandatory && reasoning === "off") {
+      const defaultEffort =
+        orModel.reasoning.default_effort ||
+        thinkingLevels.find((l) => l.id !== "off")?.id ||
+        "medium";
+      setReasoning(defaultEffort);
+    } else if (reasoning !== "off" && !thinkingLevels.some((l) => l.id === reasoning)) {
+      const fallback =
+        orModel?.reasoning?.default_effort ||
+        thinkingLevels.find((l) => l.id !== "off")?.id ||
+        "medium";
+      setReasoning(fallback);
+    }
+  }, [orModel, thinkingLevels, reasoning, setReasoning]);
 
   return (
     <div className="px-3 pb-0">
@@ -557,17 +848,28 @@ export function ChatComposer({
                 setMenuOpen(o);
                 if (o) {
                   setModelQuery("");
-                  setActiveVendor(
-                    isOr ? "openrouter" : vendorOf(model) || vendorGroups[0]?.[0] || "",
-                  );
+                  setActiveVendor(vendorFromProviderOrModel(provider, model));
                 }
               }}
             >
               <DropdownMenuTrigger asChild>
-                <button className="flex h-7 max-w-56 items-center gap-1.5 rounded-md px-1.5 text-xs hover:bg-accent">
-                  <ProviderIcon model={model} className="h-3.5 w-3.5 shrink-0 opacity-60" />
-                  <span className="truncate">{modelLabel}</span>
-                  <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+                <button
+                  type="button"
+                  className="flex h-7 max-w-[320px] items-center gap-1.5 rounded-md border border-border/70 bg-card/60 px-2 text-xs font-medium text-foreground hover:bg-accent hover:border-border transition-colors shadow-2xs"
+                  title={`Provider: ${providerDisplayName(provider)} | Model: ${modelLabel}`}
+                >
+                  {/* Left end: Provider icon + provider name */}
+                  <ProviderIcon provider={provider} className="h-3.5 w-3.5 shrink-0 opacity-90" />
+                  <span className="font-semibold text-foreground/90 shrink-0">
+                    {providerDisplayName(provider)}
+                  </span>
+                  <span className="text-muted-foreground/40 font-mono text-[10px]">/</span>
+                  {/* After / : Model icon (shaded-greyed like model text) + model name */}
+                  <ProviderIcon model={model} className="h-3.5 w-3.5 shrink-0 opacity-40 grayscale" />
+                  <span className="truncate text-muted-foreground font-mono text-[11px]">
+                    {modelLabel}
+                  </span>
+                  <ChevronDown className="h-3 w-3 shrink-0 opacity-40 ml-0.5" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" side="top" className="w-[34rem] p-0">
@@ -642,23 +944,42 @@ export function ChatComposer({
             </DropdownMenu>
           )}
 
-          {/* Thinking — only for models that support it */}
+          {/* Thinking option — dynamically adapts to provider and model availability; completely hidden if unsupported */}
           {canThink && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
-                  className="flex h-7 items-center gap-1 rounded-md px-1.5 text-xs hover:bg-accent"
-                  title="Thinking effort"
+                  type="button"
+                  className={cn(
+                    "flex h-7 items-center gap-1.5 rounded-md border border-border/70 bg-card/60 px-2 text-xs font-medium transition-colors shadow-2xs hover:bg-accent hover:border-border",
+                    isThinkingActive ? "text-foreground font-semibold" : "text-muted-foreground",
+                  )}
+                  title={`Thinking effort: ${thinkingLabel} (Supported on ${modelLabel})`}
                 >
-                  <Brain className="h-3.5 w-3.5 opacity-70" />
-                  <span className="text-muted-foreground">{thinkingLabel}</span>
+                  <Brain
+                    className={cn(
+                      "h-3.5 w-3.5 shrink-0 transition-opacity",
+                      isThinkingActive ? "opacity-85 text-foreground" : "opacity-45 text-muted-foreground",
+                    )}
+                  />
+                  <span>{isThinkingActive ? `Thinking: ${thinkingLabel}` : "Thinking off"}</span>
+                  <ChevronDown className="h-2.5 w-2.5 opacity-40 ml-0.5" />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" side="top" className="w-40">
+              <DropdownMenuContent align="start" side="top" className="w-56 p-1">
+                <div className="px-2 py-1.5 border-b border-border/50 mb-1">
+                  <p className="text-xs font-semibold text-foreground">Thinking Effort</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Available for {modelLabel} ({providerDisplayName(provider)})
+                  </p>
+                </div>
                 <DropdownMenuRadioGroup value={reasoning} onValueChange={setReasoning}>
-                  {THINKING_LEVELS.map((l) => (
-                    <DropdownMenuRadioItem key={l.id} value={l.id}>
-                      {l.label}
+                  {thinkingLevels.map((l) => (
+                    <DropdownMenuRadioItem key={l.id} value={l.id} className="cursor-pointer py-1.5">
+                      <span className="flex flex-col">
+                        <span className="font-medium text-xs text-foreground">{l.label}</span>
+                        <span className="text-[10px] text-muted-foreground">{l.hint}</span>
+                      </span>
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>

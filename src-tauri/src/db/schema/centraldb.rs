@@ -28,6 +28,8 @@ pub const CENTRAL_SCHEMA_STATEMENTS: &[&str] = &[
         show_projects   INTEGER NOT NULL DEFAULT 1,
         show_usage      INTEGER NOT NULL DEFAULT 1,
         off_platform    INTEGER NOT NULL DEFAULT 0,
+        go_local        INTEGER NOT NULL DEFAULT 0,
+        presets         TEXT NOT NULL DEFAULT '[]',
         created_at      TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
@@ -36,6 +38,7 @@ pub const CENTRAL_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users (username)"#,
     r#"CREATE INDEX IF NOT EXISTS idx_users_public ON users (is_public, is_active)"#,
     r#"CREATE INDEX IF NOT EXISTS idx_users_off_platform ON users (off_platform)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_users_go_local ON users (go_local)"#,
 
     // ── organizations ─────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS organizations (
@@ -91,6 +94,10 @@ pub const CENTRAL_SCHEMA_STATEMENTS: &[&str] = &[
         script_auto_run     INTEGER NOT NULL DEFAULT 0,
         repo_url            TEXT NOT NULL DEFAULT '',
         description         TEXT NOT NULL DEFAULT '',
+        is_active           INTEGER NOT NULL DEFAULT 1,
+        is_public           INTEGER NOT NULL DEFAULT 0,
+        show_usage          INTEGER NOT NULL DEFAULT 1,
+        show_team           INTEGER NOT NULL DEFAULT 0,
         created_at          TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
@@ -478,6 +485,8 @@ mod tests {
             .collect();
 
         assert!(cols.contains(&"off_platform".to_string()));
+        assert!(cols.contains(&"go_local".to_string()));
+        assert!(cols.contains(&"presets".to_string()));
         assert!(cols.contains(&"social".to_string()));
         assert!(cols.contains(&"is_active".to_string()));
         assert!(cols.contains(&"is_public".to_string()));

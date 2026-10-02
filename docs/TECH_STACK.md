@@ -17,17 +17,19 @@ Every dependency and why it's here. App target: <30MB installed, Mac first (Wind
 | Crate | Why |
 |-------|-----|
 | `portable-pty` 0.9 | Real PTY sessions (same approach as VS Code terminal). Core of the app. |
-| `rusqlite` 0.32 (`bundled`) | Local SQLite, no system dependency. All persistence. |
-| `cron` 0.12 + `chrono` | Cron parsing + next-run computation (5-field input, seconds prepended). |
-| `tokio` (`time`, `sync` features) | Tick loops; `sync::Mutex` serializes cloud project creation. Tauri's async runtime is tokio already. |
+| `rusqlite` 0.32 (`bundled`) | Local SQLite, no system dependency. All persistence (`superconsole.db`). |
+| `libsql` 0.9 (`remote`, `tls`, `default-features = false`) | Pure async libSQL client over Hrana protocol for Turso cloud access. Disabling local C FFI SQLite features prevents fatal `SQLITE_MISUSE = 21` threading conflicts when running alongside `rusqlite bundled`. |
+| `cron` 0.12 + `chrono` 0.4 | Cron parsing + next-run computation (5-field input, seconds prepended). |
+| `tokio` 1 (`time`, `sync`, `macros`, `rt-multi-thread`) | Async runtime, tick loops; `sync::Mutex` serializes cloud project creation. |
 | `tiny_http` 0.12 | Minimal blocking HTTP server for remote triggers + WorkOS loopback callback (127.0.0.1 only). Chosen over axum to keep binary small. |
-| `reqwest` 0.12 (`json`, `rustls-tls`, no default features) | Telegram Bot API, WorkOS auth, Turso HTTP, and LLM provider streaming. rustls avoids OpenSSL linkage. |
+| `reqwest` 0.12 (`json`, `rustls-tls`, no default features) | Telegram Bot API, WorkOS auth, Turso HTTP fallback, and LLM provider streaming. rustls avoids OpenSSL linkage. |
 | `rand` 0.8 | API token generation. |
 | `serde` / `serde_json` | IPC + JSON payloads. |
-| `keyring` 3 (`apple-native`) | Stores the WorkOS session + derived AES key in the macOS keychain. |
 | `ulid` 1 | ULID primary keys for cloud rows (matches Turso schema). |
 | `dotenvy` 0.15 | Loads cloud config from the gitignored root `.env`. |
-| `aes-gcm` 0.10 + `hkdf` 0.12 + `sha2` 0.10 + `base64` 0.22 | AES-256-GCM secret encryption with HKDF-SHA256 key derivation; must match web `crypto.ts`. |
+| `aes-gcm` 0.10 + `hkdf` 0.12 + `sha2` 0.10 + `base64` 0.22 | AES-256-GCM secret encryption with HKDF-SHA256 key derivation purely in RAM; must match web `crypto.ts`. Zero OS Keychain prompts. |
+| `toml_edit` 0.22 | Format-preserving TOML manipulation for CLI configurations (e.g., Codex). |
+| `tauri-plugin-process` 2 | Process management and exit handling. |
 
 ## Frontend (package.json)
 
@@ -67,6 +69,6 @@ Every dependency and why it's here. App target: <30MB installed, Mac first (Wind
 
 ## Cloud + web portal
 
-- Desktop cloud deps are listed above (keyring, ulid, dotenvy, aes-gcm/hkdf/sha2/base64, reqwest). Identity is WorkOS; cloud DB is Turso (libSQL) reached over HTTP from the desktop via `cloud.rs`.
+- Desktop cloud deps are listed above (`libsql`, `ulid`, `dotenvy`, `aes-gcm`/`hkdf`/`sha2`/`base64`, `reqwest`). Identity is WorkOS (stored in SQLite `cloud_identity`); cloud DB is Turso reached via pure async libSQL (Hrana protocol) or HTTP fallback from the desktop via `cloud.rs`. Zero OS Keychain dependency.
 - Turso schema includes global catalog tables (`plugins`, `connector_catalog`, `mcp_catalog`, `commands_catalog`, `hooks_catalog`, `installed_plugins`) defined in `superconsole-web/src/db/schema.ts`. These are pushed via `node superconsole-web/scripts/push-catalog-tables.mjs` (direct Turso HTTP) rather than `drizzle-kit push` (interactive). `sync_manager::sync_catalogs` pulls them into local SQLite cache on every sync.
 - The web portal (`superconsole-web/`) is a separate stack: TanStack Start + React 19 on Cloudflare Workers, Drizzle ORM over `@libsql/client/web`, `@workos-inc/node`, wrangler. It must stay Workers-compatible (Web APIs only, no Node built-ins/native binaries). See `superconsole-web/TECH_STACK` notes inside its `PROJECT.md`.

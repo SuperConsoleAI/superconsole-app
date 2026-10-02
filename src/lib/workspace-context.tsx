@@ -1,3 +1,8 @@
+/**
+ * Workspace Context & Provider — Central state machine for workspaces and sessions
+ * Manages active workspaces, multi-tab lifecycle, session restoration, default session routing,
+ * and background agent state synchronization across the desktop runtime.
+ */
 import {
   createContext,
   useCallback,
@@ -89,7 +94,11 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   );
   const [openedIds, setOpenedIds] = useState<number[]>([]);
   const [tabsByWs, setTabsByWs] = useState<Record<number, SessionTab[]>>({});
+  const tabsByWsRef = useRef<Record<number, SessionTab[]>>({});
+  tabsByWsRef.current = tabsByWs;
   const [activeTabByWs, setActiveTabByWs] = useState<Record<number, string>>({});
+  const activeTabByWsRef = useRef<Record<number, string>>({});
+  activeTabByWsRef.current = activeTabByWs;
   const [liveSessions, setLiveSessions] = useState<Set<string>>(new Set());
   const [sessionInfos, setSessionInfos] = useState<Map<string, SessionInfo>>(new Map());
   const [addOpen, setAddOpen] = useState(false);
@@ -302,33 +311,57 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  // Track which workspaces have already had their default tab opened so that
-  // React StrictMode double-invocations don't create duplicate tabs.
-  const initializedWsRef = useRef<Set<number>>(new Set());
-
   const openWorkspace = useCallback(
     (id: number, defaultCli: string, runMode?: string) => {
       setOpenedIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
-      let tabToActivate = "";
+
+      const isChat = runMode === "chat" || defaultCli === "chat";
+      const targetCli = isChat ? "chat" : (defaultCli || "claude");
+
       setTabsByWs((prev) => {
         const tabs = prev[id] ?? [];
-        if (tabs.length === 0 && !initializedWsRef.current.has(id)) {
-          // Mark as initialized immediately to prevent double-open from StrictMode
-          initializedWsRef.current.add(id);
-          const isChat = runMode === "chat" || defaultCli === "chat";
-          const tabId = isChat ? `${id}:chat` : `${id}:${defaultCli}-${Date.now()}`;
-          tabToActivate = tabId;
-          const initialTab: SessionTab = isChat
-            ? { id: tabId, cli: "chat", label: "Chats" }
-            : { id: tabId, cli: defaultCli, label: cliLabel(defaultCli) };
+        const currentActiveTabId = activeTabByWsRef.current[id];
+        const currentActiveTab = tabs.find((t) => t.id === currentActiveTabId);
 
-          return { ...prev, [id]: [initialTab] };
+        let tabIdToActivate = "";
+        let tabToAdd: SessionTab | null = null;
+
+        if (isChat) {
+          if (currentActiveTab && currentActiveTab.cli === "chat") {
+            tabIdToActivate = currentActiveTab.id;
+          } else {
+            const existingChat = tabs.find((t) => t.cli === "chat");
+            if (existingChat) {
+              tabIdToActivate = existingChat.id;
+            } else {
+              const tabId = `${id}:chat`;
+              tabIdToActivate = tabId;
+              tabToAdd = { id: tabId, cli: "chat", label: "Chats" };
+            }
+          }
+        } else {
+          if (currentActiveTab && currentActiveTab.cli === targetCli) {
+            tabIdToActivate = currentActiveTab.id;
+          } else {
+            const existingCliTab = [...tabs].reverse().find((t) => t.cli === targetCli);
+            if (existingCliTab) {
+              tabIdToActivate = existingCliTab.id;
+            } else {
+              const tabId = `${id}:${targetCli}-${Date.now()}`;
+              tabIdToActivate = tabId;
+              tabToAdd = { id: tabId, cli: targetCli, label: cliLabel(targetCli) };
+            }
+          }
+        }
+
+        activeTabByWsRef.current[id] = tabIdToActivate;
+        setActiveTabByWs((a) => ({ ...a, [id]: tabIdToActivate }));
+
+        if (tabToAdd) {
+          return { ...prev, [id]: [...tabs, tabToAdd] };
         }
         return prev;
       });
-      if (tabToActivate) {
-        setActiveTabByWs((a) => (a[id] ? a : { ...a, [id]: tabToActivate }));
-      }
     },
     [],
   );
@@ -346,6 +379,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         const tabs = prev[workspaceId] ?? [];
         return { ...prev, [workspaceId]: [...tabs, tab] };
       });
+      activeTabByWsRef.current[workspaceId] = tab.id;
       setActiveTabByWs((a) => ({ ...a, [workspaceId]: tab.id }));
     },
     [],
@@ -357,7 +391,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       const tabs = (prev[workspaceId] ?? []).filter((t) => t.id !== tabId);
       setActiveTabByWs((a) => {
         if (a[workspaceId] !== tabId) return a;
-        return { ...a, [workspaceId]: tabs[tabs.length - 1]?.id ?? "" };
+        const nextId = tabs[tabs.length - 1]?.id ?? "";
+        activeTabByWsRef.current[workspaceId] = nextId;
+        return { ...a, [workspaceId]: nextId };
       });
       return { ...prev, [workspaceId]: tabs };
     });
@@ -369,6 +405,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const activateTab = useCallback((workspaceId: number, tabId: string) => {
+    activeTabByWsRef.current[workspaceId] = tabId;
     setActiveTabByWs((a) => ({ ...a, [workspaceId]: tabId }));
   }, []);
 
@@ -393,7 +430,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         targetProjectId,
       );
       setWorkspaces((prev) => [...prev, ws].sort((a, b) => a.name.localeCompare(b.name)));
-      openWorkspace(ws.id, cli);
+      openWorkspace(ws.id, ws.default_cli || cli, ws.default_run_mode);
       return ws;
     },
     [openWorkspace, activeOrgId, organizations],

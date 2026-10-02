@@ -5,25 +5,32 @@
 import { useState } from "react";
 import { useRouter } from "@tanstack/react-router";
 import {
+  AppWindow,
   BarChart3,
   Bot,
   Check,
   ChevronLeft,
   ChevronRight,
+  Copy,
+  Folder,
   FolderPlus,
   GalleryHorizontalEnd,
   Inbox,
   ListTodo,
   LogOut,
   Moon,
+  MoreVertical,
   Puzzle,
   Plus,
   RefreshCw,
   Search,
   Settings,
+  SlidersHorizontal,
   Sun,
+  Trash2,
   User,
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -50,7 +57,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useTheme } from "@/components/theme-provider";
-import { type Organization, type Workspace } from "@/lib/api";
+import { api, type Organization, type Workspace } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 
@@ -412,6 +419,19 @@ function OrgAccountMenuContent({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
 
+      <DropdownMenuItem
+        onSelect={() => {
+          const curOrg = organizations.find((o) => o.id === activeOrgId);
+          api.openWorkspaceWindow({
+            orgId: curOrg?.org_id ?? undefined,
+            title: `${curOrg?.name ?? "SuperConsole"} — SuperConsole`,
+          });
+        }}
+      >
+        <AppWindow className="h-3.5 w-3.5" />
+        Open in New Window
+      </DropdownMenuItem>
+
       <DropdownMenuSeparator />
 
       <DropdownMenuItem
@@ -466,6 +486,21 @@ export function Sidebar({
     setOrgDialogOpen(false);
   };
 
+  const handleToggleFlag = async (
+    e: React.MouseEvent,
+    wsId: number,
+    flags: { isActive?: boolean; isPublic?: boolean; showUsage?: boolean; showTeam?: boolean },
+  ) => {
+    e.stopPropagation();
+    try {
+      await api.updateWorkspaceFlags(wsId, flags);
+      router.invalidate();
+      window.dispatchEvent(new CustomEvent("app-refresh"));
+    } catch (err) {
+      console.error("Failed to update workspace flags:", err);
+    }
+  };
+
   const filteredWorkspaces = searchQuery.trim()
     ? workspaces.filter((ws) =>
       ws.name.toLowerCase().includes(searchQuery.toLowerCase().trim()),
@@ -476,7 +511,7 @@ export function Sidebar({
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
       {/* Top Search & Navigation row */}
       <div className="px-2 py-1">
-        <div className="flex h-8 items-center gap-1.5 rounded-md border border-border/70 bg-card/60 px-2 py-1 shadow-xs transition-colors focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/20">
+        <div className="flex h-8 items-center gap-1.5 rounded-md border border-border/70 bg-card/60 pl-2 pr-1 py-1 shadow-xs transition-colors focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/20">
           <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <input
             type="text"
@@ -659,7 +694,7 @@ export function Sidebar({
                 onClick={() => onSelect(ws.id)}
                 onKeyDown={(e) => e.key === "Enter" && onSelect(ws.id)}
                 className={cn(
-                  "relative flex cursor-pointer items-center gap-2 px-3 py-[0.7rem] transition-colors",
+                  "group relative flex cursor-pointer items-center gap-2 px-3 py-[0.65rem] transition-colors",
                   active ? "bg-accent" : "hover:bg-hover",
                 )}
               >
@@ -678,6 +713,179 @@ export function Sidebar({
                     <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
                   </span>
                 )}
+
+                {/* Workspace options dropdown (three dots) */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 opacity-0 transition-opacity hover:bg-background/80 hover:text-foreground group-hover:opacity-100 data-[state=open]:opacity-100"
+                      title="Workspace options"
+                    >
+                      <MoreVertical className="h-3.5 w-3.5" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="end"
+                    sideOffset={4}
+                    className="w-56"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <DropdownMenuItem
+                      onClick={() =>
+                        api.openWorkspaceWindow({
+                          workspaceId: ws.id,
+                          title: `${ws.name} — SuperConsole`,
+                        })
+                      }
+                      className="cursor-pointer"
+                    >
+                      <AppWindow className="mr-2 h-3.5 w-3.5 text-muted-foreground" />
+                      <span>Open in New Window</span>
+                    </DropdownMenuItem>
+
+                    <DropdownMenuItem
+                      onClick={() => {
+                        onSelect(ws.id);
+                        router.navigate({ to: "/settings", search: { tab: "project" } });
+                      }}
+                      className="cursor-pointer"
+                    >
+                      <Settings className="mr-2 h-3.5 w-3.5 text-muted-foreground" />
+                      <span>Project Settings</span>
+                    </DropdownMenuItem>
+
+                    <DropdownMenuSeparator />
+
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger className="cursor-pointer">
+                        <SlidersHorizontal className="mr-2 h-3.5 w-3.5 text-muted-foreground" />
+                        <span>Visibility & Flags</span>
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="w-52">
+                        <DropdownMenuItem
+                          onClick={(e) =>
+                            handleToggleFlag(e, ws.id, {
+                              isActive: !(ws.is_active ?? true),
+                            })
+                          }
+                          className="cursor-pointer flex items-center justify-between"
+                        >
+                          <span className="text-xs">Active Status</span>
+                          <span
+                            className={cn(
+                              "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                              (ws.is_active ?? true)
+                                ? "bg-emerald-500/15 text-emerald-500"
+                                : "bg-muted text-muted-foreground",
+                            )}
+                          >
+                            {(ws.is_active ?? true) ? "Active" : "Archived"}
+                          </span>
+                        </DropdownMenuItem>
+
+                        <DropdownMenuItem
+                          onClick={(e) =>
+                            handleToggleFlag(e, ws.id, {
+                              isPublic: !(ws.is_public ?? false),
+                            })
+                          }
+                          className="cursor-pointer flex items-center justify-between"
+                        >
+                          <span className="text-xs">Public Mode</span>
+                          <span
+                            className={cn(
+                              "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                              ws.is_public
+                                ? "bg-blue-500/15 text-blue-500"
+                                : "bg-muted text-muted-foreground",
+                            )}
+                          >
+                            {ws.is_public ? "Public" : "Private"}
+                          </span>
+                        </DropdownMenuItem>
+
+                        <DropdownMenuItem
+                          onClick={(e) =>
+                            handleToggleFlag(e, ws.id, {
+                              showUsage: !(ws.show_usage ?? true),
+                            })
+                          }
+                          className="cursor-pointer flex items-center justify-between"
+                        >
+                          <span className="text-xs">Show Usage</span>
+                          <span
+                            className={cn(
+                              "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                              (ws.show_usage ?? true)
+                                ? "bg-primary/15 text-primary"
+                                : "bg-muted text-muted-foreground",
+                            )}
+                          >
+                            {(ws.show_usage ?? true) ? "On" : "Off"}
+                          </span>
+                        </DropdownMenuItem>
+
+                        <DropdownMenuItem
+                          onClick={(e) =>
+                            handleToggleFlag(e, ws.id, {
+                              showTeam: !(ws.show_team ?? false),
+                            })
+                          }
+                          className="cursor-pointer flex items-center justify-between"
+                        >
+                          <span className="text-xs">Show Team</span>
+                          <span
+                            className={cn(
+                              "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                              ws.show_team
+                                ? "bg-primary/15 text-primary"
+                                : "bg-muted text-muted-foreground",
+                            )}
+                          >
+                            {ws.show_team ? "On" : "Off"}
+                          </span>
+                        </DropdownMenuItem>
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+
+                    <DropdownMenuSeparator />
+
+                    <DropdownMenuItem
+                      onClick={() => {
+                        navigator.clipboard.writeText(ws.path);
+                      }}
+                      className="cursor-pointer"
+                    >
+                      <Copy className="mr-2 h-3.5 w-3.5 text-muted-foreground" />
+                      <span>Copy Path</span>
+                    </DropdownMenuItem>
+
+                    <DropdownMenuItem
+                      onClick={() => {
+                        openUrl(`file://${ws.path}`);
+                      }}
+                      className="cursor-pointer"
+                    >
+                      <Folder className="mr-2 h-3.5 w-3.5 text-muted-foreground" />
+                      <span>Reveal in Finder</span>
+                    </DropdownMenuItem>
+
+                    {_onRemove && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => _onRemove(ws.id)}
+                          className="cursor-pointer text-destructive focus:text-destructive"
+                        >
+                          <Trash2 className="mr-2 h-3.5 w-3.5" />
+                          <span>Remove Workspace</span>
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             );
           })}

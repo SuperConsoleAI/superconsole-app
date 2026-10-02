@@ -336,6 +336,10 @@ async fn run_and_record(
             .state::<Db>()
             .get_setting("account_env_vars")
             .unwrap_or_default();
+        let mut account_env_pairs = app.state::<Db>().get_account_env_pairs();
+        if account_env_pairs.is_empty() {
+            account_env_pairs = crate::pty::parse_env_vars_json(&account_env_vars);
+        }
         let ws_path_for_hook = ws_path.clone();
         let command_for_hook = command.to_string();
         let output = tauri::async_runtime::spawn_blocking(move || {
@@ -345,7 +349,7 @@ async fn run_and_record(
             for (k, v) in crate::pty::parse_env_file(&Path::new(&ws_path).join(".env")) {
                 cmd.env(k, v);
             }
-            for (k, v) in crate::pty::parse_env_vars_json(&account_env_vars) {
+            for (k, v) in account_env_pairs {
                 cmd.env(k, v);
             }
             for (k, v) in crate::pty::extra_env_files(&ws_path, &account_env_files) {

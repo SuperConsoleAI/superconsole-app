@@ -110,10 +110,12 @@ pub fn local_db_list_tables(db: State<Db>) -> Result<Vec<LocalDbTableSummary>, S
 
         let category = if name.starts_with("account_")
             || name == "memory"
+            || name == "memory_vectors"
             || name == "wiki"
             || name == "context"
             || name == "skills"
             || name == "user_usage"
+            || name == "env_vars"
         {
             "account".to_string()
         } else if name.starts_with("org_") || name == "organizations" {
@@ -252,6 +254,19 @@ pub fn local_db_get_table_data(
         .unwrap_or(false);
     if !exists {
         return Err(format!("Table '{}' does not exist", table_name));
+    }
+
+    if table_name == "env_vars" {
+        if let Some(ref uid) = current_user_id {
+            let _ = conn.execute(
+                "UPDATE env_vars
+                 SET scope_id = ?1,
+                     user_id = CASE WHEN user_id IN ('local', 'Local', 'system') OR user_id IS NULL THEN ?1 ELSE user_id END,
+                     updated_by = ?1
+                 WHERE scope = 'account' AND (scope_id = 'local' OR user_id IN ('local', 'Local', 'system'));",
+                [uid],
+            );
+        }
     }
 
     let mut col_stmt = conn

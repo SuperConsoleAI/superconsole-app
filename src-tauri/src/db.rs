@@ -26,6 +26,14 @@ pub struct Workspace {
     pub repo_url: String,
     pub description: String,
     pub env_files: String,
+    #[serde(default = "default_true")]
+    pub is_active: bool,
+    #[serde(default)]
+    pub is_public: bool,
+    #[serde(default = "default_true")]
+    pub show_usage: bool,
+    #[serde(default)]
+    pub show_team: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +96,9 @@ fn default_json_arr() -> String {
 }
 fn default_max_attempts() -> i64 {
     1
+}
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,6 +425,20 @@ pub struct CachedWiki {
     pub content: String,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct EnvVarRecord {
+    pub id: i64,
+    pub scope: String,
+    pub scope_id: String,
+    pub key: String,
+    pub value: String,
+    pub is_secret: bool,
+    pub user_id: Option<String>,
+    pub updated_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 pub struct Db(pub Mutex<Connection>);
 
 impl Db {
@@ -439,6 +464,8 @@ impl Db {
         Ok(db)
     }
 
+    const WORKSPACE_SELECT_COLS: &'static str = "id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files, is_active, is_public, show_usage, show_team";
+
     fn workspace_from_row(r: &rusqlite::Row) -> rusqlite::Result<Workspace> {
         Ok(Workspace {
             id: r.get(0)?,
@@ -460,6 +487,10 @@ impl Db {
             repo_url: r.get(16)?,
             description: r.get(17)?,
             env_files: r.get(18)?,
+            is_active: r.get::<_, Option<i64>>(19)?.map(|v| v != 0).unwrap_or(true),
+            is_public: r.get::<_, Option<i64>>(20)?.map(|v| v != 0).unwrap_or(false),
+            show_usage: r.get::<_, Option<i64>>(21)?.map(|v| v != 0).unwrap_or(true),
+            show_team: r.get::<_, Option<i64>>(22)?.map(|v| v != 0).unwrap_or(false),
         })
     }
 
@@ -534,8 +565,9 @@ impl Db {
 
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>, String> {
         let conn = self.0.lock().unwrap();
+        let query = format!("SELECT {} FROM workspaces ORDER BY name", Self::WORKSPACE_SELECT_COLS);
         let mut stmt = conn
-            .prepare("SELECT id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces ORDER BY name")
+            .prepare(&query)
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], Self::workspace_from_row)
@@ -574,8 +606,9 @@ impl Db {
         )
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
+        let query = format!("SELECT {} FROM workspaces WHERE id = ?1", Self::WORKSPACE_SELECT_COLS);
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE id = ?1",
+            &query,
             [id],
             Self::workspace_from_row,
         )
@@ -1520,45 +1553,256 @@ impl Db {
 
     pub fn get_setting(&self, key: &str) -> Option<String> {
         let conn = self.0.lock().unwrap();
-        conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
-            r.get(0)
-        })
-        .ok()
+        let current_uid = Self::current_user_id_from_conn(&conn);
+        if let Some(uid) = current_uid {
+            conn.query_row(
+                "SELECT value FROM env_vars WHERE scope = 'account' AND (scope_id = ?1 OR scope_id = 'local') AND key = ?2 ORDER BY (scope_id = ?1) DESC LIMIT 1",
+                rusqlite::params![uid, key],
+                |r| r.get(0),
+            )
+            .ok()
+        } else {
+            conn.query_row(
+                "SELECT value FROM env_vars WHERE scope = 'account' AND key = ?1 ORDER BY rowid DESC LIMIT 1",
+                [key],
+                |r| r.get(0),
+            )
+            .ok()
+        }
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
-        let conn = self.0.lock().unwrap();
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
+        let current_uid = self.current_user_id();
+        let uid = current_uid.as_deref().unwrap_or("local");
+        self.set_env_var("account", uid, key, value, false, Some(uid))
     }
 
     pub fn delete_setting(&self, key: &str) -> Result<(), String> {
-        let conn = self.0.lock().unwrap();
-        conn.execute("DELETE FROM settings WHERE key = ?1", [key])
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        let current_uid = self.current_user_id();
+        let uid = current_uid.as_deref().unwrap_or("local");
+        self.delete_env_var("account", Some(uid), key)
     }
 
     pub fn all_settings(&self) -> Result<std::collections::HashMap<String, String>, String> {
         let conn = self.0.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT key, value FROM settings")
-            .map_err(|e| e.to_string())?;
+        let current_uid = Self::current_user_id_from_conn(&conn);
+        let (query, param): (String, Option<String>) = if let Some(uid) = current_uid {
+            (
+                "SELECT key, value FROM env_vars WHERE scope = 'account' AND (scope_id = ?1 OR scope_id = 'local')
+                 ORDER BY (scope_id = ?1) ASC".to_string(),
+                Some(uid),
+            )
+        } else {
+            (
+                "SELECT key, value FROM env_vars WHERE scope = 'account' ORDER BY rowid ASC".to_string(),
+                None,
+            )
+        };
+        let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+        let mut map = std::collections::HashMap::new();
+        if let Some(ref uid) = param {
+            let mut rows = stmt.query([uid]).map_err(|e| e.to_string())?;
+            while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                let k: String = row.get(0).map_err(|e| e.to_string())?;
+                let v: String = row.get(1).map_err(|e| e.to_string())?;
+                map.insert(k, v);
+            }
+        } else {
+            let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+            while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                let k: String = row.get(0).map_err(|e| e.to_string())?;
+                let v: String = row.get(1).map_err(|e| e.to_string())?;
+                map.insert(k, v);
+            }
+        }
+        Ok(map)
+    }
+
+    pub fn get_env_vars(&self, scope: Option<&str>, scope_id: Option<&str>) -> Result<Vec<EnvVarRecord>, String> {
+        let conn = self.0.lock().unwrap();
+        let current_uid = Self::current_user_id_from_conn(&conn);
+
+        let mut query = "SELECT id, scope, scope_id, key, value, is_secret, user_id, updated_by, created_at, updated_at FROM env_vars WHERE 1=1".to_string();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(s) = scope {
+            query.push_str(" AND scope = ?");
+            params.push(Box::new(s.to_string()));
+
+            if s == "account" {
+                if let Some(ref uid) = current_uid {
+                    query.push_str(" AND (scope_id = ? OR scope_id = 'local')");
+                    params.push(Box::new(uid.clone()));
+                } else if let Some(sid) = scope_id {
+                    query.push_str(" AND scope_id = ?");
+                    params.push(Box::new(sid.to_string()));
+                }
+            } else if let Some(sid) = scope_id {
+                query.push_str(" AND scope_id = ?");
+                params.push(Box::new(sid.to_string()));
+            }
+        } else if let Some(sid) = scope_id {
+            query.push_str(" AND scope_id = ?");
+            params.push(Box::new(sid.to_string()));
+        }
+        query.push_str(" ORDER BY key ASC");
+
+        let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .query_map(params_refs.as_slice(), |r| {
+                let is_sec_int: i64 = r.get(5)?;
+                Ok(EnvVarRecord {
+                    id: r.get(0)?,
+                    scope: r.get(1)?,
+                    scope_id: r.get(2)?,
+                    key: r.get(3)?,
+                    value: r.get(4)?,
+                    is_secret: is_sec_int != 0,
+                    user_id: r.get(6)?,
+                    updated_by: r.get(7)?,
+                    created_at: r.get(8)?,
+                    updated_at: r.get(9)?,
+                })
+            })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn set_env_var(
+        &self,
+        scope: &str,
+        scope_id: &str,
+        key: &str,
+        value: &str,
+        is_secret: bool,
+        user_id: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        let is_sec_int = if is_secret { 1 } else { 0 };
+        let active_user = Self::current_user_id_from_conn(&conn);
+        let uid = user_id
+            .filter(|u| !u.trim().is_empty() && *u != "local" && *u != "Local")
+            .or(active_user.as_deref())
+            .unwrap_or("local");
+
+        let effective_sid = if scope == "account" && (scope_id == "local" || scope_id.trim().is_empty()) {
+            active_user.as_deref().unwrap_or("local")
+        } else {
+            scope_id
+        };
+
+        let existing: Option<(i64, Option<String>)> = conn
+            .query_row(
+                "SELECT id, user_id FROM env_vars WHERE scope = ?1 AND (scope_id = ?2 OR scope_id = 'local') AND key = ?3 ORDER BY (scope_id = ?2) DESC LIMIT 1",
+                rusqlite::params![scope, effective_sid, key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+
+        if let Some((row_id, orig_creator)) = existing {
+            let creator = orig_creator
+                .filter(|c| !c.trim().is_empty() && c != "local" && c != "Local" && c != "system")
+                .unwrap_or_else(|| uid.to_string());
+
+            conn.execute(
+                "UPDATE env_vars
+                 SET scope_id = ?1, value = ?2, is_secret = ?3, user_id = ?4, updated_by = ?5, updated_at = datetime('now')
+                 WHERE id = ?6",
+                rusqlite::params![effective_sid, value, is_sec_int, creator, uid, row_id],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            conn.execute(
+                "INSERT INTO env_vars (scope, scope_id, key, value, is_secret, user_id, updated_by, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, datetime('now'), datetime('now'))",
+                rusqlite::params![scope, effective_sid, key, value, is_sec_int, uid],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_env_var(&self, scope: &str, scope_id: Option<&str>, key: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        let active_user = Self::current_user_id_from_conn(&conn);
+        if scope == "account" {
+            if let Some(ref uid) = active_user {
+                conn.execute(
+                    "DELETE FROM env_vars WHERE scope = 'account' AND (scope_id = ?1 OR scope_id = 'local') AND key = ?2",
+                    rusqlite::params![uid, key],
+                )
+            } else {
+                let sid = scope_id.unwrap_or("local");
+                conn.execute(
+                    "DELETE FROM env_vars WHERE scope = 'account' AND (scope_id = ?1 OR scope_id = 'local') AND key = ?2",
+                    rusqlite::params![sid, key],
+                )
+            }
+        } else {
+            let sid = scope_id.unwrap_or("local");
+            conn.execute(
+                "DELETE FROM env_vars WHERE scope = ?1 AND scope_id = ?2 AND key = ?3",
+                rusqlite::params![scope, sid, key],
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_account_env_pairs(&self) -> Vec<(String, String)> {
+        let conn = match self.0.lock() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let active_user = Self::current_user_id_from_conn(&conn);
+        let (query, param): (String, Option<String>) = if let Some(uid) = active_user {
+            (
+                "SELECT key, value FROM env_vars WHERE scope = 'account' AND (scope_id = ?1 OR scope_id = 'local')
+                 AND key NOT IN ('account_env_files', 'default_chat_provider', 'default_chat_model', 'telegram_token', 'telegram_chat_id', 'http_enabled', 'http_port', 'api_token')
+                 ORDER BY (scope_id = ?1) ASC, key ASC".to_string(),
+                Some(uid),
+            )
+        } else {
+            (
+                "SELECT key, value FROM env_vars WHERE scope = 'account'
+                 AND key NOT IN ('account_env_files', 'default_chat_provider', 'default_chat_model', 'telegram_token', 'telegram_chat_id', 'http_enabled', 'http_port', 'api_token')
+                 ORDER BY key ASC".to_string(),
+                None,
+            )
+        };
+        let mut stmt = match conn.prepare(&query) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let mut pairs = Vec::new();
+        if let Some(ref uid) = param {
+            if let Ok(mut rows) = stmt.query([uid]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let (Ok(k), Ok(v)) = (row.get(0), row.get(1)) {
+                        pairs.push((k, v));
+                    }
+                }
+            }
+        } else {
+            if let Ok(mut rows) = stmt.query([]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let (Ok(k), Ok(v)) = (row.get(0), row.get(1)) {
+                        pairs.push((k, v));
+                    }
+                }
+            }
+        }
+        pairs
     }
 
     pub fn find_workspace_by_name(&self, name: &str) -> Result<Workspace, String> {
         let conn = self.0.lock().unwrap();
+        let query = format!("SELECT {} FROM workspaces WHERE LOWER(name) = LOWER(?1)", Self::WORKSPACE_SELECT_COLS);
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE LOWER(name) = LOWER(?1)",
+            &query,
             [name],
             Self::workspace_from_row,
         )
@@ -1665,7 +1909,7 @@ impl Db {
     }
 
     pub fn set_cloud_identity(&self, payload: &str) -> Result<(), String> {
-        {
+        let active_uid = {
             let conn = self.0.lock().unwrap();
             conn.execute(
                 "INSERT INTO cloud_identity (id, payload) VALUES (1, ?1)
@@ -1673,23 +1917,42 @@ impl Db {
                 [payload],
             )
             .map_err(|e| e.to_string())?;
-        }
+            Self::current_user_id_from_conn(&conn)
+        };
         let _ = self.sync_organizations_from_cloud_identity();
+        if let Some(uid) = active_uid {
+            let conn = self.0.lock().unwrap();
+            let _ = conn.execute(
+                "UPDATE env_vars
+                 SET scope_id = ?1,
+                     user_id = CASE WHEN user_id IN ('local', 'Local', 'system') OR user_id IS NULL THEN ?1 ELSE user_id END,
+                     updated_by = ?1
+                 WHERE scope = 'account' AND (scope_id = 'local' OR user_id IN ('local', 'Local', 'system'));",
+                [&uid],
+            );
+        }
         Ok(())
     }
 
     pub fn get_cloud_identity(&self) -> Option<String> {
-        let conn = self.0.lock().unwrap();
+        let conn = self.0.lock().ok()?;
         conn.query_row("SELECT payload FROM cloud_identity WHERE id = 1", [], |r| {
             r.get(0)
         })
         .ok()
     }
 
-    pub fn current_user_id(&self) -> Option<String> {
-        let json = self.get_cloud_identity()?;
-        let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+    pub fn current_user_id_from_conn(conn: &rusqlite::Connection) -> Option<String> {
+        let payload: String = conn
+            .query_row("SELECT payload FROM cloud_identity WHERE id = 1", [], |r| r.get(0))
+            .ok()?;
+        let v: serde_json::Value = serde_json::from_str(&payload).ok()?;
         v["user"]["id"].as_str().map(String::from)
+    }
+
+    pub fn current_user_id(&self) -> Option<String> {
+        let conn = self.0.lock().ok()?;
+        Self::current_user_id_from_conn(&conn)
     }
 
     pub fn clear_cloud_identity(&self) -> Result<(), String> {
@@ -2335,6 +2598,56 @@ impl Db {
         tx.commit().map_err(|e| e.to_string())
     }
 
+    pub fn upsert_cached_llm_key(
+        &self,
+        scope: &str,
+        scope_id: &str,
+        key: &CachedLlmKey,
+        synced_at: &str,
+    ) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        match scope {
+            "project" => {
+                conn.execute(
+                    "INSERT INTO project_llm_keys (project_id, provider, credentials_encrypted, base_url, extra_env, synced_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(project_id, provider) DO UPDATE SET
+                       credentials_encrypted = excluded.credentials_encrypted,
+                       base_url = excluded.base_url,
+                       extra_env = excluded.extra_env,
+                       synced_at = excluded.synced_at",
+                    rusqlite::params![scope_id, key.provider, key.credentials_encrypted, key.base_url, key.extra_env, synced_at],
+                ).map_err(|e| e.to_string())?;
+            }
+            "org" => {
+                conn.execute(
+                    "INSERT INTO org_llm_keys (org_id, provider, credentials_encrypted, base_url, extra_env, synced_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(org_id, provider) DO UPDATE SET
+                       credentials_encrypted = excluded.credentials_encrypted,
+                       base_url = excluded.base_url,
+                       extra_env = excluded.extra_env,
+                       synced_at = excluded.synced_at",
+                    rusqlite::params![scope_id, key.provider, key.credentials_encrypted, key.base_url, key.extra_env, synced_at],
+                ).map_err(|e| e.to_string())?;
+            }
+            "account" => {
+                conn.execute(
+                    "INSERT INTO account_llm_keys (user_id, provider, credentials_encrypted, base_url, extra_env, synced_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(user_id, provider) DO UPDATE SET
+                       credentials_encrypted = excluded.credentials_encrypted,
+                       base_url = excluded.base_url,
+                       extra_env = excluded.extra_env,
+                       synced_at = excluded.synced_at",
+                    rusqlite::params![scope_id, key.provider, key.credentials_encrypted, key.base_url, key.extra_env, synced_at],
+                ).map_err(|e| e.to_string())?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub fn get_cached_llm_keys(&self, scope: &str, scope_id: &str) -> Vec<CachedLlmKey> {
         let conn = self.0.lock().unwrap();
         let query_res: rusqlite::Result<Vec<CachedLlmKey>> = match scope {
@@ -2845,8 +3158,56 @@ impl Db {
 
     pub fn get_workspace(&self, id: i64) -> Result<Workspace, String> {
         let conn = self.0.lock().unwrap();
+        let query = format!("SELECT {} FROM workspaces WHERE id = ?1", Self::WORKSPACE_SELECT_COLS);
         conn.query_row(
-            "SELECT id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files FROM workspaces WHERE id = ?1",
+            &query,
+            [id],
+            Self::workspace_from_row,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn update_workspace_flags(
+        &self,
+        id: i64,
+        is_active: Option<bool>,
+        is_public: Option<bool>,
+        show_usage: Option<bool>,
+        show_team: Option<bool>,
+    ) -> Result<Workspace, String> {
+        let conn = self.0.lock().unwrap();
+        if let Some(active) = is_active {
+            conn.execute(
+                "UPDATE workspaces SET is_active = ?1 WHERE id = ?2",
+                rusqlite::params![active as i64, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if let Some(public) = is_public {
+            conn.execute(
+                "UPDATE workspaces SET is_public = ?1 WHERE id = ?2",
+                rusqlite::params![public as i64, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if let Some(usage) = show_usage {
+            conn.execute(
+                "UPDATE workspaces SET show_usage = ?1 WHERE id = ?2",
+                rusqlite::params![usage as i64, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if let Some(team) = show_team {
+            conn.execute(
+                "UPDATE workspaces SET show_team = ?1 WHERE id = ?2",
+                rusqlite::params![team as i64, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        let query = format!("SELECT {} FROM workspaces WHERE id = ?1", Self::WORKSPACE_SELECT_COLS);
+        conn.query_row(
+            &query,
             [id],
             Self::workspace_from_row,
         )

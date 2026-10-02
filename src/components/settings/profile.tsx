@@ -143,6 +143,12 @@ export function ProfileSection({
                   Public Profile
                 </span>
               )}
+              {user.go_local === 1 && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2.5 py-0.5 text-[11px] font-medium text-blue-500">
+                  <HardDrive className="h-3 w-3" />
+                  Go Local (Local-Only Creds)
+                </span>
+              )}
               {user.off_platform === 1 && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2.5 py-0.5 text-[11px] font-medium text-amber-500">
                   <ShieldAlert className="h-3 w-3" />
@@ -266,11 +272,81 @@ export function ProfileSection({
         </div>
       </div>
 
+      {/* Go Local: Local-Only Credentials Mode */}
+      <GoLocalSection user={user} />
+
       {/* Public Profile Visibility & Web Card Preview */}
       <PublicProfileSection user={user} />
 
       {/* Off-Platform Isolation Mode */}
       <OffPlatformSection user={user} onNavigateSection={onNavigateSection} />
+    </div>
+  );
+}
+
+export function GoLocalSection({ user }: { user: AuthUser }) {
+  const [goLocal, setGoLocal] = useState(user.go_local === 1);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setGoLocal(user.go_local === 1);
+  }, [user.go_local]);
+
+  const toggleGoLocal = async (next: boolean) => {
+    setGoLocal(next);
+    setSaving(true);
+    setError(null);
+    try {
+      await api.updateUserProfile({ goLocal: next });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setError(String(e));
+      setGoLocal(!next);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border bg-card p-6 shadow-xs">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <HardDrive className="h-4 w-4 text-blue-500" />
+            Go Local (Local-Only Credentials)
+          </h3>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            When enabled, all model API keys, tokens, and connector secrets are saved locally only
+            on this machine and are never uploaded or saved to CentralDB.
+          </p>
+        </div>
+        <Toggle checked={goLocal} onChange={toggleGoLocal} disabled={saving} />
+      </div>
+
+      {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
+      {saved && (
+        <p className="mt-3 text-xs text-emerald-500 font-medium">
+          Local credential isolation preference saved!
+        </p>
+      )}
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border bg-muted/20 p-3 space-y-1">
+          <p className="text-xs font-semibold text-foreground">Zero Central Cloud Storage</p>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            CentralDB receives only empty/null placeholders. Your actual LLM and integration keys remain encrypted strictly on your local disk.
+          </p>
+        </div>
+        <div className="rounded-lg border bg-muted/20 p-3 space-y-1">
+          <p className="text-xs font-semibold text-foreground">Local SQLite Vault</p>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            SuperConsole uses device-bound keys to decrypt credentials on demand for local chat, tools, and agent executions.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

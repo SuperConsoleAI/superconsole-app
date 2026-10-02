@@ -287,6 +287,19 @@ fn is_user_off_platform(db: &Db) -> bool {
     v["user"]["off_platform"].as_i64().unwrap_or(0) == 1
 }
 
+pub fn is_user_go_local(db: &Db) -> bool {
+    if let Some(setting) = db.get_setting("go_local") {
+        if setting == "1" {
+            return true;
+        } else if setting == "0" {
+            return false;
+        }
+    }
+    let Some(json) = db.get_cloud_identity() else { return false; };
+    let Ok(v) = serde_json::from_str::<Value>(&json) else { return false; };
+    v["user"]["go_local"].as_i64().unwrap_or(0) == 1
+}
+
 pub fn userdb_config(db: &Db) -> Option<cloud::TursoConfig> {
     let raw = db.get_setting("userdb_url")?;
     let token = db.get_setting("userdb_token")?;
@@ -601,7 +614,10 @@ pub async fn set_connector(
         )
     };
     let off_platform = is_user_off_platform(&app.state::<Db>());
-    let cloud_encrypted = if off_platform {
+    let go_local = is_user_go_local(&app.state::<Db>());
+    let cloud_encrypted = if off_platform || go_local {
+        // Under off-platform or go-local isolation, credentials are kept strictly local
+        // and never saved to CentralDB.
         None
     } else {
         Some(encrypted.clone())

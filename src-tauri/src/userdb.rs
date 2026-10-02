@@ -426,35 +426,28 @@ pub async fn userdb_set_off_platform(
     // 3. Best-effort update centraldb userdb & users tables
     if let Ok(tcfg) = crate::cloud::turso_config() {
         if let Some(user_id_val) = cached_user_id(&db) {
-            let client = reqwest::Client::new();
-            let _ = crate::cloud::turso_execute(
-                &client,
-                &tcfg,
-                "UPDATE userdb SET off_platform = ? WHERE user_id = ?",
-                vec![Some(val_str.to_string()), Some(user_id_val.clone())],
-            )
-            .await;
-            let _ = crate::cloud::turso_execute(
-                &client,
-                &tcfg,
-                "UPDATE users SET off_platform = ? WHERE id = ?",
-                vec![Some(val_str.to_string()), Some(user_id_val.clone())],
-            )
-            .await;
+            if let Ok(conn) = crate::cloud::libsql_connect(&tcfg).await {
+                let _ = conn.execute(
+                    "UPDATE userdb SET off_platform = ?1 WHERE user_id = ?2",
+                    libsql::params![off_platform, user_id_val.clone()],
+                ).await;
+                let _ = conn.execute(
+                    "UPDATE users SET off_platform = ?1 WHERE id = ?2",
+                    libsql::params![off_platform, user_id_val.clone()],
+                ).await;
+            }
         }
     }
 
     // 4. Best-effort update userdb if configured
     if let Some(user_cfg) = resolve_userdb_config(&db) {
         if let Some(user_id_val) = cached_user_id(&db) {
-            let client = reqwest::Client::new();
-            let _ = crate::cloud::turso_execute(
-                &client,
-                &user_cfg,
-                "UPDATE users SET off_platform = ? WHERE id = ?",
-                vec![Some(val_str.to_string()), Some(user_id_val)],
-            )
-            .await;
+            if let Ok(conn) = crate::cloud::libsql_connect(&user_cfg).await {
+                let _ = conn.execute(
+                    "UPDATE users SET off_platform = ?1 WHERE id = ?2",
+                    libsql::params![off_platform, user_id_val],
+                ).await;
+            }
         }
     }
 

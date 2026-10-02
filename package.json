@@ -1,13 +1,18 @@
 {
   "name": "superconsole",
   "private": true,
-  "version": "0.0.4",
+  "version": "0.0.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "release": "node scripts/release.js",
+    "android:dev": "cargo tauri android dev -c src-tauri/tauri.android.conf.json",
+    "android:build": "cargo tauri android build --target aarch64 --apk",
+    "android:build:aab": "cargo tauri android build --target aarch64 --aab",
+    "build:desktop": "cargo tauri build"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "^5.2.8",

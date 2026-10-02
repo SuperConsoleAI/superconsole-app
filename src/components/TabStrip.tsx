@@ -2,6 +2,7 @@
  * TabStrip Component — Workspace session tabs (CLI, chat, file, browser)
  * Renders tab list, tab switches, and preset launches on the page background.
  */
+import { useMemo } from "react";
 import { MessageSquare, Plus, SquareTerminal, X, FileCode, Globe } from "lucide-react";
 import { CLI_PRESETS, type SessionTab } from "@/lib/api";
 import { PresetIcon } from "@/components/PresetIcon";
@@ -13,6 +14,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 
 interface TabStripProps {
@@ -32,6 +34,25 @@ export function TabStrip({
   onClose,
   onOpen,
 }: TabStripProps) {
+  const { auth } = useAuth();
+
+  // Filter presets to only those enabled in the user's profile preferences
+  const activePresets = useMemo(() => {
+    try {
+      if (auth?.user?.presets) {
+        const parsed = JSON.parse(auth.user.presets);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const set = new Set(parsed);
+          const filtered = CLI_PRESETS.filter((p) => set.has(p.id));
+          if (filtered.length > 0) return filtered;
+        }
+      }
+    } catch {
+      /* ignore JSON parse errors and fallback to all presets */
+    }
+    return CLI_PRESETS;
+  }, [auth?.user?.presets]);
+
   return (
     <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-background">
       <div
@@ -117,7 +138,7 @@ export function TabStrip({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-44">
-            {CLI_PRESETS.map((preset) => (
+            {activePresets.map((preset) => (
               <DropdownMenuItem key={preset.id} onSelect={() => onOpen(preset.id)}>
                 <PresetIcon preset={preset.id} className="h-3.5 w-3.5" />
                 {preset.label}
@@ -142,7 +163,7 @@ export function TabStrip({
 
       <div className="group relative flex items-center gap-0.5 border-l border-border px-1.5">
         <div className="pointer-events-none absolute right-[100%] mr-1 flex items-center gap-0.5 translate-x-2 opacity-0 transition-all duration-200 ease-in-out group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100">
-          {CLI_PRESETS.map((preset) => {
+          {activePresets.map((preset) => {
             const isOpen = tabs.some((t) => t.cli === preset.id);
             return (
               <Tooltip key={preset.id}>

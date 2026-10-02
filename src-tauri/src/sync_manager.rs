@@ -78,17 +78,33 @@ async fn sync_llm(
         }
     };
 
+    let db = app.state::<Db>();
+    let go_local = crate::connectors::is_user_go_local(&db);
+    let existing_keys = if go_local {
+        db.get_cached_llm_keys(scope, scope_id)
+    } else {
+        vec![]
+    };
+
     let keys: Vec<CachedLlmKey> = rows(&result)
         .iter()
-        .map(|row| CachedLlmKey {
-            provider: cell_text(row, 0),
-            credentials_encrypted: cell_opt(row, 1),
-            base_url: cell_opt(row, 2),
-            extra_env: cell_opt(row, 3),
+        .map(|row| {
+            let provider = cell_text(row, 0);
+            let mut cred = cell_opt(row, 1);
+            if go_local && (cred.is_none() || cred.as_deref() == Some("")) {
+                if let Some(existing) = existing_keys.iter().find(|k| k.provider == provider) {
+                    cred = existing.credentials_encrypted.clone();
+                }
+            }
+            CachedLlmKey {
+                provider,
+                credentials_encrypted: cred,
+                base_url: cell_opt(row, 2),
+                extra_env: cell_opt(row, 3),
+            }
         })
         .collect();
 
-    let db = app.state::<Db>();
     let _ = db.replace_cached_llm_keys(scope, scope_id, &keys, synced_at);
 }
 

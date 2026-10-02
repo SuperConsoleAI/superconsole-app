@@ -20,6 +20,10 @@ export interface Workspace {
   repo_url: string;
   description: string;
   env_files: string;
+  is_active?: boolean;
+  is_public?: boolean;
+  show_usage?: boolean;
+  show_team?: boolean;
 }
 
 export interface EnvEntry {
@@ -27,6 +31,19 @@ export interface EnvEntry {
   value: string;
   comment: string | null;
   is_secret: boolean;
+}
+
+export interface EnvVarRecord {
+  id: number;
+  scope: "account" | "org" | "project";
+  scope_id: string;
+  key: string;
+  value: string;
+  is_secret: boolean;
+  user_id: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface GitStatus {
@@ -121,6 +138,8 @@ export interface AuthUser {
   show_projects?: number;
   show_usage?: number;
   off_platform?: number;
+  go_local?: number;
+  presets?: string;
 }
 
 export interface CloudOrg {
@@ -527,6 +546,14 @@ export const CHAT_PROVIDERS = [
   },
 ] as const;
 
+export interface OpenrouterReasoningConfig {
+  mandatory?: boolean;
+  default_enabled?: boolean;
+  default_effort?: string;
+  supported_efforts?: string[];
+  supports_max_tokens?: boolean;
+}
+
 export interface OpenrouterModel {
   id: string;
   name: string;
@@ -534,6 +561,7 @@ export interface OpenrouterModel {
   prompt_price: number;
   completion_price: number;
   supports_reasoning: boolean;
+  reasoning?: OpenrouterReasoningConfig | null;
   created: number;
 }
 
@@ -905,6 +933,8 @@ export const api = {
     bio?: string;
     isPublic?: boolean;
     offPlatform?: boolean;
+    goLocal?: boolean;
+    presets?: string[];
   }) =>
     invoke<AuthInfo>("update_user_profile", {
       username: params.username,
@@ -913,8 +943,16 @@ export const api = {
       bio: params.bio,
       isPublic: params.isPublic,
       offPlatform: params.offPlatform,
+      goLocal: params.goLocal,
+      presets: params.presets,
     }),
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
+  openWorkspaceWindow: (params?: { workspaceId?: number; orgId?: string; title?: string }) =>
+    invoke<void>("open_workspace_window", {
+      workspaceId: params?.workspaceId,
+      orgId: params?.orgId,
+      title: params?.title,
+    }),
   addWorkspace: (
     name: string,
     path: string,
@@ -965,6 +1003,22 @@ export const api = {
     invoke<void>("update_workspace_cli", { id, cli }),
   updateWorkspace: (id: number, u: WorkspaceUpdate) =>
     invoke<void>("update_workspace", { id, ...u }),
+  updateWorkspaceFlags: (
+    id: number,
+    flags: {
+      isActive?: boolean;
+      isPublic?: boolean;
+      showUsage?: boolean;
+      showTeam?: boolean;
+    },
+  ) =>
+    invoke<Workspace>("update_workspace_flags", {
+      id,
+      isActive: flags.isActive,
+      isPublic: flags.isPublic,
+      showUsage: flags.showUsage,
+      showTeam: flags.showTeam,
+    }),
   setWorkspaceEnvFiles: (workspaceId: number, envFiles: string[]) =>
     invoke<void>("set_workspace_env_files", { workspaceId, envFiles }),
   readEnvFile: (workspaceId: number) =>
@@ -1106,6 +1160,26 @@ export const api = {
     invoke<SessionFeedItem | null>("get_inbox_session", { inboxId }),
   getSettings: () => invoke<Record<string, string>>("get_settings"),
   setSetting: (key: string, value: string) => invoke<void>("set_setting", { key, value }),
+  getEnvVars: (scope?: string, scopeId?: string) =>
+    invoke<EnvVarRecord[]>("get_env_vars", { scope: scope ?? null, scopeId: scopeId ?? null }),
+  setEnvVar: (
+    scope: string,
+    scopeId: string,
+    key: string,
+    value: string,
+    isSecret: boolean,
+    userId?: string,
+  ) =>
+    invoke<void>("set_env_var", {
+      scope,
+      scopeId,
+      key,
+      value,
+      isSecret,
+      userId: userId ?? null,
+    }),
+  deleteEnvVar: (scope: string, scopeId: string, key: string) =>
+    invoke<void>("delete_env_var", { scope, scopeId, key }),
   ensureWorkspaceProject: (workspaceId: number, cloudOrgId: string) =>
     invoke<string>("ensure_workspace_project", { workspaceId, cloudOrgId }),
   listLlmKeys: (scope: LlmScope, scopeId: string) =>
@@ -1130,6 +1204,8 @@ export const api = {
     }),
   deleteLlmKey: (scope: LlmScope, scopeId: string, provider: string) =>
     invoke<void>("delete_llm_key", { scope, scopeId, provider }),
+  testLlmKey: (provider: string, apiKey: string, baseUrl?: string | null) =>
+    invoke<string>("test_llm_key", { provider, apiKey, baseUrl }),
   syncCloudCache: () => invoke<void>("sync_cloud_cache"),
   syncOrgCache: (orgId: string) => invoke<void>("sync_org_cache", { orgId }),
   chatSend: (
@@ -1518,7 +1594,49 @@ export const api = {
     invoke<UserDbConfig>("userdb_set_off_platform", { offPlatform }),
   getUserDbStatus: () => invoke<UserDbStatus>("userdb_get_status"),
   syncUserDbAll: () => invoke<UserDbSyncStats>("userdb_sync_all"),
+
+  // ── Vector Memory (Native Semantic RAG via libSQL) ─────────────────────────
+  vectorMemoryUpsert: (entry: {
+    id: string;
+    workspaceId: number;
+    category: string;
+    slug: string;
+    title: string;
+    summary: string;
+    content: string;
+    embedding: number[];
+  }) => invoke<void>("vector_memory_upsert", entry),
+  vectorMemorySearch: (embedding: number[], workspaceId?: number, limit?: number) =>
+    invoke<MemoryVectorMatch[]>("vector_memory_search", { embedding, workspaceId, limit }),
+  vectorMemoryList: (workspaceId?: number, limit?: number) =>
+    invoke<MemoryVectorEntry[]>("vector_memory_list", { workspaceId, limit }),
+  vectorMemoryDelete: (id: string) =>
+    invoke<void>("vector_memory_delete", { id }),
 };
+
+export interface MemoryVectorEntry {
+  id: string;
+  workspaceId: number;
+  category: string;
+  slug: string;
+  title: string;
+  summary: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface MemoryVectorMatch {
+  id: string;
+  workspaceId: number;
+  category: string;
+  slug: string;
+  title: string;
+  summary: string;
+  content: string;
+  distance: number;
+  score: number;
+}
+
 
 // ── UserDB Types ─────────────────────────────────────────────────────────────
 

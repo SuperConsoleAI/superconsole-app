@@ -16,14 +16,50 @@ pub struct TelegramState(pub Arc<Mutex<HashSet<String>>>);
 pub const DEFAULT_HTTP_PORT: u16 = 4665;
 
 pub fn ensure_api_token(db: &Db) -> String {
-    if let Some(token) = db.get_setting("api_token") {
-        return token;
+    // 1. Try reading from dedicated api_tokens table
+    if let Ok(conn) = db.0.lock() {
+        if let Ok(token) = conn.query_row(
+            "SELECT token FROM api_tokens WHERE name = 'http_trigger' OR name = 'default' ORDER BY id ASC LIMIT 1",
+            [],
+            |r| r.get::<_, String>(0),
+        ) {
+            if !token.trim().is_empty() {
+                let _ = conn.execute(
+                    "INSERT INTO settings (key, value) VALUES ('api_token', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1",
+                    [&token],
+                );
+                return token;
+            }
+        }
     }
-    let token: String = rand::thread_rng()
+
+    // 2. Try legacy settings table
+    if let Some(token) = db.get_setting("api_token") {
+        if !token.trim().is_empty() {
+            if let Ok(conn) = db.0.lock() {
+                let _ = conn.execute(
+                    "INSERT INTO api_tokens (name, token, description) VALUES ('http_trigger', ?1, 'Local HTTP trigger auth token') ON CONFLICT(name) DO UPDATE SET token = ?1",
+                    [&token],
+                );
+            }
+            return token;
+        }
+    }
+
+    // 3. Generate new secure token and save to both api_tokens and settings
+    let rand_part: String = rand::thread_rng()
         .sample_iter(&rand::distributions::Alphanumeric)
-        .take(40)
+        .take(38)
         .map(char::from)
         .collect();
+    let token = format!("ct{}", rand_part);
+
+    if let Ok(conn) = db.0.lock() {
+        let _ = conn.execute(
+            "INSERT INTO api_tokens (name, token, description) VALUES ('http_trigger', ?1, 'Local HTTP trigger auth token') ON CONFLICT(name) DO UPDATE SET token = ?1",
+            [&token],
+        );
+    }
     let _ = db.set_setting("api_token", &token);
     token
 }

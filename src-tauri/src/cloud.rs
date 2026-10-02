@@ -124,6 +124,10 @@ pub async fn ensure_project_settings_columns(
         "ALTER TABLE projects ADD COLUMN script_auto_run INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN repo_url TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE projects ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE projects ADD COLUMN show_usage INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE projects ADD COLUMN show_team INTEGER NOT NULL DEFAULT 0",
     ] {
         let _ = turso_execute(client, cfg, stmt, vec![]).await;
     }
@@ -149,81 +153,6 @@ pub async fn libsql_connect(cfg: &TursoConfig) -> Result<libsql::Connection, Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
-
-    #[tokio::test]
-    async fn test_libsql_local_vector_memory() {
-        let temp = NamedTempFile::new().unwrap();
-        let db_path = temp.path().to_str().unwrap();
-
-        // 1. Initialize local embedded libSQL database
-        let db = libsql::Builder::new_local(db_path)
-            .build()
-            .await
-            .expect("Must build local libSQL database");
-        let conn = db.connect().expect("Must connect to local libSQL");
-
-        // 2. Create agent semantic memory table with vector embeddings
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS agent_memory_vectors (
-                id TEXT PRIMARY KEY,
-                category TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                embedding F32_BLOB(3)
-            )",
-            (),
-        )
-        .await
-        .expect("Must create vector table");
-
-        // 3. Insert memories with float vectors using vector32()
-        conn.execute(
-            "INSERT INTO agent_memory_vectors (id, category, summary, embedding)
-             VALUES (?1, ?2, ?3, vector32(?4))",
-            libsql::params![
-                "mem_1",
-                "auth",
-                "WorkOS cookie refresh lifecycle and loopback callback on port 4666",
-                "[0.9, 0.1, 0.0]"
-            ],
-        )
-        .await
-        .expect("Must insert vector memory 1");
-
-        conn.execute(
-            "INSERT INTO agent_memory_vectors (id, category, summary, embedding)
-             VALUES (?1, ?2, ?3, vector32(?4))",
-            libsql::params![
-                "mem_2",
-                "billing",
-                "Turso plan quotas and invoice calculation logic",
-                "[0.0, 0.9, 0.1]"
-            ],
-        )
-        .await
-        .expect("Must insert vector memory 2");
-
-        // 4. Perform semantic cosine similarity query: search for auth-related vector [1.0, 0.0, 0.0]
-        let mut rows = conn
-            .query(
-                "SELECT id, summary, vector_distance_cos(embedding, vector32(?1)) AS distance
-                 FROM agent_memory_vectors
-                 ORDER BY distance ASC
-                 LIMIT 1",
-                libsql::params!["[1.0, 0.0, 0.0]"],
-            )
-            .await
-            .expect("Must query vector similarities");
-
-        let best_match = rows.next().await.unwrap().expect("Must have a match");
-        let matched_id: String = best_match.get(0).unwrap();
-        let matched_summary: String = best_match.get(1).unwrap();
-        let distance: f64 = best_match.get(2).unwrap();
-
-        assert_eq!(matched_id, "mem_1");
-        assert!(matched_summary.contains("WorkOS"));
-        assert!(distance < 0.1, "Cosine distance to auth vector must be minimal");
-    }
 
     #[tokio::test]
     async fn test_libsql_remote_connection_if_configured() {

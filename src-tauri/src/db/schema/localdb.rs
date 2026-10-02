@@ -29,6 +29,10 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
         repo_url            TEXT NOT NULL DEFAULT '',
         description         TEXT NOT NULL DEFAULT '',
         env_files           TEXT NOT NULL DEFAULT '[]',
+        is_active           INTEGER NOT NULL DEFAULT 1,
+        is_public           INTEGER NOT NULL DEFAULT 0,
+        show_usage          INTEGER NOT NULL DEFAULT 1,
+        show_team           INTEGER NOT NULL DEFAULT 0,
         created_at          TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
 
@@ -94,12 +98,6 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE INDEX IF NOT EXISTS idx_session_history_session ON session_history (session_id)"#,
     r#"CREATE INDEX IF NOT EXISTS idx_session_history_user ON session_history (user_id)"#,
     r#"CREATE INDEX IF NOT EXISTS idx_session_history_project ON session_history (project_id)"#,
-
-    // ── settings ──────────────────────────────────────────────────────────────
-    r#"CREATE TABLE IF NOT EXISTS settings (
-        key                 TEXT PRIMARY KEY,
-        value               TEXT NOT NULL
-    )"#,
 
     // ── cloud_identity ────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS cloud_identity (
@@ -375,6 +373,21 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
         updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
         PRIMARY KEY (user_id, category, slug)
     )"#,
+
+    // ── memory_vectors (Agent Semantic Vector Memory) ──────────────────────────
+    r#"CREATE TABLE IF NOT EXISTS memory_vectors (
+        id                  TEXT PRIMARY KEY,
+        workspace_id        INTEGER NOT NULL DEFAULT 0,
+        category            TEXT NOT NULL,
+        slug                TEXT NOT NULL,
+        title               TEXT NOT NULL,
+        summary             TEXT NOT NULL,
+        content             TEXT NOT NULL,
+        embedding           BLOB NOT NULL,
+        created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    )"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_mem_vectors_ws ON memory_vectors (workspace_id)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_mem_vectors_cat ON memory_vectors (category)"#,
 
     // ── project_wiki (Local .superconsole/wiki/ metadata) ─────────────────────
     r#"CREATE TABLE IF NOT EXISTS project_wiki (
@@ -811,6 +824,33 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
         updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
     r#"CREATE INDEX IF NOT EXISTS idx_userdb_user ON userdb (user_id)"#,
+
+    // ── env_vars (Unified Environment Variables across account, org, project) ─
+    r#"CREATE TABLE IF NOT EXISTS env_vars (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope               TEXT NOT NULL CHECK (scope IN ('account', 'org', 'project')),
+        scope_id            TEXT NOT NULL,
+        key                 TEXT NOT NULL,
+        value               TEXT NOT NULL,
+        is_secret           INTEGER NOT NULL DEFAULT 0,
+        user_id             TEXT,
+        updated_by          TEXT,
+        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (scope, scope_id, key)
+    )"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_env_vars_scope ON env_vars (scope, scope_id)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_env_vars_user ON env_vars (user_id)"#,
+
+    // ── api_tokens (Dedicated table for local daemon & HTTP trigger tokens) ────
+    r#"CREATE TABLE IF NOT EXISTS api_tokens (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        name                TEXT NOT NULL UNIQUE,
+        token               TEXT NOT NULL,
+        description         TEXT NOT NULL DEFAULT '',
+        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        last_used_at        TEXT
+    )"#,
 ];
 
 /// Provisions and initializes all canonical local SQLite tables and indexes.
@@ -826,6 +866,10 @@ pub fn provision_local_database(conn: &Connection) -> Result<(), String> {
     let _ = conn.execute("ALTER TABLE plugins ADD COLUMN rule_ids TEXT NOT NULL DEFAULT '[]'", []);
     let _ = conn.execute("ALTER TABLE plugins ADD COLUMN connector_auth TEXT NOT NULL DEFAULT '[]'", []);
     let _ = conn.execute("ALTER TABLE plugins ADD COLUMN agents_url TEXT NOT NULL DEFAULT '[]'", []);
+    let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1", []);
+    let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN show_usage INTEGER NOT NULL DEFAULT 1", []);
+    let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN show_team INTEGER NOT NULL DEFAULT 0", []);
 
     // 1. Create all canonical tables and indexes
     for stmt in LOCAL_SCHEMA_STATEMENTS {
@@ -841,8 +885,66 @@ pub fn provision_local_database(conn: &Connection) -> Result<(), String> {
         [],
     );
 
-    // 4. Drop all deprecated cache / legacy tables
+    // 3. Migrate legacy settings into env_vars and api_tokens tables if settings table still exists
+    let settings_table_exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'",
+            [],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if settings_table_exists {
+        // Migrate account_env_vars JSON
+        if let Ok(raw_json) = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'account_env_vars'",
+            [],
+            |r| r.get::<_, String>(0),
+        ) {
+            if let Ok(vars) = serde_json::from_str::<Vec<serde_json::Value>>(&raw_json) {
+                for v in vars {
+                    if let (Some(k), Some(val)) = (v.get("key").and_then(|x| x.as_str()), v.get("value").and_then(|x| x.as_str())) {
+                        if !k.trim().is_empty() {
+                            let is_secret = if k.to_uppercase().contains("KEY") || k.to_uppercase().contains("SECRET") || k.to_uppercase().contains("TOKEN") || k.to_uppercase().contains("PASSWORD") { 1 } else { 0 };
+                            let _ = conn.execute(
+                                "INSERT OR IGNORE INTO env_vars (scope, scope_id, key, value, is_secret, user_id, updated_by) VALUES ('account', 'local', ?1, ?2, ?3, 'system', 'system')",
+                                rusqlite::params![k.trim(), val, is_secret],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Migrate api_token into api_tokens table
+        if let Ok(token) = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'api_token'",
+            [],
+            |r| r.get::<_, String>(0),
+        ) {
+            if !token.trim().is_empty() {
+                let _ = conn.execute(
+                    "INSERT OR IGNORE INTO api_tokens (name, token, description) VALUES ('http_trigger', ?1, 'Local HTTP trigger auth token')",
+                    [&token],
+                );
+            }
+        }
+
+        // Migrate all remaining settings (default_chat_provider, http_port, telegram_token, etc.) into env_vars
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO env_vars (scope, scope_id, key, value, is_secret, user_id, updated_by)
+             SELECT 'account', 'local', key, value,
+                    CASE WHEN UPPER(key) LIKE '%KEY%' OR UPPER(key) LIKE '%SECRET%' OR UPPER(key) LIKE '%TOKEN%' OR UPPER(key) LIKE '%PASSWORD%' THEN 1 ELSE 0 END,
+                    'system', 'system'
+             FROM settings
+             WHERE key != 'account_env_vars' AND key != 'api_token'",
+            [],
+        );
+    }
+
+    // 4. Drop all deprecated cache / legacy tables (including legacy settings table)
     let obsolete_tables = [
+        "settings",
         "project_session_history",
         "project_chat_sessions",
         "connectors_cache",
@@ -873,6 +975,26 @@ pub fn provision_local_database(conn: &Connection) -> Result<(), String> {
         let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", tbl), []);
     }
 
+    // 5. If user is already authenticated via cloud_identity, attribute any legacy 'local' env_vars to active user
+    let active_user_id: Option<String> = conn
+        .query_row("SELECT payload FROM cloud_identity WHERE id = 1", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|payload| {
+            let v: serde_json::Value = serde_json::from_str(&payload).ok()?;
+            v["user"]["id"].as_str().map(String::from)
+        });
+
+    if let Some(ref uid) = active_user_id {
+        let _ = conn.execute(
+            "UPDATE env_vars
+             SET scope_id = ?1,
+                 user_id = CASE WHEN user_id IN ('local', 'Local', 'system') OR user_id IS NULL THEN ?1 ELSE user_id END,
+                 updated_by = ?1
+             WHERE scope = 'account' AND (scope_id = 'local' OR user_id IN ('local', 'Local', 'system'));",
+            [uid],
+        );
+    }
+
     Ok(())
 }
 
@@ -884,7 +1006,6 @@ pub fn get_canonical_table_names() -> &'static [&'static str] {
         "organizations",
         "jobs",
         "session_history",
-        "settings",
         "cloud_identity",
         "inbox",
         "chat_messages",
@@ -902,6 +1023,7 @@ pub fn get_canonical_table_names() -> &'static [&'static str] {
         "project_memory",
         "org_memory",
         "memory",
+        "memory_vectors",
         "project_wiki",
         "org_wiki",
         "wiki",
@@ -929,6 +1051,8 @@ pub fn get_canonical_table_names() -> &'static [&'static str] {
         "account_connectors",
         "project_org_cache",
         "userdb",
+        "env_vars",
+        "api_tokens",
     ]
 }
 
@@ -975,7 +1099,7 @@ mod tests {
         assert!(provision_local_database(&conn).is_ok());
 
         let canonical_tables = get_canonical_table_names();
-        assert_eq!(canonical_tables.len(), 49);
+        assert_eq!(canonical_tables.len(), 51);
 
         // Verify every canonical table exists in sqlite_master
         for table in canonical_tables {
