@@ -1590,7 +1590,7 @@ async fn fetch_cloud_row(
     Some(out)
 }
 
-async fn write_cloud_row(
+pub async fn write_cloud_row(
     client: &reqwest::Client,
     cfg: &cloud::TursoConfig,
     table: &str,
@@ -1653,58 +1653,136 @@ async fn push_one(
     true
 }
 
-/// Push an event's delta to the shared Turso totals (project -> org -> account)
-/// and mirror locally. Marks the event synced only if every level succeeded.
+async fn push_one_remote(
+    client: &reqwest::Client,
+    cfg: &cloud::TursoConfig,
+    table: &str,
+    id: &str,
+    ev: &UsageEvent,
+    level: &str,
+    project_name: Option<&str>,
+) -> bool {
+    let mut row = fetch_cloud_row(client, cfg, table, id)
+        .await
+        .unwrap_or_else(|| zero_row(id));
+    row["id"] = json!(id);
+    apply_event(&mut row, ev, level, project_name);
+    write_cloud_row(client, cfg, table, &row).await.is_ok()
+}
+
+/// Push an event's delta to the shared Turso totals (project -> org -> user -> account)
+/// in Central Cloud and UserDB (if connected), and mirror locally.
 pub async fn push_event_to_cloud(app: &AppHandle, ev: &UsageEvent) {
-    let Ok(cfg) = cloud::turso_config() else {
-        return;
-    };
     let client = reqwest::Client::new();
-    if ensure_usage_tables(&client, &cfg).await.is_err() {
-        return;
+    let mut synced_any = false;
+
+    // 1. Central Cloud push
+    if let Ok(cfg) = cloud::turso_config() {
+        if ensure_usage_tables(&client, &cfg).await.is_ok() {
+            let mut central_ok = true;
+            if !ev.project_id.is_empty() {
+                central_ok &= push_one(
+                    app,
+                    &client,
+                    &cfg,
+                    "project_usage",
+                    &ev.project_id,
+                    ev,
+                    "project",
+                    None,
+                )
+                .await;
+            }
+            if let Some(org) = ev.org_id.clone() {
+                central_ok &= push_one(app, &client, &cfg, "org_usage", &org, ev, "org", None).await;
+            }
+            if let Some(uid) = ev.user_id.clone() {
+                central_ok &= push_one(
+                    app,
+                    &client,
+                    &cfg,
+                    "user_usage",
+                    &uid,
+                    ev,
+                    "user",
+                    None,
+                )
+                .await;
+            }
+            central_ok &= push_one(
+                app,
+                &client,
+                &cfg,
+                "account_usage",
+                "total",
+                ev,
+                "account",
+                None,
+            )
+            .await;
+            if central_ok {
+                synced_any = true;
+            }
+        }
     }
-    let mut ok = true;
-    if !ev.project_id.is_empty() {
-        ok &= push_one(
-            app,
-            &client,
-            &cfg,
-            "project_usage",
-            &ev.project_id,
-            ev,
-            "project",
-            None,
-        )
-        .await;
+
+    // 2. UserDB push (if userdb connected, pass all 4 usage tables to UserDB as well!)
+    if let Some(user_cfg) = crate::connectors::userdb_config(&app.state::<Db>()) {
+        if ensure_usage_tables(&client, &user_cfg).await.is_ok() {
+            let mut userdb_ok = true;
+            if !ev.project_id.is_empty() {
+                userdb_ok &= push_one_remote(
+                    &client,
+                    &user_cfg,
+                    "project_usage",
+                    &ev.project_id,
+                    ev,
+                    "project",
+                    None,
+                )
+                .await;
+            }
+            if let Some(org) = ev.org_id.clone() {
+                userdb_ok &= push_one_remote(
+                    &client,
+                    &user_cfg,
+                    "org_usage",
+                    &org,
+                    ev,
+                    "org",
+                    None,
+                )
+                .await;
+            }
+            if let Some(uid) = ev.user_id.clone() {
+                userdb_ok &= push_one_remote(
+                    &client,
+                    &user_cfg,
+                    "user_usage",
+                    &uid,
+                    ev,
+                    "user",
+                    None,
+                )
+                .await;
+            }
+            userdb_ok &= push_one_remote(
+                &client,
+                &user_cfg,
+                "account_usage",
+                "total",
+                ev,
+                "account",
+                None,
+            )
+            .await;
+            if userdb_ok {
+                synced_any = true;
+            }
+        }
     }
-    if let Some(org) = ev.org_id.clone() {
-        ok &= push_one(app, &client, &cfg, "org_usage", &org, ev, "org", None).await;
-    }
-    if let Some(uid) = ev.user_id.clone() {
-        ok &= push_one(
-            app,
-            &client,
-            &cfg,
-            "user_usage",
-            &uid,
-            ev,
-            "user",
-            None,
-        )
-        .await;
-    }
-    ok &= push_one(
-        app,
-        &client,
-        &cfg,
-        "account_usage",
-        "total",
-        ev,
-        "account",
-        None,
-    )
-    .await;
-    if ok {
+
+    if synced_any {
         let db = app.state::<Db>();
         let _ = db.mark_usage_synced(&[ev.id.clone()]);
     }

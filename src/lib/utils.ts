@@ -58,3 +58,28 @@ export function extractCleanResumeId(raw?: string | null): string {
   return s.trim();
 }
 
+/**
+ * Resolves the currently active or last selected workspace ID from search param or sessionStorage.
+ */
+export function getActiveWorkspaceFilter(paramWs?: number | null): number | null {
+  if (typeof paramWs === "number" && !isNaN(paramWs) && paramWs > 0) {
+    sessionStorage.setItem("superconsole-active-ws", String(paramWs));
+    return paramWs;
+  }
+  const saved = sessionStorage.getItem("superconsole-active-ws");
+  if (saved) {
+    const n = Number(saved);
+    if (!isNaN(n) && n > 0) return n;
+  }
+  return null;
+}
+
+export function setActiveWorkspaceFilter(id: number | null) {
+  if (id && id > 0) {
+    sessionStorage.setItem("superconsole-active-ws", String(id));
+  } else {
+    sessionStorage.removeItem("superconsole-active-ws");
+  }
+}
+
+

@@ -241,13 +241,16 @@ pub async fn install_plugin(
 
 /// Uninstall a plugin (removes DB record; skill/hook files left intact for safety).
 #[tauri::command]
-pub fn uninstall_plugin(
-    db: tauri::State<Db>,
+pub async fn uninstall_plugin(
+    app: tauri::AppHandle,
     scope: String,
     scope_id: String,
     plugin_id: String,
 ) -> Result<(), String> {
-    db.remove_installed_plugin(&scope, &scope_id, &plugin_id)
+    let db = app.state::<Db>();
+    db.remove_installed_plugin(&scope, &scope_id, &plugin_id)?;
+    crate::userdb::delete_installed_plugin_from_userdb(&app, &scope, &scope_id, &plugin_id).await;
+    Ok(())
 }
 
 /// List plugins installed in a workspace.
@@ -771,6 +774,9 @@ async fn do_install_plugin(
 
     // ── 5. Record installation ───────────────────────────────────────────────
     db.record_installed_plugin(scope, scope_id, &entry)?;
+
+    // Mirror to UserDB if connected
+    crate::userdb::sync_installed_plugin_to_userdb(app, scope, scope_id, &entry).await;
 
     Ok(())
 }

@@ -186,7 +186,7 @@ export function JobsDialog({
   const thisWorkspace = workspaces.find((w) => w.id === workspaceId);
   const ws = thisWorkspace ?? ({ id: workspaceId, name: "Project", organization_id: 0, created_at: "" } as Workspace);
   const wsArr: Workspace[] = workspaces.length > 0 ? workspaces : [ws];
-  const orgArr: Organization[] = organizations.length > 0 ? organizations : [{ id: 0, name: "Org", created_at: "" } as Organization];
+  const orgArr: Organization[] = organizations.length > 0 ? organizations : [{ id: 0, org_id: null, name: "Org", created_at: "" } as Organization];
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) setEditJob(null); onOpenChange(o); }}>

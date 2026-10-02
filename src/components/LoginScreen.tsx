@@ -1,15 +1,14 @@
-import { Anchor, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
+import appIconUrl from "@/assets/app-icon.svg";
 
 export function LoginScreen() {
   const { signIn, pending, error } = useAuth();
 
   return (
     <div className="flex h-screen w-screen flex-col items-center justify-center gap-6 bg-background text-foreground">
-      <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
-        <Anchor className="h-8 w-8 text-primary" />
-      </span>
+      <img src={appIconUrl} className="h-16 w-16 drop-shadow-sm" alt="SuperConsole" />
       <div className="text-center">
         <h1 className="font-display text-2xl font-semibold tracking-tight">
           Sign in to SuperConsole

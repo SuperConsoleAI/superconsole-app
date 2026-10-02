@@ -277,8 +277,22 @@ Check your provider dashboard for exact billing.
 `;
 }
 
-export function UsageView({ workspaces }: { workspaces: Workspace[] }) {
+import { getActiveWorkspaceFilter } from "@/lib/utils";
+
+export function UsageView({
+  initialWorkspaceId,
+  workspaces,
+}: {
+  initialWorkspaceId?: number;
+  workspaces: Workspace[];
+}) {
   const { auth, activeCloudOrg } = useAuth();
+  const activeWsId = getActiveWorkspaceFilter(initialWorkspaceId);
+  const cloudWorkspaces = useMemo(
+    () => workspaces.filter((w) => w.project_id),
+    [workspaces],
+  );
+  const targetWs = activeWsId ? cloudWorkspaces.find((w) => w.id === activeWsId) : null;
   const [level, setLevel] = useState<UsageLevel>("project");
   const [period, setPeriod] = useState<Period>("all");
   const [heatMode, setHeatMode] = useState<"tokens" | "cost">("tokens");
@@ -286,20 +300,17 @@ export function UsageView({ workspaces }: { workspaces: Workspace[] }) {
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-
-  const cloudWorkspaces = useMemo(
-    () => workspaces.filter((w) => w.project_id),
-    [workspaces],
-  );
   const [projectId, setProjectId] = useState<string | null>(
-    cloudWorkspaces[0]?.project_id ?? null,
+    targetWs?.project_id ?? cloudWorkspaces[0]?.project_id ?? null,
   );
 
   useEffect(() => {
-    if (!projectId && cloudWorkspaces.length > 0) {
+    if (targetWs?.project_id && targetWs.project_id !== projectId) {
+      setProjectId(targetWs.project_id);
+    } else if (!projectId && cloudWorkspaces.length > 0) {
       setProjectId(cloudWorkspaces[0].project_id as string);
     }
-  }, [cloudWorkspaces, projectId]);
+  }, [cloudWorkspaces, projectId, targetWs]);
 
   // Org viewed for analytics; independent of the active cloud org so users can
   // inspect any org's usage without switching their working context.

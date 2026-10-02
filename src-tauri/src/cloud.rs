@@ -129,3 +129,114 @@ pub async fn ensure_project_settings_columns(
     }
     Ok(())
 }
+
+/// Establish a strongly-typed connection to a remote Turso database (CentralDB or UserDB)
+/// using the official libSQL client with connection pooling and typed parameters.
+pub async fn libsql_connect(cfg: &TursoConfig) -> Result<libsql::Connection, String> {
+    let clean_url = cfg
+        .url
+        .trim()
+        .replacen("libsql://", "https://", 1)
+        .replacen("wss://", "https://", 1);
+    let db = libsql::Builder::new_remote(clean_url, cfg.token.clone())
+        .build()
+        .await
+        .map_err(|e| format!("Failed to build libSQL client: {}", e))?;
+    db.connect()
+        .map_err(|e| format!("Failed to connect via libSQL: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn test_libsql_local_vector_memory() {
+        let temp = NamedTempFile::new().unwrap();
+        let db_path = temp.path().to_str().unwrap();
+
+        // 1. Initialize local embedded libSQL database
+        let db = libsql::Builder::new_local(db_path)
+            .build()
+            .await
+            .expect("Must build local libSQL database");
+        let conn = db.connect().expect("Must connect to local libSQL");
+
+        // 2. Create agent semantic memory table with vector embeddings
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_memory_vectors (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                embedding F32_BLOB(3)
+            )",
+            (),
+        )
+        .await
+        .expect("Must create vector table");
+
+        // 3. Insert memories with float vectors using vector32()
+        conn.execute(
+            "INSERT INTO agent_memory_vectors (id, category, summary, embedding)
+             VALUES (?1, ?2, ?3, vector32(?4))",
+            libsql::params![
+                "mem_1",
+                "auth",
+                "WorkOS cookie refresh lifecycle and loopback callback on port 4666",
+                "[0.9, 0.1, 0.0]"
+            ],
+        )
+        .await
+        .expect("Must insert vector memory 1");
+
+        conn.execute(
+            "INSERT INTO agent_memory_vectors (id, category, summary, embedding)
+             VALUES (?1, ?2, ?3, vector32(?4))",
+            libsql::params![
+                "mem_2",
+                "billing",
+                "Turso plan quotas and invoice calculation logic",
+                "[0.0, 0.9, 0.1]"
+            ],
+        )
+        .await
+        .expect("Must insert vector memory 2");
+
+        // 4. Perform semantic cosine similarity query: search for auth-related vector [1.0, 0.0, 0.0]
+        let mut rows = conn
+            .query(
+                "SELECT id, summary, vector_distance_cos(embedding, vector32(?1)) AS distance
+                 FROM agent_memory_vectors
+                 ORDER BY distance ASC
+                 LIMIT 1",
+                libsql::params!["[1.0, 0.0, 0.0]"],
+            )
+            .await
+            .expect("Must query vector similarities");
+
+        let best_match = rows.next().await.unwrap().expect("Must have a match");
+        let matched_id: String = best_match.get(0).unwrap();
+        let matched_summary: String = best_match.get(1).unwrap();
+        let distance: f64 = best_match.get(2).unwrap();
+
+        assert_eq!(matched_id, "mem_1");
+        assert!(matched_summary.contains("WorkOS"));
+        assert!(distance < 0.1, "Cosine distance to auth vector must be minimal");
+    }
+
+    #[tokio::test]
+    async fn test_libsql_remote_connection_if_configured() {
+        if let Ok(cfg) = turso_config() {
+            let conn = libsql_connect(&cfg).await.expect("Must connect to remote Turso");
+            let mut rows = conn
+                .query("SELECT 1", ())
+                .await
+                .expect("Must query remote Turso via libSQL");
+            let row = rows.next().await.unwrap().expect("Must return row");
+            let val: i64 = row.get(0).unwrap();
+            assert_eq!(val, 1);
+        }
+    }
+}
+

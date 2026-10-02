@@ -1,3 +1,7 @@
+/**
+ * Root Router Configuration — Handles navigation, workspace state synchronization,
+ * route definitions, layout composition, and global shortcuts.
+ */
 import { useEffect, useState } from "react";
 import {
   createMemoryHistory,
@@ -12,7 +16,7 @@ import {
 } from "@tanstack/react-router";
 import { listen } from "@tauri-apps/api/event";
 
-import { cn } from "@/lib/utils";
+import { cn, getActiveWorkspaceFilter, setActiveWorkspaceFilter } from "@/lib/utils";
 import { api, type Agent } from "@/lib/api";
 import { InboxView } from "@/components/InboxView";
 import { Sidebar, SidebarRail } from "@/components/Sidebar";
@@ -35,7 +39,6 @@ import { Button } from "@/components/ui/button";
 import { LoginScreen } from "@/components/LoginScreen";
 import { WorkspaceProvider, useWorkspaces } from "@/lib/workspace-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
-import { Anchor as AnchorIcon } from "lucide-react";
 import appIconUrl from "@/assets/app-icon.svg";
 import { CustomizePage } from "@/components/CustomizePage";
 
@@ -139,11 +142,16 @@ function Shell() {
 
   useEffect(() => {
     if (activeId !== null) {
+      setActiveWorkspaceFilter(activeId);
       api.ensureMcpConfig(activeId).catch(() => {});
     }
   }, [activeId]);
 
+  const currentWsId = activeId ?? getActiveWorkspaceFilter() ?? (openedIds.length ? openedIds[openedIds.length - 1] : undefined);
+  const navWsSearch = currentWsId ? { ws: currentWsId } : {};
+
   const goToWorkspace = (id: number, extra?: Partial<WorkspaceSearch>) => {
+    setActiveWorkspaceFilter(id);
     const ws = workspaces.find((w) => w.id === id);
     openWorkspace(id, ws?.default_cli || ws?.cli || "claude", ws?.default_run_mode);
     navigate({
@@ -153,8 +161,19 @@ function Shell() {
     });
   };
 
-  const handleAdd = async (name: string, path: string, cli: string) => {
-    const ws = await addWorkspace(name, path, cli);
+  const { auth } = useAuth();
+  const activeOrg = organizations.find((o) => o.id === activeOrgId);
+  const activeCloudOrgId = activeOrg?.org_id ?? auth?.orgs?.[0]?.id ?? null;
+
+  const handleAdd = async (
+    name: string,
+    path: string,
+    cli: string,
+    orgId?: string | null,
+    projectId?: string | null,
+  ) => {
+    const targetCloudOrgId = orgId ?? activeCloudOrgId;
+    const ws = await addWorkspace(name, path, cli, activeOrgId, targetCloudOrgId, projectId);
     if (pendingAgent) {
       await api.installCatalogAgent(ws.id, pendingAgent).catch(() => {});
       setPendingAgent(null);
@@ -231,14 +250,14 @@ function Shell() {
             onSelect={(id) => goToWorkspace(id)}
             onAdd={() => setAddOpen(true)}
             onRemove={handleRemove}
-            onInbox={() => navigate({ to: "/inbox" })}
-            onTasks={() => navigate({ to: "/tasks" })}
-            onSessions={() => navigate({ to: "/sessions" })}
-            onUsage={() => navigate({ to: "/usage" })}
-            onAgents={() => navigate({ to: "/agents" })}
+            onInbox={() => navigate({ to: "/inbox", search: navWsSearch })}
+            onTasks={() => navigate({ to: "/tasks", search: navWsSearch })}
+            onSessions={() => navigate({ to: "/sessions", search: navWsSearch })}
+            onUsage={() => navigate({ to: "/usage", search: navWsSearch })}
+            onAgents={() => navigate({ to: "/agents", search: navWsSearch })}
             customizeActive={customizeActive}
-            onCustomize={() => navigate({ to: "/customize", search: activeId ? { ws: activeId } : {} })}
-            onSettings={() => navigate({ to: "/settings" })}
+            onCustomize={() => navigate({ to: "/customize", search: navWsSearch })}
+            onSettings={() => navigate({ to: "/settings", search: navWsSearch })}
           />
         ) : sidebarState === "rail" ? (
           <SidebarRail
@@ -263,13 +282,13 @@ function Shell() {
             onExpand={() => setSidebarState("open")}
             onSelect={(id) => goToWorkspace(id)}
             onAdd={() => setAddOpen(true)}
-            onInbox={() => navigate({ to: "/inbox" })}
-            onTasks={() => navigate({ to: "/tasks" })}
-            onSessions={() => navigate({ to: "/sessions" })}
-            onUsage={() => navigate({ to: "/usage" })}
-            onAgents={() => navigate({ to: "/agents" })}
-            onCustomize={() => navigate({ to: "/customize", search: activeId ? { ws: activeId } : {} })}
-            onSettings={() => navigate({ to: "/settings" })}
+            onInbox={() => navigate({ to: "/inbox", search: navWsSearch })}
+            onTasks={() => navigate({ to: "/tasks", search: navWsSearch })}
+            onSessions={() => navigate({ to: "/sessions", search: navWsSearch })}
+            onUsage={() => navigate({ to: "/usage", search: navWsSearch })}
+            onAgents={() => navigate({ to: "/agents", search: navWsSearch })}
+            onCustomize={() => navigate({ to: "/customize", search: navWsSearch })}
+            onSettings={() => navigate({ to: "/settings", search: navWsSearch })}
           />
         ) : null}
 
@@ -403,7 +422,12 @@ function Shell() {
         </div>
       </div>
 
-      <AddWorkspaceDialog open={addOpen} onOpenChange={setAddOpen} onAdd={handleAdd} />
+      <AddWorkspaceDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        onAdd={handleAdd}
+        orgId={activeCloudOrgId}
+      />
     </div>
   );
 }
@@ -414,7 +438,7 @@ function AuthGate() {
   if (loading) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-background">
-        <AnchorIcon className="h-8 w-8 animate-pulse text-primary" />
+        <img src={appIconUrl} className="h-12 w-12 animate-pulse drop-shadow-sm" alt="SuperConsole" />
       </div>
     );
   }
@@ -487,11 +511,20 @@ const indexRoute = createRoute({
   component: Welcome,
 });
 
+interface WorkspaceSearchParam {
+  ws?: number;
+}
+
 function InboxRoute() {
-  const { workspaces } = useWorkspaces();
+  const { ws } = inboxRoute.useSearch();
+  const { workspaces, activeOrgId } = useWorkspaces();
   return (
     <div className="absolute inset-0 bg-background">
-      <InboxView workspaces={workspaces} />
+      <InboxView
+        initialWorkspaceId={ws}
+        workspaces={workspaces}
+        activeOrgId={activeOrgId}
+      />
     </div>
   );
 }
@@ -499,15 +532,20 @@ function InboxRoute() {
 const inboxRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "inbox",
+  validateSearch: (search: Record<string, unknown>): WorkspaceSearchParam => ({
+    ws: typeof search.ws === "number" ? search.ws : undefined,
+  }),
   component: InboxRoute,
 });
 
 function TasksRoute() {
+  const { ws } = tasksRoute.useSearch();
   const { workspaces, organizations, activeOrgId, openWorkspace, openResumeTab } = useWorkspaces();
   const navigate = useNavigate();
   return (
     <div className="absolute inset-0 bg-background">
       <TasksView
+        initialWorkspaceId={ws}
         workspaces={workspaces}
         organizations={organizations}
         activeOrgId={activeOrgId}
@@ -529,9 +567,15 @@ const tasksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "tasks",
   component: TasksRoute,
+  validateSearch: (search: Record<string, unknown>): WorkspaceSearchParam => ({
+    ws: typeof search.ws === "number" ? search.ws
+      : typeof search.ws === "string" ? Number(search.ws) || undefined
+      : undefined,
+  }),
 });
 
 function SessionsRoute() {
+  const { ws } = sessionsRoute.useSearch();
   const {
     workspaces,
     organizations,
@@ -543,10 +587,11 @@ function SessionsRoute() {
     openWorkspace,
   } = useWorkspaces();
   const navigate = useNavigate();
-  const lastProjectId = openedIds.length ? openedIds[openedIds.length - 1] : null;
+  const lastProjectId = ws ?? (openedIds.length ? openedIds[openedIds.length - 1] : null);
   return (
     <div className="absolute inset-0 bg-background">
       <SessionsView
+        initialWorkspaceId={ws}
         workspaces={workspaces}
         organizations={organizations}
         activeOrgId={activeOrgId}
@@ -578,13 +623,19 @@ const sessionsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "sessions",
   component: SessionsRoute,
+  validateSearch: (search: Record<string, unknown>): WorkspaceSearchParam => ({
+    ws: typeof search.ws === "number" ? search.ws
+      : typeof search.ws === "string" ? Number(search.ws) || undefined
+      : undefined,
+  }),
 });
 
 function UsageRoute() {
+  const { ws } = usageRoute.useSearch();
   const { workspaces } = useWorkspaces();
   return (
     <div className="absolute inset-0 bg-background">
-      <UsageView workspaces={workspaces} />
+      <UsageView initialWorkspaceId={ws} workspaces={workspaces} />
     </div>
   );
 }
@@ -593,6 +644,11 @@ const usageRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "usage",
   component: UsageRoute,
+  validateSearch: (search: Record<string, unknown>): WorkspaceSearchParam => ({
+    ws: typeof search.ws === "number" ? search.ws
+      : typeof search.ws === "string" ? Number(search.ws) || undefined
+      : undefined,
+  }),
 });
 
 async function saveAuthoredAgent(workspaceId: number, agent: Agent, skills: string[]) {
@@ -607,6 +663,7 @@ async function saveAuthoredAgent(workspaceId: number, agent: Agent, skills: stri
 }
 
 function AgentsRoute() {
+  const { ws } = agentsRoute.useSearch();
   const {
     workspaces,
     organizations,
@@ -628,6 +685,7 @@ function AgentsRoute() {
   return (
     <div className="absolute inset-0 bg-background">
       <AgentsView
+        initialWorkspaceId={ws}
         workspaces={workspaces}
         organizations={organizations}
         activeOrgId={activeOrgId}
@@ -675,18 +733,24 @@ const agentsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "agents",
   component: AgentsRoute,
+  validateSearch: (search: Record<string, unknown>): WorkspaceSearchParam => ({
+    ws: typeof search.ws === "number" ? search.ws
+      : typeof search.ws === "string" ? Number(search.ws) || undefined
+      : undefined,
+  }),
 });
 
 interface SettingsSearch {
-  tab?: "account" | "org" | "project";
+  ws?: number;
+  tab?: "account" | "org" | "project" | "profile";
   section?: string;
 }
 
 function SettingsRoute() {
-  const { tab, section } = settingsRoute.useSearch();
+  const { ws, tab, section } = settingsRoute.useSearch();
   return (
     <div className="absolute inset-0 z-20 bg-background">
-      <SettingsPage initialTab={tab} initialSection={section} />
+      <SettingsPage initialWorkspaceId={ws} initialTab={tab} initialSection={section} />
     </div>
   );
 }
@@ -696,8 +760,11 @@ const settingsRoute = createRoute({
   path: "settings",
   component: SettingsRoute,
   validateSearch: (search: Record<string, unknown>): SettingsSearch => ({
+    ws: typeof search.ws === "number" ? search.ws
+      : typeof search.ws === "string" ? Number(search.ws) || undefined
+      : undefined,
     tab:
-      search.tab === "account" || search.tab === "org" || search.tab === "project"
+      search.tab === "account" || search.tab === "org" || search.tab === "project" || search.tab === "profile"
         ? search.tab
         : undefined,
     section: typeof search.section === "string" ? search.section : undefined,

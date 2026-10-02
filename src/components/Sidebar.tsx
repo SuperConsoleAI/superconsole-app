@@ -659,7 +659,7 @@ export function Sidebar({
                 onClick={() => onSelect(ws.id)}
                 onKeyDown={(e) => e.key === "Enter" && onSelect(ws.id)}
                 className={cn(
-                  "relative flex cursor-pointer items-center gap-2 px-3 py-[0.75rem] transition-colors",
+                  "relative flex cursor-pointer items-center gap-2 px-3 py-[0.7rem] transition-colors",
                   active ? "bg-accent" : "hover:bg-hover",
                 )}
               >

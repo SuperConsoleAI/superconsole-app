@@ -1,13 +1,34 @@
-//! Central (Cloud / Turso) Database Schema Definitions
+//! User Database (`userdb`) Schema Definitions & Provisioning
 //!
-//! This module defines the canonical remote schema used in the SuperConsole
-//! cloud backend (Turso SQLite / Cloudflare Worker / PostgreSQL compatible).
+//! This module defines the canonical schema used for user-scoped / private databases (`userdb`).
+//! It mirrors the Central Cloud architecture while giving users full ownership and local
+//! persistence of their private workflows, session history, chat transcripts, installed plugins,
+//! and connectors.
 //!
-//! Tables are organized with human-readable headers and structured column alignments.
+//! ## Off-Platform Isolation (`users.off_platform`)
+//! - When `off_platform = 0` (default): Standard central cloud synchronization.
+//! - When `off_platform = 1`: Sensitive connector credentials and secrets are kept strictly
+//!   isolated in `userdb` / `localdb`. Only a stub metadata entry (with generated ULID and status)
+//!   is dispatched to `centraldb` to guarantee identity synchronization across all distributed
+//!   databases without exposing secrets off-platform.
+//!
+//! ## Public-Facing Profiles (`users` columns)
+//! - `social`: JSON array of social links (`'[]'`)
+//! - `is_active`: User account status (`1` = active, `0` = deactivated)
+//! - `is_public`: Public profile discovery toggle (`0` = private by default)
+//! - `bio`: Profile biography text
+//! - `theme`: JSON array of user theme / styling preferences (`'[]'`)
+//! - `show_team`: Toggle displaying team membership on public profile (`0` = hidden)
+//! - `banner`: Profile banner image URL or asset path
+//! - `show_projects`: Toggle displaying projects on public profile (`1` = visible by default)
+//! - `show_usage`: Toggle displaying usage telemetry on public profile (`1` = visible by default)
+//! - `off_platform`: Credential isolation toggle (`0` = cloud synced, `1` = local/userdb only)
 
-/// All SQL statements needed to provision or initialize the Central Cloud database.
+use rusqlite::Connection;
+
+/// All SQL DDL statements for creating the user database schema.
 #[allow(dead_code)]
-pub const CENTRAL_SCHEMA_STATEMENTS: &[&str] = &[
+pub const USER_SCHEMA_STATEMENTS: &[&str] = &[
     // ── users ─────────────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS users (
         id              TEXT PRIMARY KEY,
@@ -197,6 +218,28 @@ pub const CENTRAL_SCHEMA_STATEMENTS: &[&str] = &[
     )"#,
     r#"CREATE INDEX IF NOT EXISTS idx_project_connectors_project ON project_connectors (project_id)"#,
 
+
+    // ── project_agents ────────────────────────────────────────────────────────
+    r#"CREATE TABLE IF NOT EXISTS project_agents (
+        id              TEXT PRIMARY KEY,
+        project_id      TEXT NOT NULL,
+        name            TEXT NOT NULL,
+        description     TEXT NOT NULL DEFAULT '',
+        schedule        TEXT NOT NULL DEFAULT '',
+        default_run_mode TEXT NOT NULL DEFAULT 'cli',
+        default_cli     TEXT NOT NULL DEFAULT 'claude',
+        default_provider TEXT NOT NULL DEFAULT 'anthropic',
+        default_model   TEXT NOT NULL DEFAULT '',
+        skills          TEXT NOT NULL DEFAULT '',
+        connectors      TEXT NOT NULL DEFAULT '',
+        is_active       INTEGER NOT NULL DEFAULT 1,
+        author          TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(project_id, name)
+    )"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_project_agents_project ON project_agents (project_id)"#,
+
     // ── agent_catalog ─────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS agent_catalog (
         id              TEXT PRIMARY KEY,
@@ -240,7 +283,7 @@ pub const CENTRAL_SCHEMA_STATEMENTS: &[&str] = &[
         featured        INTEGER NOT NULL DEFAULT 0
     )"#,
 
-    // ── plugins (Turso Cloud table) ───────────────────────────────────────────
+    // ── plugins ───────────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS plugins (
         id              TEXT PRIMARY KEY,
         name            TEXT NOT NULL UNIQUE,
@@ -269,6 +312,91 @@ pub const CENTRAL_SCHEMA_STATEMENTS: &[&str] = &[
         created_at      TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
+
+    // ── installed_plugins ─────────────────────────────────────────────────────
+    r#"CREATE TABLE IF NOT EXISTS installed_plugins (
+        id              TEXT PRIMARY KEY,
+        plugin_id       TEXT NOT NULL,
+        scope           TEXT NOT NULL,
+        scope_id        TEXT NOT NULL,
+        installed_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        installed_by    TEXT NOT NULL DEFAULT '',
+        version         TEXT NOT NULL DEFAULT '1.0.0',
+        skill_ids       TEXT NOT NULL DEFAULT '[]',
+        agent_ids       TEXT NOT NULL DEFAULT '[]',
+        mcp_ids         TEXT NOT NULL DEFAULT '[]',
+        command_ids     TEXT NOT NULL DEFAULT '[]',
+        hook_ids        TEXT NOT NULL DEFAULT '[]',
+        rule_ids        TEXT NOT NULL DEFAULT '[]',
+        connector_ids   TEXT NOT NULL DEFAULT '[]',
+        rules_url       TEXT NOT NULL DEFAULT '[]',
+        agents_url      TEXT NOT NULL DEFAULT '[]',
+        skills_url      TEXT NOT NULL DEFAULT '[]',
+        commands_url    TEXT NOT NULL DEFAULT '[]',
+        hooks_url       TEXT NOT NULL DEFAULT '[]',
+        mcp_url         TEXT NOT NULL DEFAULT '[]'
+    )"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_installed_plugins_scope ON installed_plugins (scope, scope_id)"#,
+
+    // ── session_history ───────────────────────────────────────────────────────
+    r#"CREATE TABLE IF NOT EXISTS session_history (
+        id                  TEXT PRIMARY KEY,
+        workspace_id        TEXT,
+        project_id          TEXT NOT NULL,
+        session_id          TEXT NOT NULL,
+        cli                 TEXT NOT NULL DEFAULT '',
+        label               TEXT,
+        job_id              TEXT,
+        tokens_prompt       INTEGER NOT NULL DEFAULT 0,
+        tokens_completion   INTEGER NOT NULL DEFAULT 0,
+        tokens_reasoning    INTEGER NOT NULL DEFAULT 0,
+        cost_usd            REAL NOT NULL DEFAULT 0,
+        model               TEXT NOT NULL DEFAULT '',
+        provider            TEXT NOT NULL DEFAULT '',
+        last_output         TEXT NOT NULL DEFAULT '',
+        agent_id            TEXT,
+        user_id             TEXT,
+        rate_prompt_per_1m  REAL NOT NULL DEFAULT 0,
+        rate_cached_per_1m  REAL NOT NULL DEFAULT 0,
+        rate_completion_per_1m REAL NOT NULL DEFAULT 0,
+        rate_reasoning_per_1m REAL NOT NULL DEFAULT 0,
+        machine_id          TEXT,
+        started_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        ended_at            TEXT,
+        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    )"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_session_history_project ON session_history (project_id)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_session_history_session ON session_history (session_id)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_session_history_user ON session_history (user_id)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_session_history_ws ON session_history (workspace_id)"#,
+
+    // ── chat_sessions ─────────────────────────────────────────────────────────
+    r#"CREATE TABLE IF NOT EXISTS chat_sessions (
+        id                  TEXT PRIMARY KEY,
+        workspace_id        TEXT,
+        project_id          TEXT NOT NULL,
+        name                TEXT,
+        is_star             INTEGER NOT NULL DEFAULT 0,
+        tokens_prompt       INTEGER NOT NULL DEFAULT 0,
+        tokens_completion   INTEGER NOT NULL DEFAULT 0,
+        tokens_reasoning    INTEGER NOT NULL DEFAULT 0,
+        cost_usd            REAL NOT NULL DEFAULT 0,
+        model               TEXT NOT NULL DEFAULT '',
+        provider            TEXT NOT NULL DEFAULT '',
+        agent_id            TEXT,
+        user_id             TEXT,
+        rate_prompt_per_1m  REAL NOT NULL DEFAULT 0,
+        rate_cached_per_1m  REAL NOT NULL DEFAULT 0,
+        rate_completion_per_1m REAL NOT NULL DEFAULT 0,
+        rate_reasoning_per_1m REAL NOT NULL DEFAULT 0,
+        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    )"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_chat_sessions_project ON chat_sessions (project_id)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions (user_id)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_chat_sessions_ws ON chat_sessions (workspace_id)"#,
+
     // ── mcp_catalog ───────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS mcp_catalog (
         id              TEXT PRIMARY KEY,
@@ -335,7 +463,7 @@ pub const CENTRAL_SCHEMA_STATEMENTS: &[&str] = &[
         created_at      TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
 
-    // ── project_usage ────────────────────────────────────────────────────────
+    // ── project_usage ─────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS project_usage (
         id                          TEXT PRIMARY KEY,
         tokens_prompt_lifetime      INTEGER NOT NULL DEFAULT 0,
@@ -433,30 +561,56 @@ pub const CENTRAL_SCHEMA_STATEMENTS: &[&str] = &[
         heatmap_365d                TEXT NOT NULL DEFAULT '{}',
         updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
-
-    // ── userdb (Account-wide UserDB configuration) ─────────────────────────────
-    r#"CREATE TABLE IF NOT EXISTS userdb (
-        user_id             TEXT PRIMARY KEY,
-        url                 TEXT NOT NULL DEFAULT '',
-        token_encrypted     TEXT NOT NULL DEFAULT '',
-        off_platform        INTEGER NOT NULL DEFAULT 0,
-        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
-    )"#,
-    r#"CREATE INDEX IF NOT EXISTS idx_userdb_user ON userdb (user_id)"#,
 ];
 
-/// Provisions and initializes all canonical Central Cloud tables and indexes on SQLite / Turso.
+/// Provisions and initializes all canonical user database tables and indexes.
 #[allow(dead_code)]
-pub fn provision_central_database(conn: &rusqlite::Connection) -> Result<(), String> {
+pub fn provision_user_database(conn: &Connection) -> Result<(), String> {
     conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(|e| e.to_string())?;
 
-    for stmt in CENTRAL_SCHEMA_STATEMENTS {
+    for stmt in USER_SCHEMA_STATEMENTS {
         conn.execute_batch(stmt)
-            .map_err(|e| format!("Central schema init error for statement: {}\nErr: {}", stmt, e))?;
+            .map_err(|e| format!("User schema init error for statement: {}\nErr: {}", stmt, e))?;
     }
 
     Ok(())
+}
+
+#[allow(dead_code)]
+/// Returns the canonical list of table names expected in the user database.
+pub fn get_canonical_user_table_names() -> &'static [&'static str] {
+    &[
+        "users",
+        "organizations",
+        "org_members",
+        "org_invitations",
+        "projects",
+        "project_members",
+        "project_invitations",
+        "account_llm_keys",
+        "org_llm_keys",
+        "project_llm_keys",
+        "account_connectors",
+        "org_connectors",
+        "org_settings",
+        "project_connectors",
+        "project_agents",
+        "agent_catalog",
+        "skill_catalog",
+        "rules_catalog",
+        "plugins",
+        "installed_plugins",
+        "session_history",
+        "chat_sessions",
+        "mcp_catalog",
+        "commands_catalog",
+        "hooks_catalog",
+        "connector_catalog",
+        "project_usage",
+        "org_usage",
+        "account_usage",
+        "user_usage",
+    ]
 }
 
 #[cfg(test)]
@@ -465,9 +619,33 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn test_provision_central_database() {
+    fn test_provision_user_database() {
         let conn = Connection::open_in_memory().unwrap();
-        assert!(provision_central_database(&conn).is_ok());
+        assert!(provision_user_database(&conn).is_ok());
+
+        let tables = get_canonical_user_table_names();
+        for table in tables {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+            assert!(exists, "Canonical user table '{}' is missing from user database!", table);
+        }
+
+        // Verify that chat_messages and legacy connectors do NOT exist in userdb
+        for excluded in &["chat_messages", "connectors"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [excluded],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+            assert!(!exists, "Table '{}' should NOT exist in UserDB!", excluded);
+        }
 
         // Verify users columns specifically
         let mut user_cols = conn.prepare("PRAGMA table_info(users)").unwrap();
@@ -487,78 +665,31 @@ mod tests {
         assert!(cols.contains(&"banner".to_string()));
         assert!(cols.contains(&"show_projects".to_string()));
         assert!(cols.contains(&"show_usage".to_string()));
-    }
 
-    #[test]
-    fn test_centraldb_does_not_contain_removed_tables() {
-        let conn = Connection::open_in_memory().unwrap();
-        assert!(provision_central_database(&conn).is_ok());
+        // Insert a test user with public profile & off_platform configuration
+        conn.execute(
+            "INSERT INTO users (
+                id, workos_id, email, name, logo_url, banner, bio, social, theme,
+                is_active, is_public, show_team, show_projects, show_usage, off_platform
+            ) VALUES (
+                'user_01', 'workos_01', 'test@example.com', 'Alex Developer',
+                'https://example.com/logo.png', 'https://example.com/banner.png',
+                'Building the future with SuperConsole.', '[\"https://github.com/alex\"]',
+                '[\"dark-amber\"]', 1, 1, 0, 1, 1, 1
+            )",
+            [],
+        ).unwrap();
 
-        // Removed tables that belong only in localdb and userdb
-        let removed_tables = [
-            "installed_plugins",
-            "session_history",
-            "chat_sessions",
-            "project_session_history",
-            "project_chat_sessions",
-            "project_agents",
-            "connectors",
-            "chat_messages",
-        ];
-        for t in removed_tables {
-            let exists: bool = conn
-                .query_row(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                    [t],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false);
-            assert!(!exists, "Table '{}' should NOT exist in CentralDB!", t);
-        }
-
-        // Only the 4 canonical usage tables belong in centraldb
-        let usage_tables = [
-            "project_usage",
-            "org_usage",
-            "account_usage",
-            "user_usage",
-        ];
-        for t in usage_tables {
-            let exists: bool = conn
-                .query_row(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                    [t],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false);
-            assert!(exists, "Usage table '{}' MUST exist in CentralDB!", t);
-        }
-    }
-
-    #[test]
-    fn test_centraldb_contains_userdb_table() {
-        let conn = Connection::open_in_memory().unwrap();
-        assert!(provision_central_database(&conn).is_ok());
-
-        let exists: bool = conn
+        let (off_platform, is_public, bio): (i64, i64, String) = conn
             .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'userdb'",
+                "SELECT off_platform, is_public, bio FROM users WHERE id = 'user_01'",
                 [],
-                |_| Ok(true),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
-            .unwrap_or(false);
-        assert!(exists, "userdb table MUST exist in CentralDB!");
+            .unwrap();
 
-        let mut userdb_cols = conn.prepare("PRAGMA table_info(userdb)").unwrap();
-        let cols: Vec<String> = userdb_cols
-            .query_map([], |r| r.get(1))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-
-        assert!(cols.contains(&"user_id".to_string()));
-        assert!(cols.contains(&"url".to_string()));
-        assert!(cols.contains(&"token_encrypted".to_string()));
-        assert!(cols.contains(&"off_platform".to_string()));
+        assert_eq!(off_platform, 1);
+        assert_eq!(is_public, 1);
+        assert_eq!(bio, "Building the future with SuperConsole.");
     }
 }

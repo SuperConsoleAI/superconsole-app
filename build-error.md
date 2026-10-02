@@ -1,13 +1,10 @@
-thread 'tokio-rt-worker' (4960374) panicked at src/db.rs:3771:42:
-called `Result::unwrap()` on an `Err` value: SqlInputError { error: Error { code: Unknown, extended_code: 1 }, msg: "no such column: mcp_url", sql: "SELECT id, name, description, author, version, icon_url, docs_url, github_url, category, scope, skill_ids, agent_ids, agents_url, mcp_ids, command_ids, hook_ids, connector_ids, skills_url, commands_url, hooks_url, mcp_url, connector_auth, featured, synced_at, rules_url, rule_ids FROM plugins ORDER BY name", offset: 214 }
+  Running `target/debug/superconsole`
+
+thread 'main' (8471318) panicked at /Users/2.o/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.11.2/src/app.rs:1417:11:
+Failed to setup app: error encountered during setup hook: Schema init error for statement: CREATE INDEX IF NOT EXISTS idx_session_history_project ON session_history (project_id)
+Err: no such column: project_id in CREATE INDEX IF NOT EXISTS idx_session_history_project ON session_history (project_id) at offset 75
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
-thread 'tokio-rt-worker' (4960370) panicked at src/db.rs:3765:34:
-called `Result::unwrap()` on an `Err` value: PoisonError { .. }
-
-thread 'tokio-rt-worker' (4960378) panicked at src/db.rs:3745:34:
-called `Result::unwrap()` on an `Err` value: PoisonError { .. }
-
-thread 'main' (4960066) panicked at src/db.rs:921:34:
-called `Result::unwrap()` on an `Err` value: PoisonError { .. }
-fatal runtime error: failed to initiate panic, error 5, aborting
+thread 'main' (8471318) panicked at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:

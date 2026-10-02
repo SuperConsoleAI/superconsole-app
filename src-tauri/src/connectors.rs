@@ -274,6 +274,35 @@ fn cached_user_id(db: &Db) -> Option<String> {
     v["user"]["id"].as_str().map(|s| s.to_string())
 }
 
+fn is_user_off_platform(db: &Db) -> bool {
+    if let Some(setting) = db.get_setting("off_platform") {
+        if setting == "1" {
+            return true;
+        } else if setting == "0" {
+            return false;
+        }
+    }
+    let Some(json) = db.get_cloud_identity() else { return false; };
+    let Ok(v) = serde_json::from_str::<Value>(&json) else { return false; };
+    v["user"]["off_platform"].as_i64().unwrap_or(0) == 1
+}
+
+pub fn userdb_config(db: &Db) -> Option<cloud::TursoConfig> {
+    let raw = db.get_setting("userdb_url")?;
+    let token = db.get_setting("userdb_token")?;
+    if raw.trim().is_empty() || token.trim().is_empty() {
+        return None;
+    }
+    let url = raw
+        .trim()
+        .replacen("libsql://", "https://", 1)
+        .replacen("wss://", "https://", 1);
+    Some(cloud::TursoConfig {
+        url,
+        token: token.trim().to_string(),
+    })
+}
+
 // scope -> (table, id column, has_scope_column). Whitelisted; never interpolate.
 fn scope_table(scope: &str) -> Result<(&'static str, &'static str, bool), String> {
     match scope {
@@ -571,6 +600,13 @@ pub async fn set_connector(
                connected_by = excluded.connected_by, updated_at = excluded.updated_at"
         )
     };
+    let off_platform = is_user_off_platform(&app.state::<Db>());
+    let cloud_encrypted = if off_platform {
+        None
+    } else {
+        Some(encrypted.clone())
+    };
+
     // Helper closure: execute the connector INSERT and write local cache.
     let do_save = |id: String, ts: String, uid: Option<String>| {
         let sql = sql.clone();
@@ -578,7 +614,7 @@ pub async fn set_connector(
         let cfg = cfg.clone();
         let scope_id = scope_id.clone();
         let service = service.clone();
-        let encrypted = encrypted.clone();
+        let cloud_enc = cloud_encrypted.clone();
         async move {
             cloud::turso_execute(
                 &client,
@@ -588,7 +624,7 @@ pub async fn set_connector(
                     Some(id),
                     Some(scope_id.clone()),
                     Some(service.clone()),
-                    Some(encrypted.clone()),
+                    cloud_enc,
                     uid,
                     Some(ts),
                 ],
@@ -672,6 +708,24 @@ pub async fn set_connector(
     let _ = app
         .state::<Db>()
         .upsert_connector_cache(&scope, &scope_id, &service, &encrypted);
+
+    // If UserDB is configured, persist the connector with full encrypted credentials to UserDB as well
+    if let Some(user_cfg) = userdb_config(&app.state::<Db>()) {
+        let _ = cloud::turso_execute(
+            &client,
+            &user_cfg,
+            &sql,
+            vec![
+                Some(id),
+                Some(scope_id.clone()),
+                Some(service.clone()),
+                Some(encrypted.clone()),
+                user_id.clone(),
+                Some(ts),
+            ],
+        )
+        .await;
+    }
 
     crate::sync_manager::sync_on_update(&app, &scope, &scope_id).await;
 

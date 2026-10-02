@@ -1,3 +1,8 @@
+/**
+ * SessionsNavbar Component
+ * Top bar header controls for the Sessions page.
+ * Manages the CLI vs Chat mode switcher and scoped organization/project filtering.
+ */
 import { useState, useEffect } from "react";
 import { MessageSquare, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,13 +13,27 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useWorkspaces } from "@/lib/workspace-context";
-import { cn } from "@/lib/utils";
+import { cn, getActiveWorkspaceFilter, setActiveWorkspaceFilter } from "@/lib/utils";
 
 export function SessionsNavbar() {
   const { workspaces, organizations } = useWorkspaces();
   const [tab, setTab] = useState<"cli" | "chat">("cli");
-  const [orgFilter, setOrgFilter] = useState<number | "all">("all");
-  const [projFilter, setProjFilter] = useState<number | "all">("all");
+  const initialWsId = getActiveWorkspaceFilter();
+  const [projFilter, setProjFilter] = useState<number | "all">(() => initialWsId ?? "all");
+  const [orgFilter, setOrgFilter] = useState<number | "all">(() => {
+    if (initialWsId) {
+      const ws = workspaces.find((w) => w.id === initialWsId);
+      if (ws?.organization_id) return ws.organization_id;
+    }
+    return "all";
+  });
+
+  useEffect(() => {
+    if (projFilter !== "all" && orgFilter === "all" && workspaces.length > 0) {
+      const ws = workspaces.find((w) => w.id === projFilter);
+      if (ws?.organization_id) setOrgFilter(ws.organization_id);
+    }
+  }, [projFilter, orgFilter, workspaces]);
 
   useEffect(() => {
     const onTabSync = (e: any) => {
@@ -24,7 +43,10 @@ export function SessionsNavbar() {
       if (e.detail !== undefined) setOrgFilter(e.detail);
     };
     const onProjSync = (e: any) => {
-      if (e.detail !== undefined) setProjFilter(e.detail);
+      if (e.detail !== undefined) {
+        setProjFilter(e.detail);
+        if (e.detail !== "all") setActiveWorkspaceFilter(e.detail);
+      }
     };
 
     window.addEventListener("sessions-tab-sync", onTabSync);
@@ -68,18 +90,21 @@ export function SessionsNavbar() {
 
   const handleProjChange = (projId: number | "all") => {
     setProjFilter(projId);
+    if (projId !== "all") {
+      setActiveWorkspaceFilter(projId);
+    }
     window.dispatchEvent(new CustomEvent("sessions-proj-change", { detail: projId }));
   };
 
   return (
     <div className="flex w-full items-center justify-between gap-3">
-      {/* Left: CLI | Chat Toggle — h-7 container, h-6 inner buttons */}
-      <div className="flex h-7 items-center gap-0.5 rounded-md border bg-background p-0.5">
+      {/* Left: CLI | Chat Toggle — 26px outer container, 22px inner button, vertically centered */}
+      <div className="flex h-[26px] items-center gap-0.5 rounded-md border bg-background p-[1px]">
         <button
           type="button"
           onClick={() => handleTabChange("cli")}
           className={cn(
-            "flex h-6 items-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors",
+            "flex h-[22px] items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors leading-none",
             tab === "cli"
               ? "bg-primary text-primary-foreground"
               : "text-muted-foreground hover:bg-muted"
@@ -93,7 +118,7 @@ export function SessionsNavbar() {
           type="button"
           onClick={() => handleTabChange("chat")}
           className={cn(
-            "flex h-6 items-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors",
+            "flex h-[22px] items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors leading-none",
             tab === "chat"
               ? "bg-primary text-primary-foreground"
               : "text-muted-foreground hover:bg-muted"

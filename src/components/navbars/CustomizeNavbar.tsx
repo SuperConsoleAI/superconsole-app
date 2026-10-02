@@ -1,3 +1,8 @@
+/**
+ * CustomizeNavbar Component
+ * Top bar header controls for the Customize plugins, skills, hooks, and extensions surface.
+ * Handles tab switching and scope resolution (Account vs Org vs Project).
+ */
 import { useState, useEffect } from "react";
 import {
   Blocks,
@@ -26,7 +31,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useWorkspaces } from "@/lib/workspace-context";
 import { useAuth } from "@/lib/auth-context";
-import { cn } from "@/lib/utils";
+import { cn, getActiveWorkspaceFilter, setActiveWorkspaceFilter } from "@/lib/utils";
 
 type CustomizeTab =
   | "plugins"
@@ -52,6 +57,10 @@ export function CustomizeNavbar() {
 
   const [tab, setTab] = useState<CustomizeTab>("plugins");
   const [scope, setScope] = useState<ScopeState>(() => {
+    const activeWsId = getActiveWorkspaceFilter();
+    if (activeWsId) {
+      return { type: "project", id: "", localWorkspaceId: activeWsId };
+    }
     const saved = sessionStorage.getItem("customizeScope");
     if (saved) {
       try {
@@ -66,7 +75,12 @@ export function CustomizeNavbar() {
       if (e.detail) setTab(e.detail);
     };
     const onScopeSync = (e: any) => {
-      if (e.detail) setScope(e.detail);
+      if (e.detail) {
+        setScope(e.detail);
+        if (e.detail.type === "project" && e.detail.localWorkspaceId) {
+          setActiveWorkspaceFilter(e.detail.localWorkspaceId);
+        }
+      }
     };
 
     window.addEventListener("customize-tab-sync", onTabSync);
@@ -87,6 +101,9 @@ export function CustomizeNavbar() {
   const handleScopeChange = (s: ScopeState) => {
     setScope(s);
     sessionStorage.setItem("customizeScope", JSON.stringify(s));
+    if (s.type === "project" && s.localWorkspaceId) {
+      setActiveWorkspaceFilter(s.localWorkspaceId);
+    }
     window.dispatchEvent(new CustomEvent("customize-scope-change", { detail: s }));
   };
 

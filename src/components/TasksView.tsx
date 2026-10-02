@@ -1,3 +1,7 @@
+/**
+ * TasksView Component — Background job, task runner, and execution history dashboard
+ * Supports filtering tasks by workspace, manual run triggers, and run logs inspection.
+ */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CalendarClock,
@@ -30,7 +34,7 @@ import {
 } from "@/components/ui/dialog";
 import { PresetIcon } from "@/components/PresetIcon";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { cn } from "@/lib/utils";
+import { cn, getActiveWorkspaceFilter } from "@/lib/utils";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -147,29 +151,43 @@ function ActivityRow({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function TasksView({
+  initialWorkspaceId,
   workspaces,
   organizations,
   activeOrgId,
   onResume,
 }: {
+  initialWorkspaceId?: number;
   workspaces: Workspace[];
   organizations: Organization[];
   activeOrgId: number;
   onResume: (workspaceId: number, cli: string, sessionId: string) => void;
 }) {
+  const activeWsId = getActiveWorkspaceFilter(initialWorkspaceId);
+  const targetWs = activeWsId ? workspaces.find((w) => w.id === activeWsId) : null;
   const [tab, setTab] = useState<"tasks" | "activity">("tasks");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [running, setRunning] = useState<number | null>(null);
   const [editJob, setEditJob] = useState<Job | null>(null);
   const [view, setView] = useState<"list" | "calendar">("list");
-  const [orgFilter, setOrgFilter] = useState<number | "all">("all");
-  const [projFilter, setProjFilter] = useState<number | "all">("all");
+  const [orgFilter, setOrgFilter] = useState<number | "all">(targetWs?.organization_id ?? "all");
+  const [projFilter, setProjFilter] = useState<number | "all">(targetWs?.id ?? "all");
   const [expandedJob, setExpandedJob] = useState<number | null>(null);
   const [jobSessions, setJobSessions] = useState<Record<number, SessionFeedItem[] | "loading">>({});
   const [activityItems, setActivityItems] = useState<SessionFeedItem[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
   const [showAddTask, setShowAddTask] = useState(false);
+
+  useEffect(() => {
+    if (activeWsId && projFilter === "all" && workspaces.length > 0) {
+      const ws = workspaces.find((w) => w.id === activeWsId);
+      if (ws) {
+        setProjFilter(ws.id);
+        if (ws.organization_id) setOrgFilter(ws.organization_id);
+      }
+    }
+  }, [activeWsId, projFilter, workspaces]);
   const [month, setMonth] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);

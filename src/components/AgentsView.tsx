@@ -56,7 +56,7 @@ import {
 import { PresetIcon } from "@/components/PresetIcon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { AgentRunEditDialog } from "@/components/AgentRunEditDialog";
-import { cn } from "@/lib/utils";
+import { cn, getActiveWorkspaceFilter } from "@/lib/utils";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -322,6 +322,7 @@ function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface AgentsViewProps {
+  initialWorkspaceId?: number;
   workspaces: Workspace[];
   organizations: Organization[];
   activeOrgId: number;
@@ -338,6 +339,7 @@ interface AgentsViewProps {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function AgentsView({
+  initialWorkspaceId,
   workspaces,
   organizations: _organizations,
   activeOrgId,
@@ -350,11 +352,23 @@ export function AgentsView({
   onAddConnector,
   onResume,
 }: AgentsViewProps) {
+  const activeWsId = getActiveWorkspaceFilter(initialWorkspaceId);
+  const targetWs = activeWsId ? workspaces.find((w) => w.id === activeWsId) : null;
   const [tab, setTab] = useState<AgentTab>("agents");
 
   // ── Org / project filters (same as TasksView) ──
-  const [orgFilter, setOrgFilter] = useState<number | "all">(activeOrgId);
-  const [projFilter, setProjFilter] = useState<number | "all">("all");
+  const [orgFilter, setOrgFilter] = useState<number | "all">(targetWs?.organization_id ?? activeOrgId);
+  const [projFilter, setProjFilter] = useState<number | "all">(targetWs?.id ?? "all");
+
+  useEffect(() => {
+    if (activeWsId && projFilter === "all" && workspaces.length > 0) {
+      const ws = workspaces.find((w) => w.id === activeWsId);
+      if (ws) {
+        setProjFilter(ws.id);
+        if (ws.organization_id) setOrgFilter(ws.organization_id);
+      }
+    }
+  }, [activeWsId, projFilter, workspaces]);
 
   const orgWorkspaces = useMemo(
     () => orgFilter === "all" ? workspaces : workspaces.filter((w) => w.organization_id === orgFilter),

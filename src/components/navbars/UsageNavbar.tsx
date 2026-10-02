@@ -1,3 +1,8 @@
+/**
+ * UsageNavbar Component
+ * Top bar header controls for token consumption and billing metrics.
+ * Provides the Level switcher (Project/Org/User/Account), Period selector, and export action.
+ */
 import { useState, useEffect, useMemo } from "react";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,7 +15,7 @@ import {
 import { useWorkspaces } from "@/lib/workspace-context";
 import { useAuth } from "@/lib/auth-context";
 import { type UsageLevel } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { cn, getActiveWorkspaceFilter, setActiveWorkspaceFilter } from "@/lib/utils";
 
 type Period = "month" | "year" | "all";
 
@@ -33,12 +38,20 @@ export function UsageNavbar() {
   const orgs = auth?.orgs ?? [];
   const viewedOrgId = orgId ?? activeCloudOrg?.id ?? (orgs[0]?.id ?? null);
 
-  // Initialize defaults
+  // Initialize defaults from active workspace or first available cloud workspace
   useEffect(() => {
-    if (!projectId && cloudWorkspaces.length > 0) {
+    const activeWsId = getActiveWorkspaceFilter();
+    const activeWs = activeWsId ? cloudWorkspaces.find((w) => w.id === activeWsId) : null;
+    if (activeWs?.project_id) {
+      setProjectId(activeWs.project_id);
+      if (activeWs.organization_id) {
+        const o = orgs.find((org) => org.id === String(activeWs.organization_id));
+        if (o) setOrgId(o.id);
+      }
+    } else if (!projectId && cloudWorkspaces.length > 0) {
       setProjectId(cloudWorkspaces[0].project_id as string);
     }
-  }, [cloudWorkspaces, projectId]);
+  }, [cloudWorkspaces, projectId, orgs]);
 
   useEffect(() => {
     const onStateSync = (e: any) => {
@@ -80,6 +93,8 @@ export function UsageNavbar() {
 
   const handleProjectChange = (pId: string) => {
     setProjectId(pId);
+    const ws = cloudWorkspaces.find((w) => w.project_id === pId);
+    if (ws) setActiveWorkspaceFilter(ws.id);
     window.dispatchEvent(new CustomEvent("usage-project-change", { detail: pId }));
   };
 
@@ -104,7 +119,7 @@ export function UsageNavbar() {
 
   const seg = (active: boolean) =>
     cn(
-      "flex h-6 items-center rounded-sm px-2.5 text-xs font-medium transition-colors",
+      "flex h-full items-center rounded-sm px-2.5 text-xs font-medium transition-colors",
       active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
     );
 
@@ -112,7 +127,7 @@ export function UsageNavbar() {
     <div className="flex w-full items-center justify-between gap-3">
       {/* Left side: Level switcher (Project | Org | User | Account) + Selectors */}
       <div className="flex items-center gap-2">
-        <div className="flex h-7 items-center gap-0.5 rounded-md bg-muted p-0.5">
+        <div className="flex h-[1.625rem] items-center gap-0.5 rounded-md bg-muted p-0.5">
           {(["project", "org", "user", "account"] as UsageLevel[]).map((l) => (
             <button
               key={l}
@@ -181,7 +196,7 @@ export function UsageNavbar() {
 
       {/* Right side: Period switcher (This month | This year | All time) + Year picker + Export */}
       <div className="flex items-center gap-1.5">
-        <div className="flex h-7 items-center gap-0.5 rounded-md bg-muted p-0.5">
+        <div className="flex h-[1.625rem] items-center gap-0.5 rounded-md bg-muted p-0.5">
           {(["month", "year", "all"] as Period[]).map((p) => (
             <button
               key={p}

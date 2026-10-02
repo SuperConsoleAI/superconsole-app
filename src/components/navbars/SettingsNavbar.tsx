@@ -1,5 +1,10 @@
+/**
+ * SettingsNavbar Component
+ * Top bar header controls for the Settings surface.
+ * Allows switching between Account, Org, and Project configuration scopes.
+ */
 import { useState, useEffect } from "react";
-import { Building2, Check, ChevronsUpDown, FolderClosed, User } from "lucide-react";
+import { Building2, Check, ChevronsUpDown, CircleUser, FolderClosed, User } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { api, type Workspace } from "@/lib/api";
 import {
@@ -9,28 +14,37 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { cn, getActiveWorkspaceFilter, setActiveWorkspaceFilter } from "@/lib/utils";
 
-type TopTab = "account" | "org" | "project";
+type TopTab = "account" | "org" | "project" | "profile";
 
 export function SettingsNavbar() {
   const { auth, activeCloudOrg, setActiveCloudOrgId } = useAuth();
   const [tab, setTab] = useState<TopTab>("account");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [activeWsId, setActiveWsId] = useState<number | null>(null);
+  const initialWsId = getActiveWorkspaceFilter();
+  const [activeWsId, setActiveWsId] = useState<number | null>(() => initialWsId);
 
   const orgs = auth?.orgs ?? [];
 
   useEffect(() => {
-    api.listWorkspaces().then(setWorkspaces).catch(console.error);
-  }, []);
+    api.listWorkspaces().then((list) => {
+      setWorkspaces(list);
+      if (initialWsId && list.some((w) => w.id === initialWsId)) {
+        setActiveWsId(initialWsId);
+      }
+    }).catch(console.error);
+  }, [initialWsId]);
 
   useEffect(() => {
     const onTabSync = (e: any) => {
       if (e.detail) {
         if (typeof e.detail === "object") {
           if (e.detail.tab) setTab(e.detail.tab);
-          if (e.detail.workspaceId !== undefined) setActiveWsId(e.detail.workspaceId);
+          if (e.detail.workspaceId !== undefined) {
+            setActiveWsId(e.detail.workspaceId);
+            if (e.detail.workspaceId) setActiveWorkspaceFilter(e.detail.workspaceId);
+          }
         } else {
           setTab(e.detail);
         }
@@ -53,6 +67,7 @@ export function SettingsNavbar() {
 
   const handleProjectChange = (wsId: number) => {
     setActiveWsId(wsId);
+    setActiveWorkspaceFilter(wsId);
     window.dispatchEvent(new CustomEvent("settings-project-change", { detail: wsId }));
   };
 
@@ -60,14 +75,14 @@ export function SettingsNavbar() {
 
   return (
     <div className="flex w-full items-center justify-between gap-3">
-      {/* Left: Tab Switcher (Account | Org | Project) + Scoped Switcher */}
+      {/* Left: Tab Switcher (Account | Org | Project) + Scoped Switcher — 26px outer container, 22px inner button, vertically centered */}
       <div className="flex items-center gap-2">
-        <div className="flex h-7 items-center gap-0.5 rounded-md border bg-background p-0.5">
+        <div className="flex h-[26px] items-center gap-0.5 rounded-md border bg-background p-[1px]">
           <button
             type="button"
             onClick={() => handleTabChange("account")}
             className={cn(
-              "flex h-6 items-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors",
+              "flex h-[22px] items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors leading-none",
               tab === "account"
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:bg-muted"
@@ -78,9 +93,22 @@ export function SettingsNavbar() {
           </button>
           <button
             type="button"
+            onClick={() => handleTabChange("profile")}
+            className={cn(
+              "flex h-[22px] items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors leading-none",
+              tab === "profile"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted"
+            )}
+          >
+            <CircleUser className="h-3.5 w-3.5" strokeWidth={1.5} />
+            <span>Profile</span>
+          </button>
+          <button
+            type="button"
             onClick={() => handleTabChange("org")}
             className={cn(
-              "flex h-6 items-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors",
+              "flex h-[22px] items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors leading-none",
               tab === "org"
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:bg-muted"
@@ -93,7 +121,7 @@ export function SettingsNavbar() {
             type="button"
             onClick={() => handleTabChange("project")}
             className={cn(
-              "flex h-6 items-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors",
+              "flex h-[22px] items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors leading-none",
               tab === "project"
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:bg-muted"
@@ -174,7 +202,13 @@ export function SettingsNavbar() {
 
       {/* Right: Subtitle */}
       <span className="text-[11px] text-muted-foreground hidden sm:inline">
-        Configure account, providers, and environment
+        {tab === "profile"
+          ? "Manage your public profile, bio, and off-platform privacy"
+          : tab === "org"
+          ? "Manage organization members, billing, and settings"
+          : tab === "project"
+          ? "Manage project environment, models, and scripts"
+          : "Configure account, providers, and environment"}
       </span>
     </div>
   );

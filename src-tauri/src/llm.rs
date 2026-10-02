@@ -45,7 +45,7 @@ fn scope_table(scope: &str) -> Result<(&'static str, &'static str), String> {
     }
 }
 
-fn cached_user_id(db: &Db) -> Option<String> {
+pub(crate) fn cached_user_id(db: &Db) -> Option<String> {
     let json = db.get_cloud_identity()?;
     let v: serde_json::Value = serde_json::from_str(&json).ok()?;
     v["user"]["id"].as_str().map(|s| s.to_string())

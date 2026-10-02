@@ -31,6 +31,7 @@ pub struct Workspace {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Organization {
     pub id: i64,
+    pub org_id: Option<String>,
     pub name: String,
     pub created_at: String,
 }
@@ -299,6 +300,7 @@ pub struct ChatMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatSession {
     pub id: String,
+    pub workspace_id: Option<i64>,
     pub project_id: String,
     pub name: Option<String>,
     pub is_star: bool,
@@ -431,7 +433,10 @@ impl Db {
              WHERE (user_id IS NULL OR user_id = '') AND EXISTS (SELECT 1 FROM cloud_identity WHERE id = 1);"
         );
 
-        Ok(Db(Mutex::new(conn)))
+        let db = Db(Mutex::new(conn));
+        let _ = db.sync_organizations_from_cloud_identity();
+
+        Ok(db)
     }
 
     fn workspace_from_row(r: &rusqlite::Row) -> rusqlite::Result<Workspace> {
@@ -461,14 +466,15 @@ impl Db {
     pub fn list_organizations(&self) -> Result<Vec<Organization>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, created_at FROM organizations ORDER BY name")
+            .prepare("SELECT id, org_id, name, created_at FROM organizations ORDER BY name")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(Organization {
                     id: r.get(0)?,
-                    name: r.get(1)?,
-                    created_at: r.get(2)?,
+                    org_id: r.get(1)?,
+                    name: r.get(2)?,
+                    created_at: r.get(3)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -476,19 +482,50 @@ impl Db {
             .map_err(|e| e.to_string())
     }
 
-    pub fn add_organization(&self, name: &str) -> Result<Organization, String> {
+    pub fn get_organization(&self, id: i64) -> Result<Organization, String> {
         let conn = self.0.lock().unwrap();
-        conn.execute("INSERT INTO organizations (name) VALUES (?1)", [name])
-            .map_err(|e| e.to_string())?;
-        let id = conn.last_insert_rowid();
         conn.query_row(
-            "SELECT id, name, created_at FROM organizations WHERE id = ?1",
+            "SELECT id, org_id, name, created_at FROM organizations WHERE id = ?1",
             [id],
             |r| {
                 Ok(Organization {
                     id: r.get(0)?,
-                    name: r.get(1)?,
-                    created_at: r.get(2)?,
+                    org_id: r.get(1)?,
+                    name: r.get(2)?,
+                    created_at: r.get(3)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn set_organization_org_id(&self, id: i64, org_id: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE organizations SET org_id = ?1 WHERE id = ?2",
+            rusqlite::params![org_id, id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn add_organization(&self, name: &str, org_id: Option<&str>) -> Result<Organization, String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "INSERT INTO organizations (org_id, name) VALUES (?1, ?2)",
+            rusqlite::params![org_id, name],
+        )
+        .map_err(|e| e.to_string())?;
+        let id = conn.last_insert_rowid();
+        conn.query_row(
+            "SELECT id, org_id, name, created_at FROM organizations WHERE id = ?1",
+            [id],
+            |r| {
+                Ok(Organization {
+                    id: r.get(0)?,
+                    org_id: r.get(1)?,
+                    name: r.get(2)?,
+                    created_at: r.get(3)?,
                 })
             },
         )
@@ -513,11 +550,27 @@ impl Db {
         path: &str,
         cli: &str,
         organization_id: i64,
+        org_id: Option<&str>,
+        project_id: Option<&str>,
     ) -> Result<Workspace, String> {
         let conn = self.0.lock().unwrap();
+        let resolved_org_id: Option<String> = if let Some(o) = org_id.filter(|s| !s.is_empty()) {
+            Some(o.to_string())
+        } else {
+            conn.query_row(
+                "SELECT org_id FROM organizations WHERE id = ?1",
+                [organization_id],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten()
+        };
+
+        let resolved_project_id = project_id.filter(|s| !s.is_empty());
+
         conn.execute(
-            "INSERT INTO workspaces (name, path, cli, organization_id) VALUES (?1, ?2, ?3, ?4)",
-            (name, path, cli, organization_id),
+            "INSERT INTO workspaces (name, path, cli, organization_id, org_id, project_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![name, path, cli, organization_id, resolved_org_id, resolved_project_id],
         )
         .map_err(|e| e.to_string())?;
         let id = conn.last_insert_rowid();
@@ -958,8 +1011,8 @@ impl Db {
         let user_id = self.current_user_id();
         let conn = self.0.lock().unwrap();
         conn.execute(
-            "INSERT INTO session_history (workspace_id, session_id, cli, job_id, agent_id, user_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO session_history (workspace_id, project_id, session_id, cli, job_id, agent_id, user_id)
+             VALUES (?1, (SELECT project_id FROM workspaces WHERE id = ?1 LIMIT 1), ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![workspace_id, session_id, cli, job_id, agent_id, user_id],
         )
         .map_err(|e| e.to_string())?;
@@ -1029,6 +1082,11 @@ impl Db {
         conn.execute("DELETE FROM session_history WHERE id = ?1", [id])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    pub fn get_session_id_by_log_id(&self, id: i64) -> Option<String> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row("SELECT session_id FROM session_history WHERE id = ?1", [id], |r| r.get(0)).ok()
     }
 
     /// Aggregate usage_events for a CLI session → update session_history row.
@@ -1479,6 +1537,13 @@ impl Db {
         Ok(())
     }
 
+    pub fn delete_setting(&self, key: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute("DELETE FROM settings WHERE key = ?1", [key])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn all_settings(&self) -> Result<std::collections::HashMap<String, String>, String> {
         let conn = self.0.lock().unwrap();
         let mut stmt = conn
@@ -1543,14 +1608,73 @@ impl Db {
         Ok(())
     }
 
-    pub fn set_cloud_identity(&self, payload: &str) -> Result<(), String> {
+    pub fn sync_organizations_from_cloud_identity(&self) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
-        conn.execute(
-            "INSERT INTO cloud_identity (id, payload) VALUES (1, ?1)
-             ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
-            [payload],
-        )
-        .map_err(|e| e.to_string())?;
+        let payload: Option<String> = conn
+            .query_row("SELECT payload FROM cloud_identity WHERE id = 1", [], |r| r.get(0))
+            .ok();
+        let Some(json) = payload else {
+            return Ok(());
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else {
+            return Ok(());
+        };
+        let Some(orgs) = v["orgs"].as_array() else {
+            return Ok(());
+        };
+
+        for org in orgs {
+            let Some(org_id) = org["id"].as_str().filter(|s| !s.is_empty()) else { continue; };
+            let Some(name) = org["name"].as_str().filter(|s| !s.is_empty()) else { continue; };
+
+            let existing_by_name: Option<i64> = conn
+                .query_row("SELECT id FROM organizations WHERE LOWER(name) = LOWER(?1)", [name], |r| r.get(0))
+                .ok();
+            let existing_by_org_id: Option<i64> = conn
+                .query_row("SELECT id FROM organizations WHERE org_id = ?1", [org_id], |r| r.get(0))
+                .ok();
+
+            if let Some(id) = existing_by_name {
+                let _ = conn.execute(
+                    "UPDATE organizations SET org_id = ?1 WHERE id = ?2",
+                    rusqlite::params![org_id, id],
+                );
+            } else if let Some(id) = existing_by_org_id {
+                let _ = conn.execute(
+                    "UPDATE organizations SET name = ?1 WHERE id = ?2",
+                    rusqlite::params![name, id],
+                );
+            } else {
+                let _ = conn.execute(
+                    "INSERT INTO organizations (org_id, name) VALUES (?1, ?2)",
+                    rusqlite::params![org_id, name],
+                );
+            }
+        }
+
+        // Auto-assign workspaces.org_id where matching organizations.org_id is present
+        let _ = conn.execute(
+            "UPDATE workspaces
+             SET org_id = (SELECT org_id FROM organizations WHERE organizations.id = workspaces.organization_id)
+             WHERE (workspaces.org_id IS NULL OR workspaces.org_id = '')
+               AND EXISTS (SELECT 1 FROM organizations WHERE organizations.id = workspaces.organization_id AND org_id IS NOT NULL AND org_id != '');",
+            [],
+        );
+
+        Ok(())
+    }
+
+    pub fn set_cloud_identity(&self, payload: &str) -> Result<(), String> {
+        {
+            let conn = self.0.lock().unwrap();
+            conn.execute(
+                "INSERT INTO cloud_identity (id, payload) VALUES (1, ?1)
+                 ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
+                [payload],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let _ = self.sync_organizations_from_cloud_identity();
         Ok(())
     }
 
@@ -2063,6 +2187,57 @@ impl Db {
         .ok()
     }
 
+    /// Read all aggregate rows for one of project_usage|org_usage|account_usage|user_usage.
+    pub fn list_usage_rows(&self, table: &str) -> Vec<serde_json::Value> {
+        if !matches!(table, "project_usage" | "org_usage" | "account_usage" | "user_usage") {
+            return Vec::new();
+        }
+        let conn = self.0.lock().unwrap();
+        let sql = format!(
+            "SELECT id, tokens_prompt_lifetime, tokens_prompt_cached_lifetime,
+                    tokens_completion_lifetime, tokens_reasoning_lifetime, cost_lifetime_usd,
+                    sessions_lifetime, cache_hits_lifetime, analytics_lifetime,
+                    usage_24h, usage_7d, usage_30d, usage_12m, by_model, by_provider,
+                    by_cli, by_member, by_project, by_org, heatmap_365d, updated_at
+             FROM {}",
+            table
+        );
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            return Vec::new();
+        };
+        let parse = |s: String| serde_json::from_str(&s).unwrap_or(serde_json::json!({}));
+        let rows = stmt.query_map([], |r| {
+            let id: String = r.get(0)?;
+            Ok(serde_json::json!({
+                "id": id,
+                "tokens_prompt_lifetime": r.get::<_, i64>(1)?,
+                "tokens_prompt_cached_lifetime": r.get::<_, i64>(2)?,
+                "tokens_completion_lifetime": r.get::<_, i64>(3)?,
+                "tokens_reasoning_lifetime": r.get::<_, i64>(4)?,
+                "cost_lifetime_usd": r.get::<_, f64>(5)?,
+                "sessions_lifetime": r.get::<_, i64>(6)?,
+                "cache_hits_lifetime": r.get::<_, i64>(7)?,
+                "analytics_lifetime": parse(r.get(8)?),
+                "usage_24h": parse(r.get(9)?),
+                "usage_7d": parse(r.get(10)?),
+                "usage_30d": parse(r.get(11)?),
+                "usage_12m": parse(r.get(12)?),
+                "by_model": parse(r.get(13)?),
+                "by_provider": parse(r.get(14)?),
+                "by_cli": parse(r.get(15)?),
+                "by_member": parse(r.get(16)?),
+                "by_project": parse(r.get(17)?),
+                "by_org": parse(r.get(18)?),
+                "heatmap_365d": parse(r.get(19)?),
+                "updated_at": r.get::<_, String>(20)?,
+            }))
+        });
+        match rows {
+            Ok(iter) => iter.flatten().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Upsert one aggregate row from a JSON object (the shape produced by
     /// `get_usage_row` / the usage aggregation core).
     pub fn put_usage_row(&self, table: &str, row: &serde_json::Value) -> Result<(), String> {
@@ -2232,32 +2407,59 @@ impl Db {
 
         match scope {
             "project" => {
+                let mut existing_creds: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+                if let Ok(mut stmt) = tx.prepare("SELECT service, credentials_encrypted FROM project_connectors WHERE project_id = ?1") {
+                    if let Ok(rows) = stmt.query_map([scope_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))) {
+                        for item in rows.flatten() {
+                            existing_creds.insert(item.0, item.1);
+                        }
+                    }
+                }
                 let _ = tx.execute("DELETE FROM project_connectors WHERE project_id = ?1", [scope_id]);
                 for c in connectors {
+                    let creds = c.credentials_encrypted.clone().or_else(|| existing_creds.get(&c.service).cloned().flatten());
                     let _ = tx.execute(
                         "INSERT INTO project_connectors (project_id, service, status, credentials_encrypted, synced_at)
                          VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![scope_id, c.service, c.status.as_deref().unwrap_or("configured"), c.credentials_encrypted, synced_at],
+                        rusqlite::params![scope_id, c.service, c.status.as_deref().unwrap_or("configured"), creds, synced_at],
                     );
                 }
             }
             "org" => {
+                let mut existing_creds: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+                if let Ok(mut stmt) = tx.prepare("SELECT service, credentials_encrypted FROM org_connectors WHERE org_id = ?1") {
+                    if let Ok(rows) = stmt.query_map([scope_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))) {
+                        for item in rows.flatten() {
+                            existing_creds.insert(item.0, item.1);
+                        }
+                    }
+                }
                 let _ = tx.execute("DELETE FROM org_connectors WHERE org_id = ?1", [scope_id]);
                 for c in connectors {
+                    let creds = c.credentials_encrypted.clone().or_else(|| existing_creds.get(&c.service).cloned().flatten());
                     let _ = tx.execute(
                         "INSERT INTO org_connectors (org_id, service, status, credentials_encrypted, synced_at)
                          VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![scope_id, c.service, c.status.as_deref().unwrap_or("configured"), c.credentials_encrypted, synced_at],
+                        rusqlite::params![scope_id, c.service, c.status.as_deref().unwrap_or("configured"), creds, synced_at],
                     );
                 }
             }
             "account" => {
+                let mut existing_creds: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+                if let Ok(mut stmt) = tx.prepare("SELECT service, credentials_encrypted FROM account_connectors WHERE user_id = ?1") {
+                    if let Ok(rows) = stmt.query_map([scope_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))) {
+                        for item in rows.flatten() {
+                            existing_creds.insert(item.0, item.1);
+                        }
+                    }
+                }
                 let _ = tx.execute("DELETE FROM account_connectors WHERE user_id = ?1", [scope_id]);
                 for c in connectors {
+                    let creds = c.credentials_encrypted.clone().or_else(|| existing_creds.get(&c.service).cloned().flatten());
                     let _ = tx.execute(
                         "INSERT INTO account_connectors (user_id, service, status, credentials_encrypted, synced_at)
                          VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![scope_id, c.service, c.status.as_deref().unwrap_or("configured"), c.credentials_encrypted, synced_at],
+                        rusqlite::params![scope_id, c.service, c.status.as_deref().unwrap_or("configured"), creds, synced_at],
                     );
                 }
             }
@@ -2441,6 +2643,7 @@ impl Db {
             provider: r.get(10)?,
             model: r.get(11)?,
             user_id: r.get(12).ok(),
+            workspace_id: r.get(13).ok(),
         })
     }
 
@@ -2452,7 +2655,8 @@ impl Db {
             (SELECT content FROM chat_messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.id ASC LIMIT 1),
             (SELECT provider FROM chat_messages m WHERE m.session_id = s.id AND m.provider IS NOT NULL ORDER BY m.id DESC LIMIT 1),
             (SELECT model FROM chat_messages m WHERE m.session_id = s.id AND m.model IS NOT NULL ORDER BY m.id DESC LIMIT 1),
-            s.user_id
+            s.user_id,
+            s.workspace_id
          FROM chat_sessions s";
 
     pub fn create_chat_session(&self, project_id: &str) -> Result<ChatSession, String> {
@@ -2460,7 +2664,8 @@ impl Db {
         let conn = self.0.lock().unwrap();
         let id = ulid::Ulid::new().to_string();
         conn.execute(
-            "INSERT INTO chat_sessions (id, project_id, user_id) VALUES (?1, ?2, ?3)",
+            "INSERT INTO chat_sessions (id, workspace_id, project_id, user_id) 
+             VALUES (?1, (SELECT id FROM workspaces WHERE project_id = ?2 LIMIT 1), ?2, ?3)",
             rusqlite::params![id, project_id, user_id],
         )
         .map_err(|e| e.to_string())?;
@@ -3999,6 +4204,427 @@ impl Db {
             created_at: None,
         })
     }
+
+    pub fn get_or_create_machine_id(&self) -> String {
+        if let Some(id) = self.get_setting("machine_id") {
+            if !id.trim().is_empty() {
+                return id;
+            }
+        }
+        let id = ulid::Ulid::new().to_string();
+        let _ = self.set_setting("machine_id", &id);
+        id
+    }
+
+    pub fn list_all_installed_plugins_raw(&self) -> Vec<UserDbInstalledPluginRow> {
+        let conn = self.0.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT id, plugin_id, scope, scope_id, installed_at, installed_by, version,
+                    skills_url, commands_url, agents_url, hooks_url, rules_url, mcp_url,
+                    skill_ids, agent_ids, mcp_ids, command_ids, hook_ids, rule_ids, connector_ids
+             FROM installed_plugins ORDER BY installed_at DESC",
+        ) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map([], |r| {
+            Ok(UserDbInstalledPluginRow {
+                id: r.get(0)?,
+                plugin_id: r.get(1)?,
+                scope: r.get(2)?,
+                scope_id: r.get(3)?,
+                installed_at: r.get(4)?,
+                installed_by: r.get(5)?,
+                version: r.get(6)?,
+                skills_url: r.get(7)?,
+                commands_url: r.get(8)?,
+                agents_url: r.get(9)?,
+                hooks_url: r.get(10)?,
+                rules_url: r.get(11)?,
+                mcp_url: r.get(12)?,
+                skill_ids: r.get(13)?,
+                agent_ids: r.get(14)?,
+                mcp_ids: r.get(15)?,
+                command_ids: r.get(16)?,
+                hook_ids: r.get(17)?,
+                rule_ids: r.get(18)?,
+                connector_ids: r.get(19)?,
+            })
+        });
+        match rows {
+            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn get_session_for_userdb(&self, session_id: &str) -> Option<UserDbSessionRow> {
+        let machine_id = self.get_or_create_machine_id();
+        let conn = self.0.lock().unwrap();
+        conn.query_row(
+            "SELECT
+                sh.session_id,
+                COALESCE(sh.project_id, w.project_id, 'proj_default'),
+                sh.cli,
+                sh.label,
+                CAST(sh.job_id AS TEXT),
+                sh.tokens_prompt,
+                sh.tokens_completion,
+                sh.tokens_reasoning,
+                sh.cost_usd,
+                sh.model,
+                sh.provider,
+                sh.last_output,
+                sh.agent_id,
+                sh.user_id,
+                sh.rate_prompt_per_1m,
+                sh.rate_cached_per_1m,
+                sh.rate_completion_per_1m,
+                sh.rate_reasoning_per_1m,
+                sh.started_at,
+                sh.ended_at,
+                CAST(sh.workspace_id AS TEXT)
+             FROM session_history sh
+             LEFT JOIN workspaces w ON sh.workspace_id = w.id
+             WHERE sh.session_id = ?1",
+            [session_id],
+            |r| {
+                Ok(UserDbSessionRow {
+                    id: r.get(0)?,
+                    workspace_id: r.get(20).ok(),
+                    project_id: r.get(1)?,
+                    session_id: r.get(0)?,
+                    cli: r.get(2)?,
+                    label: r.get(3)?,
+                    job_id: r.get(4)?,
+                    tokens_prompt: r.get(5)?,
+                    tokens_completion: r.get(6)?,
+                    tokens_reasoning: r.get(7)?,
+                    cost_usd: r.get(8)?,
+                    model: r.get(9)?,
+                    provider: r.get(10)?,
+                    last_output: r.get(11)?,
+                    agent_id: r.get(12)?,
+                    user_id: r.get(13)?,
+                    rate_prompt_per_1m: r.get(14)?,
+                    rate_cached_per_1m: r.get(15)?,
+                    rate_completion_per_1m: r.get(16)?,
+                    rate_reasoning_per_1m: r.get(17)?,
+                    machine_id: Some(machine_id),
+                    started_at: r.get(18)?,
+                    ended_at: r.get(19)?,
+                })
+            },
+        ).ok()
+    }
+
+    pub fn list_all_sessions_for_userdb(&self) -> Vec<UserDbSessionRow> {
+        let machine_id = self.get_or_create_machine_id();
+        let conn = self.0.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT
+                sh.session_id,
+                COALESCE(sh.project_id, w.project_id, 'proj_default'),
+                sh.cli,
+                sh.label,
+                CAST(sh.job_id AS TEXT),
+                sh.tokens_prompt,
+                sh.tokens_completion,
+                sh.tokens_reasoning,
+                sh.cost_usd,
+                sh.model,
+                sh.provider,
+                sh.last_output,
+                sh.agent_id,
+                sh.user_id,
+                sh.rate_prompt_per_1m,
+                sh.rate_cached_per_1m,
+                sh.rate_completion_per_1m,
+                sh.rate_reasoning_per_1m,
+                sh.started_at,
+                sh.ended_at,
+                CAST(sh.workspace_id AS TEXT)
+             FROM session_history sh
+             LEFT JOIN workspaces w ON sh.workspace_id = w.id
+             ORDER BY sh.started_at DESC",
+        ) else {
+            return Vec::new();
+        };
+        let m_id = machine_id.clone();
+        let rows = stmt.query_map([], move |r| {
+            Ok(UserDbSessionRow {
+                id: r.get(0)?,
+                workspace_id: r.get(20).ok(),
+                project_id: r.get(1)?,
+                session_id: r.get(0)?,
+                cli: r.get(2)?,
+                label: r.get(3)?,
+                job_id: r.get(4)?,
+                tokens_prompt: r.get(5)?,
+                tokens_completion: r.get(6)?,
+                tokens_reasoning: r.get(7)?,
+                cost_usd: r.get(8)?,
+                model: r.get(9)?,
+                provider: r.get(10)?,
+                last_output: r.get(11)?,
+                agent_id: r.get(12)?,
+                user_id: r.get(13)?,
+                rate_prompt_per_1m: r.get(14)?,
+                rate_cached_per_1m: r.get(15)?,
+                rate_completion_per_1m: r.get(16)?,
+                rate_reasoning_per_1m: r.get(17)?,
+                machine_id: Some(m_id.clone()),
+                started_at: r.get(18)?,
+                ended_at: r.get(19)?,
+            })
+        });
+        match rows {
+            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn delete_local_session_history(&self, session_id: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute("DELETE FROM session_history WHERE session_id = ?1", [session_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_chat_session_for_userdb(&self, session_id: &str) -> Option<UserDbChatSessionRow> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row(
+            "SELECT
+                id, project_id, name, is_star,
+                tokens_prompt, tokens_completion, tokens_reasoning, cost_usd,
+                model, provider, agent_id, user_id,
+                rate_prompt_per_1m, rate_cached_per_1m, rate_completion_per_1m, rate_reasoning_per_1m,
+                created_at, updated_at,
+                CAST(workspace_id AS TEXT)
+             FROM chat_sessions
+             WHERE id = ?1",
+            [session_id],
+            |r| {
+                Ok(UserDbChatSessionRow {
+                    id: r.get(0)?,
+                    workspace_id: r.get(18).ok(),
+                    project_id: r.get(1)?,
+                    name: r.get(2)?,
+                    is_star: r.get(3)?,
+                    tokens_prompt: r.get(4)?,
+                    tokens_completion: r.get(5)?,
+                    tokens_reasoning: r.get(6)?,
+                    cost_usd: r.get(7)?,
+                    model: r.get(8)?,
+                    provider: r.get(9)?,
+                    agent_id: r.get(10)?,
+                    user_id: r.get(11)?,
+                    rate_prompt_per_1m: r.get(12)?,
+                    rate_cached_per_1m: r.get(13)?,
+                    rate_completion_per_1m: r.get(14)?,
+                    rate_reasoning_per_1m: r.get(15)?,
+                    created_at: r.get(16)?,
+                    updated_at: r.get(17)?,
+                })
+            },
+        ).ok()
+    }
+
+    pub fn list_all_chat_sessions_for_userdb(&self) -> Vec<UserDbChatSessionRow> {
+        let conn = self.0.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT
+                id, project_id, name, is_star,
+                tokens_prompt, tokens_completion, tokens_reasoning, cost_usd,
+                model, provider, agent_id, user_id,
+                rate_prompt_per_1m, rate_cached_per_1m, rate_completion_per_1m, rate_reasoning_per_1m,
+                created_at, updated_at,
+                CAST(workspace_id AS TEXT)
+             FROM chat_sessions
+             ORDER BY updated_at DESC",
+        ) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map([], |r| {
+            Ok(UserDbChatSessionRow {
+                id: r.get(0)?,
+                workspace_id: r.get(18).ok(),
+                project_id: r.get(1)?,
+                name: r.get(2)?,
+                is_star: r.get(3)?,
+                tokens_prompt: r.get(4)?,
+                tokens_completion: r.get(5)?,
+                tokens_reasoning: r.get(6)?,
+                cost_usd: r.get(7)?,
+                model: r.get(8)?,
+                provider: r.get(9)?,
+                agent_id: r.get(10)?,
+                user_id: r.get(11)?,
+                rate_prompt_per_1m: r.get(12)?,
+                rate_cached_per_1m: r.get(13)?,
+                rate_completion_per_1m: r.get(14)?,
+                rate_reasoning_per_1m: r.get(15)?,
+                created_at: r.get(16)?,
+                updated_at: r.get(17)?,
+            })
+        });
+        match rows {
+            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn delete_local_chat_session(&self, session_id: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute("DELETE FROM chat_sessions WHERE id = ?1", [session_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_userdb_config_row(&self, user_id: &str) -> Option<UserDbConfigRow> {
+        let conn = self.0.lock().unwrap();
+        if !user_id.is_empty() {
+            if let Ok(row) = conn.query_row(
+                "SELECT user_id, url, token_encrypted, off_platform, created_at, updated_at FROM userdb WHERE user_id = ?1",
+                [user_id],
+                |r| {
+                    Ok(UserDbConfigRow {
+                        user_id: r.get(0)?,
+                        url: r.get(1)?,
+                        token_encrypted: r.get(2)?,
+                        off_platform: r.get(3)?,
+                        created_at: r.get(4)?,
+                        updated_at: r.get(5)?,
+                    })
+                },
+            ) {
+                return Some(row);
+            }
+        }
+
+        conn.query_row(
+            "SELECT user_id, url, token_encrypted, off_platform, created_at, updated_at FROM userdb ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |r| {
+                Ok(UserDbConfigRow {
+                    user_id: r.get(0)?,
+                    url: r.get(1)?,
+                    token_encrypted: r.get(2)?,
+                    off_platform: r.get(3)?,
+                    created_at: r.get(4)?,
+                    updated_at: r.get(5)?,
+                })
+            },
+        ).ok()
+    }
+
+    pub fn upsert_userdb_config_row(
+        &self,
+        user_id: &str,
+        url: &str,
+        token_encrypted: &str,
+        off_platform: i64,
+    ) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "INSERT INTO userdb (user_id, url, token_encrypted, off_platform, updated_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'))
+             ON CONFLICT(user_id) DO UPDATE SET
+                url = excluded.url,
+                token_encrypted = excluded.token_encrypted,
+                off_platform = excluded.off_platform,
+                updated_at = excluded.updated_at",
+            rusqlite::params![user_id, url, token_encrypted, off_platform],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserDbConfigRow {
+    pub user_id: String,
+    pub url: String,
+    pub token_encrypted: String,
+    pub off_platform: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserDbSessionRow {
+    pub id: String,
+    pub workspace_id: Option<String>,
+    pub project_id: String,
+    pub session_id: String,
+    pub cli: String,
+    pub label: Option<String>,
+    pub job_id: Option<String>,
+    pub tokens_prompt: i64,
+    pub tokens_completion: i64,
+    pub tokens_reasoning: i64,
+    pub cost_usd: f64,
+    pub model: String,
+    pub provider: String,
+    pub last_output: String,
+    pub agent_id: Option<String>,
+    pub user_id: Option<String>,
+    pub rate_prompt_per_1m: f64,
+    pub rate_cached_per_1m: f64,
+    pub rate_completion_per_1m: f64,
+    pub rate_reasoning_per_1m: f64,
+    pub machine_id: Option<String>,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserDbChatSessionRow {
+    pub id: String,
+    pub workspace_id: Option<String>,
+    pub project_id: String,
+    pub name: Option<String>,
+    pub is_star: i64,
+    pub tokens_prompt: i64,
+    pub tokens_completion: i64,
+    pub tokens_reasoning: i64,
+    pub cost_usd: f64,
+    pub model: String,
+    pub provider: String,
+    pub agent_id: Option<String>,
+    pub user_id: Option<String>,
+    pub rate_prompt_per_1m: f64,
+    pub rate_cached_per_1m: f64,
+    pub rate_completion_per_1m: f64,
+    pub rate_reasoning_per_1m: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserDbInstalledPluginRow {
+    pub id: String,
+    pub plugin_id: String,
+    pub scope: String,
+    pub scope_id: String,
+    pub installed_at: String,
+    pub installed_by: String,
+    pub version: String,
+    pub skills_url: String,
+    pub commands_url: String,
+    pub agents_url: String,
+    pub hooks_url: String,
+    pub rules_url: String,
+    pub mcp_url: String,
+    pub skill_ids: String,
+    pub agent_ids: String,
+    pub mcp_ids: String,
+    pub command_ids: String,
+    pub hook_ids: String,
+    pub rule_ids: String,
+    pub connector_ids: String,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]

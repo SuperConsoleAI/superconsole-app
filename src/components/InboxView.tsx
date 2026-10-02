@@ -1,4 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+/**
+ * InboxView Component — Cross-workspace review inbox for scheduled job outputs
+ * Supports filtering by organization and project, reviewing agent proposals, and launching resumed sessions.
+ */
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { listen } from "@tauri-apps/api/event";
@@ -7,14 +11,36 @@ import { api, type InboxItem, type Workspace } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
+import { cn, getActiveWorkspaceFilter } from "@/lib/utils";
 
 const MD_CLASSES =
   "[&_a]:text-primary [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-[12px] [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:mt-3 [&_h2]:font-semibold [&_li]:my-0.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-1.5 [&_p]:leading-relaxed [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_ul]:list-disc [&_ul]:pl-5";
 
-export function InboxView({ workspaces }: { workspaces: Workspace[] }) {
+export function InboxView({
+  workspaces,
+  activeOrgId,
+  initialWorkspaceId,
+}: {
+  workspaces: Workspace[];
+  activeOrgId?: number;
+  initialWorkspaceId?: number;
+}) {
+  const activeWsId = getActiveWorkspaceFilter(initialWorkspaceId);
+  const targetWs = activeWsId ? workspaces.find((w) => w.id === activeWsId) : null;
+  const [orgFilter, setOrgFilter] = useState<number | "all">(targetWs?.organization_id ?? activeOrgId ?? "all");
+  const [projFilter, setProjFilter] = useState<number | "all">(targetWs?.id ?? "all");
   const [items, setItems] = useState<InboxItem[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (activeWsId && projFilter === "all" && workspaces.length > 0) {
+      const ws = workspaces.find((w) => w.id === activeWsId);
+      if (ws) {
+        setProjFilter(ws.id);
+        if (ws.organization_id) setOrgFilter(ws.organization_id);
+      }
+    }
+  }, [activeWsId, projFilter, workspaces]);
 
   const refresh = useCallback(() => {
     api.listInbox().then(setItems).catch(console.error);
@@ -28,6 +54,35 @@ export function InboxView({ workspaces }: { workspaces: Workspace[] }) {
     };
   }, [refresh]);
 
+  useEffect(() => {
+    const handleOrgChange = (e: any) => {
+      if (e.detail !== undefined) {
+        setOrgFilter(e.detail);
+        setProjFilter("all");
+      }
+    };
+    const handleProjChange = (e: any) => {
+      if (e.detail !== undefined) setProjFilter(e.detail);
+    };
+    const handleNavMounted = () => {
+      window.dispatchEvent(new CustomEvent("inbox-org-sync", { detail: orgFilter }));
+      window.dispatchEvent(new CustomEvent("inbox-proj-sync", { detail: projFilter }));
+    };
+
+    window.addEventListener("inbox-org-change", handleOrgChange);
+    window.addEventListener("inbox-proj-change", handleProjChange);
+    window.addEventListener("inbox-nav-mounted", handleNavMounted);
+
+    window.dispatchEvent(new CustomEvent("inbox-org-sync", { detail: orgFilter }));
+    window.dispatchEvent(new CustomEvent("inbox-proj-sync", { detail: projFilter }));
+
+    return () => {
+      window.removeEventListener("inbox-org-change", handleOrgChange);
+      window.removeEventListener("inbox-proj-change", handleProjChange);
+      window.removeEventListener("inbox-nav-mounted", handleNavMounted);
+    };
+  }, [orgFilter, projFilter]);
+
   const toggle = (item: InboxItem) => {
     const next = expanded === item.id ? null : item.id;
     setExpanded(next);
@@ -38,19 +93,30 @@ export function InboxView({ workspaces }: { workspaces: Workspace[] }) {
 
   const wsName = (id: number) => workspaces.find((w) => w.id === id)?.name ?? "unknown";
 
+  const filteredItems = useMemo(() => {
+    return items.filter((item) => {
+      const ws = workspaces.find((w) => w.id === item.workspace_id);
+      if (orgFilter !== "all" && ws && ws.organization_id !== orgFilter) return false;
+      if (projFilter !== "all" && item.workspace_id !== projFilter) return false;
+      return true;
+    });
+  }, [items, workspaces, orgFilter, projFilter]);
+
   return (
     <div className="flex h-full flex-col">
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2 px-5 py-4">
-          {items.length === 0 && (
+          {filteredItems.length === 0 && (
             <div className="rounded-xl border border-dashed py-16 text-center">
               <Inbox className="mx-auto h-8 w-8 text-muted-foreground/40" />
               <p className="mt-3 text-sm text-muted-foreground">
-                Nothing here yet. Schedule a job and its output will land here.
+                {items.length === 0
+                  ? "Nothing here yet. Schedule a job and its output will land here."
+                  : "No inbox items found matching the selected project filter."}
               </p>
             </div>
           )}
-          {items.map((item) => {
+          {filteredItems.map((item) => {
             const isOpen = expanded === item.id;
             const unread = item.status === "unread";
             return (

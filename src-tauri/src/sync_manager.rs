@@ -220,6 +220,60 @@ async fn sync_org_projects(
     }
 }
 
+/// Reconciles any organizations or workspaces created locally while offline with Central Turso DB.
+async fn reconcile_offline_entities(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    cfg: &TursoConfig,
+    user_id: &str,
+) {
+    let db = app.state::<Db>();
+
+    // 1. Reconcile offline-created organizations up to Turso
+    if let Ok(local_orgs) = db.list_organizations() {
+        for org in local_orgs {
+            let final_org_id = match org.org_id {
+                Some(ref oid) if !oid.is_empty() => oid.clone(),
+                _ => {
+                    let new_id = ulid::Ulid::new().to_string();
+                    let _ = db.set_organization_org_id(org.id, &new_id);
+                    new_id
+                }
+            };
+
+            let _ = cloud::turso_execute(
+                client,
+                cfg,
+                "INSERT OR IGNORE INTO organizations (id, name, plan, owner_id) VALUES (?, ?, 'free', ?)",
+                vec![Some(final_org_id.clone()), Some(org.name.clone()), Some(user_id.to_string())],
+            )
+            .await;
+
+            let _ = cloud::turso_execute(
+                client,
+                cfg,
+                "INSERT OR IGNORE INTO org_members (org_id, user_id, role) VALUES (?, ?, 'owner')",
+                vec![Some(final_org_id.clone()), Some(user_id.to_string())],
+            )
+            .await;
+        }
+    }
+
+    // 2. Reconcile offline-created workspaces up to Turso projects table
+    if let Ok(workspaces) = db.list_workspaces() {
+        for ws in workspaces {
+            if ws.project_id.is_none() {
+                let target_org_id = ws.org_id.clone().or_else(|| {
+                    db.get_organization(ws.organization_id).ok().and_then(|o| o.org_id)
+                });
+                if let Some(org_id) = target_org_id {
+                    let _ = crate::llm::ensure_workspace_project(app.clone(), ws.id, org_id).await;
+                }
+            }
+        }
+    }
+}
+
 /// Full initial sync, scoped to the signed-in user. Silent no-op if not signed in.
 pub async fn sync_on_startup(app: &AppHandle) {
     let Some((user_id, org_ids)) = identity(app) else {
@@ -232,7 +286,10 @@ pub async fn sync_on_startup(app: &AppHandle) {
     let client = reqwest::Client::new();
     let synced_at = now();
 
-    // Re-push any usage events that never reached the cloud (e.g. offline at
+    // 1. Reconcile any locally created offline entities (orgs + projects)
+    reconcile_offline_entities(app, &client, &cfg, &user_id).await;
+
+    // 2. Re-push any usage events that never reached the cloud (e.g. offline at
     // session end) before pulling the shared totals back down.
     let pending = {
         let db = app.state::<Db>();

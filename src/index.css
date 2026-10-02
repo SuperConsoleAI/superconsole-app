@@ -61,6 +61,7 @@
   --input: oklch(0.9 0.008 91);
   --ring: #2A78D6;
   --radius: 0.625rem;
+  --navbar-toggle-height: 1.625rem;            /* 26px, reduced by 0.125rem from 1.75rem (28px) */
 
   --terminal-bg: #FAF9F5;                       /* light terminal bg = #FAF9F5 */
   --sidebar: oklch(0.962 0.006 91);

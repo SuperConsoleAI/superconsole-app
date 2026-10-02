@@ -9,12 +9,15 @@ import {
   BookOpen,
   Blocks,
   Check,
+  CircleUser,
   Copy,
   CreditCard,
   Database,
   Eye,
   EyeOff,
   FileCode,
+  Globe,
+  HardDrive,
   KeyRound,
   type LucideIcon,
   ArrowLeft,
@@ -24,10 +27,13 @@ import {
   Play,
   Plug,
   Plus,
+  PanelLeftClose,
+  PanelLeftOpen,
   Search,
   Trash2,
   Settings as SettingsIcon,
   Shield,
+  ShieldAlert,
   Sparkles,
   Terminal,
   Users,
@@ -48,24 +54,32 @@ import {
 import { ConnectorManager } from "@/components/connectors/ConnectorManager";
 export { ConnectorManager };
 import { LocalDBStudio } from "@/components/localdb/LocalDBStudio";
+import { UserDBSection } from "@/components/UserDBSection";
+import {
+  ProfileSection,
+  PublicProfileSection,
+  OffPlatformSection,
+} from "@/components/settings/profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { PresetIcon } from "@/components/PresetIcon";
 import { useTheme } from "@/components/theme-provider";
 
 import { LibrarySection } from "@/components/libraryx";
 import { useAuth } from "@/lib/auth-context";
 import { useWorkspaces } from "@/lib/workspace-context";
-import { cn } from "@/lib/utils";
+import { cn, getActiveWorkspaceFilter, setActiveWorkspaceFilter } from "@/lib/utils";
 
-type TopTab = "account" | "org" | "project";
+type TopTab = "account" | "org" | "project" | "profile";
 
 const NAV: Record<TopTab, string[]> = {
   account: [
     "General",
+    "Profile",
     "Appearance",
     "Terminal",
     "Environment",
@@ -74,6 +88,7 @@ const NAV: Record<TopTab, string[]> = {
     "Integrations",
     "Connectors",
     "LocalDB",
+    "UserDB",
     "Security",
     "Notifications",
   ],
@@ -89,10 +104,14 @@ const NAV: Record<TopTab, string[]> = {
     "Messaging",
     "Automations",
   ],
+  profile: ["Profile", "Public Profile", "Off-Platform"],
 };
 
 const NAV_ICONS: Record<string, LucideIcon> = {
   General: SettingsIcon,
+  Profile: CircleUser,
+  "Public Profile": Globe,
+  "Off-Platform": ShieldAlert,
   Environment: KeyRound,
   Scripts: FileCode,
   Appearance: Palette,
@@ -102,6 +121,7 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   Integrations: Blocks,
   Connectors: Plug,
   LocalDB: Database,
+  UserDB: HardDrive,
   Messaging: MessageSquare,
   Security: Shield,
   Notifications: Bell,
@@ -112,41 +132,67 @@ const NAV_ICONS: Record<string, LucideIcon> = {
 };
 
 export function SettingsPage({
+  initialWorkspaceId,
   initialTab,
   initialSection,
 }: {
+  initialWorkspaceId?: number;
   initialTab?: TopTab;
   initialSection?: string;
 } = {}) {
   const { workspaces } = useWorkspaces();
   const { activeCloudOrg, setActiveCloudOrgId } = useAuth();
+  const activeWsId = getActiveWorkspaceFilter(initialWorkspaceId);
 
-  const [tab, setTab] = useState<TopTab>(initialTab ?? "account");
+  const [tab, setTab] = useState<TopTab>(
+    initialTab === "profile" ? "account" : (initialTab ?? (initialWorkspaceId ? "project" : "account")),
+  );
   const [query, setQuery] = useState("");
   const [section, setSection] = useState<Record<TopTab, string>>({
-    account: initialTab === "account" && initialSection ? initialSection : "General",
+    account: initialTab === "profile" ? "Profile" : (initialTab === "account" && initialSection ? initialSection : "General"),
     org: initialTab === "org" && initialSection ? initialSection : "General",
     project: initialTab === "project" && initialSection ? initialSection : "General",
+    profile: "Profile",
+  });
+  const [isCollapsed, setIsCollapsed] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("settings_sidebar_collapsed") === "true";
+    }
+    return false;
   });
 
+  const toggleCollapse = () => {
+    setIsCollapsed((prev) => {
+      const next = !prev;
+      if (typeof window !== "undefined") {
+        localStorage.setItem("settings_sidebar_collapsed", String(next));
+      }
+      return next;
+    });
+  };
+
   useEffect(() => {
-    if (initialTab) {
+    if (initialTab === "profile") {
+      setTab("account");
+      setSection((prev) => ({ ...prev, account: "Profile" }));
+    } else if (initialTab) {
       setTab(initialTab);
     }
     if (initialSection) {
-      const targetTab = initialTab ?? tab;
+      const targetTab = initialTab === "profile" ? "account" : (initialTab ?? tab);
       setSection((prev) => ({ ...prev, [targetTab]: initialSection }));
     }
   }, [initialTab, initialSection]);
 
   // Project scope selection, shared across Project sub-sections.
-  const [workspaceId, setWorkspaceId] = useState<number | null>(null);
+  const [workspaceId, setWorkspaceId] = useState<number | null>(() => activeWsId);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [projectError, setProjectError] = useState<string | null>(null);
   const [ensuring, setEnsuring] = useState(false);
 
   const selectProject = async (id: number) => {
     setWorkspaceId(id);
+    setActiveWorkspaceFilter(id);
     setProjectId(null);
     setProjectError(null);
     if (!activeCloudOrg) {
@@ -163,13 +209,16 @@ export function SettingsPage({
     }
   };
 
-  // Default to the first workspace when entering the Project tab.
+  // Default to active or first workspace when entering the Project tab.
   useEffect(() => {
-    if (tab === "project" && workspaceId === null && workspaces.length > 0) {
-      selectProject(workspaces[0].id);
+    if (tab === "project" && workspaces.length > 0) {
+      const targetId = workspaceId ?? activeWsId ?? workspaces[0].id;
+      if (workspaceId !== targetId || projectId === null) {
+        selectProject(targetId);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, workspaces, activeCloudOrg]);
+  }, [tab, workspaces, activeCloudOrg, activeWsId]);
 
   useEffect(() => {
     window.dispatchEvent(
@@ -180,7 +229,14 @@ export function SettingsPage({
   }, [tab, workspaceId]);
 
   useEffect(() => {
-    const onTab = (e: any) => { if (e.detail) setTab(e.detail); };
+    const onTab = (e: any) => {
+      if (e.detail === "profile") {
+        setTab("account");
+        setSection((prev) => ({ ...prev, account: "Profile" }));
+      } else if (e.detail) {
+        setTab(e.detail);
+      }
+    };
     const onProject = (e: any) => { if (typeof e.detail === "number") selectProject(e.detail); };
     const onOrg = (e: any) => { if (e.detail) setActiveCloudOrgId(e.detail); };
     const onNavMounted = () => {
@@ -214,27 +270,81 @@ export function SettingsPage({
     <div className="flex h-full flex-col">
 
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar">
-          <div className="p-3 pb-1">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search settings..."
-                className="h-8 pl-8 text-xs"
-              />
+        <aside
+          className={cn(
+            "flex shrink-0 flex-col border-r bg-sidebar transition-[width] duration-200 ease-in-out",
+            isCollapsed ? "w-12" : "w-56",
+          )}
+        >
+          {isCollapsed ? (
+            <div className="p-2 pb-1 flex justify-center">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCollapsed(false);
+                      if (typeof window !== "undefined") {
+                        localStorage.setItem("settings_sidebar_collapsed", "false");
+                      }
+                    }}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors cursor-pointer"
+                    aria-label="Search settings"
+                  >
+                    <Search className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">Search settings</TooltipContent>
+              </Tooltip>
             </div>
-          </div>
-          <ScrollArea className="min-h-0 flex-1 px-2 py-2">
+          ) : (
+            <div className="p-3 pb-1">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search settings..."
+                  className="h-8 pl-8 text-xs"
+                />
+              </div>
+            </div>
+          )}
+
+          <ScrollArea className={cn("min-h-0 flex-1 py-2", isCollapsed ? "px-1.5" : "px-2")}>
             {navItems.map((item) => {
               const Icon = NAV_ICONS[item];
+              if (isCollapsed) {
+                return (
+                  <Tooltip key={item}>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={() => setActive(item)}
+                        className={cn(
+                          "relative flex h-8 w-8 items-center justify-center rounded-md mx-auto my-1 transition-colors cursor-pointer",
+                          active === item
+                            ? "bg-accent font-medium text-accent-foreground"
+                            : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                        )}
+                        aria-label={item}
+                      >
+                        {Icon ? (
+                          <Icon className="h-4 w-4 shrink-0" />
+                        ) : (
+                          <span className="text-xs font-semibold">{item[0]}</span>
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">{item}</TooltipContent>
+                  </Tooltip>
+                );
+              }
               return (
                 <button
                   key={item}
                   onClick={() => setActive(item)}
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors",
+                    "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors cursor-pointer",
                     active === item
                       ? "bg-accent font-medium text-accent-foreground"
                       : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
@@ -254,23 +364,71 @@ export function SettingsPage({
               setTab("account");
               setSection((prev) => ({ ...prev, account: "Library" }));
             }}
-            className="w-full h-6 text-transparent select-none cursor-default bg-transparent text-[11px] shrink-0 outline-none"
+            className={cn(
+              "w-full text-transparent select-none cursor-default bg-transparent text-[11px] shrink-0 outline-none",
+              isCollapsed ? "h-2" : "h-6",
+            )}
             aria-label="Library"
           >
             Library
           </button>
 
-          <div
-            className="border-t py-3.5 px-3 flex items-center min-h-[44px] cursor-pointer hover:bg-accent/30 transition-colors"
-            onClick={() => openUrl("https://github.com").catch(() => {})}
-          >
-            <button
-              className="flex items-center gap-2 px-1 text-xs text-muted-foreground transition-colors hover:text-foreground cursor-pointer"
-            >
-              <BookOpen className="h-3.5 w-3.5" />
-              Documentation
-            </button>
-          </div>
+          {isCollapsed ? (
+            <div className="border-t p-1.5 flex flex-col items-center gap-1 shrink-0">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => openUrl("https://github.com").catch(() => {})}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors cursor-pointer"
+                    aria-label="Documentation"
+                  >
+                    <BookOpen className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">Documentation</TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={toggleCollapse}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors cursor-pointer"
+                    aria-label="Expand sidebar"
+                  >
+                    <PanelLeftOpen className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">Expand sidebar</TooltipContent>
+              </Tooltip>
+            </div>
+          ) : (
+            <div className="border-t px-2.5 py-2 flex items-center justify-between min-h-[44px] shrink-0">
+              <button
+                type="button"
+                onClick={() => openUrl("https://github.com").catch(() => {})}
+                className="flex items-center gap-2 px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-accent/40 rounded-md cursor-pointer"
+              >
+                <BookOpen className="h-3.5 w-3.5 shrink-0" />
+                <span>Documentation</span>
+              </button>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={toggleCollapse}
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors cursor-pointer"
+                    aria-label="Collapse sidebar"
+                  >
+                    <PanelLeftClose className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right">Collapse sidebar</TooltipContent>
+              </Tooltip>
+            </div>
+          )}
         </aside>
 
         {active === "LocalDB" ? (
@@ -283,6 +441,7 @@ export function SettingsPage({
               projectError={projectError}
               ensuring={ensuring}
               hasWorkspaces={workspaces.length > 0}
+              onNavigateSection={(sec) => setSection((prev) => ({ ...prev, [tab]: sec }))}
             />
           </div>
         ) : (
@@ -298,6 +457,7 @@ export function SettingsPage({
                   projectError={projectError}
                   ensuring={ensuring}
                   hasWorkspaces={workspaces.length > 0}
+                  onNavigateSection={(sec) => setSection((prev) => ({ ...prev, [tab]: sec }))}
                 />
               </div>
             </div>
@@ -316,6 +476,7 @@ function Content({
   projectError,
   ensuring,
   hasWorkspaces,
+  onNavigateSection,
 }: {
   tab: TopTab;
   section: string;
@@ -324,6 +485,7 @@ function Content({
   projectError: string | null;
   ensuring: boolean;
   hasWorkspaces: boolean;
+  onNavigateSection?: (section: string) => void;
 }) {
   const { auth, activeCloudOrg } = useAuth();
 
@@ -331,6 +493,12 @@ function Content({
     switch (section) {
       case "General":
         return <AccountGeneralSection />;
+      case "Profile":
+        return auth ? (
+          <ProfileSection user={auth.user} onNavigateSection={onNavigateSection} />
+        ) : (
+          <SignInPrompt label="manage your profile" />
+        );
       case "Appearance":
         return <AppearanceSection />;
       case "Terminal":
@@ -371,12 +539,28 @@ function Content({
         );
       case "LocalDB":
         return <LocalDBStudio />;
+      case "UserDB":
+        return <UserDBSection />;
       case "Security":
         return <SecuritySection />;
       case "Notifications":
         return <NotificationsSection />;
       case "Library":
         return auth ? <LibrarySection /> : <SignInPrompt label="manage library" />;
+    }
+  }
+
+  if (tab === "profile") {
+    if (!auth) return <SignInPrompt label="view and edit your profile" />;
+    switch (section) {
+      case "Profile":
+        return <ProfileSection user={auth.user} onNavigateSection={onNavigateSection} />;
+      case "Public Profile":
+        return <PublicProfileSection user={auth.user} />;
+      case "Off-Platform":
+        return <OffPlatformSection user={auth.user} onNavigateSection={onNavigateSection} />;
+      default:
+        return <ProfileSection user={auth.user} onNavigateSection={onNavigateSection} />;
     }
   }
 
@@ -518,10 +702,25 @@ function AccountGeneralSection() {
         <div className="rounded-lg border bg-card px-4 py-3">
           <p className="text-xs text-muted-foreground">Signed in as</p>
           <p className="mt-0.5 text-sm font-medium">{auth.user.email}</p>
-          {auth.user.name && (
-            <p className="text-xs text-muted-foreground">{auth.user.name}</p>
+          {(auth.user.full_name || auth.user.name) && (
+            <p className="text-xs text-muted-foreground">{auth.user.full_name || auth.user.name}</p>
           )}
-          <div className="mt-3">
+          {auth.user.username && (
+            <p className="text-xs font-mono text-muted-foreground">@{auth.user.username}</p>
+          )}
+          <div className="mt-3 flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                window.dispatchEvent(
+                  new CustomEvent("settings-tab-change", { detail: "profile" })
+                );
+              }}
+            >
+              <CircleUser className="mr-1.5 h-3.5 w-3.5" />
+              Edit Profile
+            </Button>
             <Button size="sm" variant="outline" onClick={() => signOut()}>
               Sign out
             </Button>
@@ -534,6 +733,7 @@ function AccountGeneralSection() {
     </div>
   );
 }
+
 
 function NotificationsSection() {
   return (

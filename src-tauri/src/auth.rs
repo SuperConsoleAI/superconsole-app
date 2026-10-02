@@ -21,14 +21,73 @@ use tauri::{AppHandle, Emitter, Manager, State};
 const CALLBACK_PORT: u16 = 4666;
 const REDIRECT_URI: &str = "http://localhost:4666/callback";
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AuthUser {
     pub id: String,
     pub workos_id: String,
     pub email: String,
     pub name: Option<String>,
     #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub full_name: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+    #[serde(default)]
     pub logo_url: Option<String>,
+    #[serde(default)]
+    pub banner: Option<String>,
+    #[serde(default)]
+    pub bio: Option<String>,
+    #[serde(default = "default_empty_json_arr")]
+    pub social: String,
+    #[serde(default = "default_empty_json_arr")]
+    pub theme: String,
+    #[serde(default = "default_one")]
+    pub is_active: i64,
+    #[serde(default)]
+    pub is_public: i64,
+    #[serde(default)]
+    pub show_team: i64,
+    #[serde(default = "default_one")]
+    pub show_projects: i64,
+    #[serde(default = "default_one")]
+    pub show_usage: i64,
+    #[serde(default)]
+    pub off_platform: i64,
+}
+
+fn default_empty_json_arr() -> String {
+    "[]".to_string()
+}
+
+fn default_one() -> i64 {
+    1
+}
+
+impl Default for AuthUser {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            workos_id: String::new(),
+            email: String::new(),
+            name: None,
+            username: None,
+            full_name: None,
+            avatar_url: None,
+            logo_url: None,
+            banner: None,
+            bio: None,
+            social: default_empty_json_arr(),
+            theme: default_empty_json_arr(),
+            is_active: 1,
+            is_public: 0,
+            show_team: 0,
+            show_projects: 1,
+            show_usage: 1,
+            off_platform: 0,
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -59,10 +118,28 @@ pub struct AuthState {
     session: Mutex<Option<StoredSession>>,
 }
 
+fn is_userdb_configured_for_user(db: &Db, user_id: &str) -> bool {
+    if let Some(row) = db.get_userdb_config_row(user_id) {
+        if !row.url.trim().is_empty() && !row.token_encrypted.trim().is_empty() {
+            return true;
+        }
+    }
+    let url = db.get_setting("userdb_url").unwrap_or_default();
+    let token = db.get_setting("userdb_token").unwrap_or_default();
+    !url.trim().is_empty() && !token.trim().is_empty()
+}
+
 impl AuthState {
     pub fn load_from_db(db: &Db) -> Self {
         let session = if let Some(json) = db.get_cloud_identity() {
-            if let Ok(info) = serde_json::from_str::<AuthInfo>(&json) {
+            if let Ok(mut info) = serde_json::from_str::<AuthInfo>(&json) {
+                if info.user.off_platform == 1 && !is_userdb_configured_for_user(db, &info.user.id) {
+                    info.user.off_platform = 0;
+                    let _ = db.set_setting("off_platform", "0");
+                    if let Ok(payload) = serde_json::to_string(&info) {
+                        let _ = db.set_cloud_identity(&payload);
+                    }
+                }
                 Some(StoredSession {
                     user: info.user,
                     access_token: String::new(),
@@ -215,6 +292,7 @@ async fn upsert_user_and_orgs(
             email: email.to_string(),
             name: name.clone(),
             logo_url: avatar.clone(),
+            ..Default::default()
         },
         orgs,
     })
@@ -489,7 +567,20 @@ pub fn auth_status(db: State<Db>, state: State<AuthState>) -> Result<Option<Auth
         return Ok(None);
     }
     match db.get_cloud_identity() {
-        Some(json) => Ok(serde_json::from_str(&json).ok()),
+        Some(json) => {
+            if let Ok(mut info) = serde_json::from_str::<AuthInfo>(&json) {
+                if info.user.off_platform == 1 && !is_userdb_configured_for_user(&db, &info.user.id) {
+                    info.user.off_platform = 0;
+                    let _ = db.set_setting("off_platform", "0");
+                    if let Ok(payload) = serde_json::to_string(&info) {
+                        let _ = db.set_cloud_identity(&payload);
+                    }
+                }
+                Ok(Some(info))
+            } else {
+                Ok(None)
+            }
+        }
         None => Ok(None),
     }
 }
@@ -498,5 +589,153 @@ pub fn auth_status(db: State<Db>, state: State<AuthState>) -> Result<Option<Auth
 pub fn sign_out(db: State<Db>, state: State<AuthState>) -> Result<(), String> {
     let _ = db.clear_cloud_identity();
     *state.session.lock().unwrap() = None;
+    crate::userdb::clear_memory_userdb_config();
     Ok(())
 }
+
+#[tauri::command]
+pub async fn update_user_profile(
+    app: AppHandle,
+    db: State<'_, Db>,
+    state: State<'_, AuthState>,
+    username: Option<String>,
+    full_name: Option<String>,
+    avatar_url: Option<String>,
+    bio: Option<String>,
+    is_public: Option<bool>,
+    off_platform: Option<bool>,
+) -> Result<AuthInfo, String> {
+    let mut info: AuthInfo = match db.get_cloud_identity() {
+        Some(json) => serde_json::from_str(&json).map_err(|e| e.to_string())?,
+        None => return Err("Not signed in".to_string()),
+    };
+
+    if let Some(u) = username {
+        let trimmed = u.trim().to_string();
+        info.user.username = if trimmed.is_empty() { None } else { Some(trimmed) };
+    }
+    if let Some(fn_val) = full_name {
+        let trimmed = fn_val.trim().to_string();
+        info.user.full_name = if trimmed.is_empty() { None } else { Some(trimmed.clone()) };
+        info.user.name = info.user.full_name.clone();
+    }
+    if let Some(av) = avatar_url {
+        let trimmed = av.trim().to_string();
+        info.user.avatar_url = if trimmed.is_empty() { None } else { Some(trimmed.clone()) };
+        info.user.logo_url = info.user.avatar_url.clone();
+    }
+    if let Some(b) = bio {
+        let trimmed = b.trim().to_string();
+        info.user.bio = if trimmed.is_empty() { None } else { Some(trimmed) };
+    }
+    if let Some(pub_flag) = is_public {
+        info.user.is_public = if pub_flag { 1 } else { 0 };
+    }
+    if let Some(off_flag) = off_platform {
+        if off_flag && !is_userdb_configured_for_user(&db, &info.user.id) {
+            return Err("Cannot enable Off-Platform Privacy Mode without a configured UserDB. Please configure your private UserDB in Settings > UserDB first.".to_string());
+        }
+        let off_val = if off_flag { 1 } else { 0 };
+        info.user.off_platform = off_val;
+        let _ = db.set_setting("off_platform", if off_flag { "1" } else { "0" });
+        let uid = info.user.id.clone();
+        if let Some(row) = db.get_userdb_config_row(&uid) {
+            let _ = db.upsert_userdb_config_row(&uid, &row.url, &row.token_encrypted, off_val);
+        }
+    }
+
+    if let Ok(cfg) = turso_config() {
+        let client = reqwest::Client::new();
+        let turso_res = turso_execute(
+            &client,
+            &cfg,
+            "UPDATE users SET username = ?, name = ?, logo_url = ?, bio = ?, is_public = ?, off_platform = ? WHERE id = ? OR workos_id = ? OR email = ?",
+            vec![
+                info.user.username.clone(),
+                info.user.name.clone().or_else(|| info.user.full_name.clone()),
+                info.user.logo_url.clone().or_else(|| info.user.avatar_url.clone()),
+                Some(info.user.bio.clone().unwrap_or_default()),
+                Some(info.user.is_public.to_string()),
+                Some(info.user.off_platform.to_string()),
+                Some(info.user.id.clone()),
+                Some(info.user.workos_id.clone()),
+                Some(info.user.email.clone()),
+            ],
+        ).await;
+
+        if let Err(e) = turso_res {
+            eprintln!("[Turso] update_user_profile error: {}", e);
+            return Err(format!("CentralDB update failed: {}", e));
+        }
+    }
+
+    let payload = serde_json::to_string(&info).map_err(|e| e.to_string())?;
+    db.set_cloud_identity(&payload)?;
+
+    if let Ok(mut lock) = state.session.lock() {
+        if let Some(ref mut s) = *lock {
+            s.user = info.user.clone();
+        }
+    }
+
+    let _ = app.emit("auth-changed", info.clone());
+    Ok(info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+    use rusqlite::Connection;
+
+    #[test]
+    fn test_is_userdb_configured_for_user() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::localdb::provision_local_database(&conn).unwrap();
+        let db = Db(std::sync::Mutex::new(conn));
+
+        // 1. Initially false
+        assert!(!is_userdb_configured_for_user(&db, "test_user"));
+
+        // 2. Configure userdb row
+        db.upsert_userdb_config_row("test_user", "https://my-turso.turso.io", "encrypted_token_123", 0).unwrap();
+
+        // 3. Now should be true
+        assert!(is_userdb_configured_for_user(&db, "test_user"));
+    }
+
+    #[test]
+    fn test_auth_state_load_from_db_heals_unconfigured_off_platform() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::localdb::provision_local_database(&conn).unwrap();
+        let db = Db(std::sync::Mutex::new(conn));
+
+        // Save cloud_identity with off_platform = 1, but no userdb row exists
+        let fake_info = AuthInfo {
+            user: AuthUser {
+                id: "user_orphan".to_string(),
+                workos_id: "workos_1".to_string(),
+                email: "test@example.com".to_string(),
+                off_platform: 1,
+                ..Default::default()
+            },
+            orgs: vec![],
+        };
+        db.set_cloud_identity(&serde_json::to_string(&fake_info).unwrap()).unwrap();
+
+        // Load into AuthState
+        let state = AuthState::load_from_db(&db);
+        let session = state.session.lock().unwrap();
+        let loaded = session.as_ref().expect("Session must be loaded");
+
+        // Must self-heal to off_platform = 0 because no userdb row exists
+        assert_eq!(loaded.user.off_platform, 0);
+
+        // SQLite cloud_identity must also be healed
+        let saved_json = db.get_cloud_identity().unwrap();
+        let saved: AuthInfo = serde_json::from_str(&saved_json).unwrap();
+        assert_eq!(saved.user.off_platform, 0);
+    }
+}
+
+

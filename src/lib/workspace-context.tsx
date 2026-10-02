@@ -27,7 +27,15 @@ interface WorkspaceContextValue {
   organizations: Organization[];
   activeOrgId: number;
   setActiveOrgId: (id: number) => void;
-  addOrganization: (name: string) => Promise<void>;
+  addOrganization: (name: string, orgId?: string | null) => Promise<void>;
+  addWorkspace: (
+    name: string,
+    path: string,
+    cli: string,
+    targetOrgId?: number,
+    targetCloudOrgId?: string | null,
+    targetProjectId?: string | null,
+  ) => Promise<Workspace>;
   openedIds: number[];
   tabsByWs: Record<number, SessionTab[]>;
   activeTabByWs: Record<number, string>;
@@ -62,7 +70,6 @@ interface WorkspaceContextValue {
   setTabState: (workspaceId: number, tabId: string, state: Partial<SessionTab>) => void;
   closeTab: (workspaceId: number, tabId: string) => void;
   activateTab: (workspaceId: number, tabId: string) => void;
-  addWorkspace: (name: string, path: string, cli: string) => Promise<Workspace>;
   removeWorkspace: (id: number) => Promise<void>;
   updateWorkspaceFields: (id: number, fields: Partial<Workspace>) => Promise<void>;
   setSessionState: (sessionId: string, live: boolean) => void;
@@ -103,8 +110,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem("superconsole-org", String(id));
   }, []);
 
-  const addOrganization = useCallback(async (name: string) => {
-    const org = await api.addOrganization(name);
+  const addOrganization = useCallback(async (name: string, orgId?: string | null) => {
+    const org = await api.addOrganization(name, orgId);
     setOrganizations((prev) => [...prev, org].sort((a, b) => a.name.localeCompare(b.name)));
     setActiveOrgIdState(org.id);
     localStorage.setItem("superconsole-org", String(org.id));
@@ -366,13 +373,30 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addWorkspace = useCallback(
-    async (name: string, path: string, cli: string) => {
-      const ws = await api.addWorkspace(name, path, cli, activeOrgId);
+    async (
+      name: string,
+      path: string,
+      cli: string,
+      targetOrgId?: number,
+      targetCloudOrgId?: string | null,
+      targetProjectId?: string | null,
+    ) => {
+      const orgNumericId = targetOrgId ?? activeOrgId;
+      const orgObj = organizations.find((o) => o.id === orgNumericId);
+      const resolvedCloudOrgId = targetCloudOrgId ?? orgObj?.org_id;
+      const ws = await api.addWorkspace(
+        name,
+        path,
+        cli,
+        orgNumericId,
+        resolvedCloudOrgId,
+        targetProjectId,
+      );
       setWorkspaces((prev) => [...prev, ws].sort((a, b) => a.name.localeCompare(b.name)));
       openWorkspace(ws.id, cli);
       return ws;
     },
-    [openWorkspace, activeOrgId],
+    [openWorkspace, activeOrgId, organizations],
   );
 
   const removeWorkspace = useCallback(async (id: number) => {

@@ -96,6 +96,7 @@ export const LLM_PROVIDERS = [
 
 export interface Organization {
   id: number;
+  org_id: string | null;
   name: string;
   created_at: string;
   logo_url?: string | null;
@@ -106,7 +107,20 @@ export interface AuthUser {
   workos_id: string;
   email: string;
   name: string | null;
+  username?: string | null;
+  full_name?: string | null;
+  avatar_url?: string | null;
   logo_url?: string | null;
+  banner?: string | null;
+  bio?: string | null;
+  social?: string;
+  theme?: string;
+  is_active?: number;
+  is_public?: number;
+  show_team?: number;
+  show_projects?: number;
+  show_usage?: number;
+  off_platform?: number;
 }
 
 export interface CloudOrg {
@@ -362,6 +376,7 @@ export const CLI_PRESETS = [
 
 export interface ChatSession {
   id: string;
+  workspace_id?: number | null;
   project_id: string;
   name: string | null;
   is_star: boolean;
@@ -883,11 +898,42 @@ export const api = {
   authStatus: () => invoke<AuthInfo | null>("auth_status"),
   signIn: () => invoke<string>("sign_in"),
   signOut: () => invoke<void>("sign_out"),
+  updateUserProfile: (params: {
+    username?: string;
+    fullName?: string;
+    avatarUrl?: string;
+    bio?: string;
+    isPublic?: boolean;
+    offPlatform?: boolean;
+  }) =>
+    invoke<AuthInfo>("update_user_profile", {
+      username: params.username,
+      fullName: params.fullName,
+      avatarUrl: params.avatarUrl,
+      bio: params.bio,
+      isPublic: params.isPublic,
+      offPlatform: params.offPlatform,
+    }),
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
-  addWorkspace: (name: string, path: string, cli: string, organizationId: number) =>
-    invoke<Workspace>("add_workspace", { name, path, cli, organizationId }),
+  addWorkspace: (
+    name: string,
+    path: string,
+    cli: string,
+    organizationId: number,
+    orgId?: string | null,
+    projectId?: string | null,
+  ) =>
+    invoke<Workspace>("add_workspace", {
+      name,
+      path,
+      cli,
+      organizationId,
+      orgId: orgId ?? undefined,
+      projectId: projectId ?? undefined,
+    }),
   listOrganizations: () => invoke<Organization[]>("list_organizations"),
-  addOrganization: (name: string) => invoke<Organization>("add_organization", { name }),
+  addOrganization: (name: string, orgId?: string | null) =>
+    invoke<Organization>("add_organization", { name, orgId: orgId ?? undefined }),
   removeWorkspace: (id: number) => invoke<void>("remove_workspace", { id }),
   startSession: (
     workspaceId: number,
@@ -1459,7 +1505,62 @@ export const api = {
       sortDesc: params.sortDesc,
       onlyCurrentUser: params.onlyCurrentUser,
     }),
+
+  // ── UserDB (Personal Turso Cloud Database & Off-Platform Isolation) ───────
+  getUserDbConfig: () => invoke<UserDbConfig>("userdb_get_config"),
+  saveUserDbConfig: (url: string, token: string) =>
+    invoke<UserDbConfig>("userdb_save_config", { url, token }),
+  testUserDbConnection: (url?: string, token?: string) =>
+    invoke<UserDbTestResult>("userdb_test_connection", { url, token }),
+  provisionUserDb: (url?: string, token?: string) =>
+    invoke<UserDbProvisionResult>("userdb_provision", { url, token }),
+  setUserDbOffPlatform: (offPlatform: number) =>
+    invoke<UserDbConfig>("userdb_set_off_platform", { offPlatform }),
+  getUserDbStatus: () => invoke<UserDbStatus>("userdb_get_status"),
+  syncUserDbAll: () => invoke<UserDbSyncStats>("userdb_sync_all"),
 };
+
+// ── UserDB Types ─────────────────────────────────────────────────────────────
+
+export interface UserDbConfig {
+  url: string;
+  tokenMasked: string;
+  hasToken: boolean;
+  offPlatform: number;
+  isConfigured: boolean;
+}
+
+export interface UserDbTestResult {
+  success: boolean;
+  latencyMs: number;
+  message: string;
+}
+
+export interface UserDbProvisionResult {
+  success: boolean;
+  statementsExecuted: number;
+  message: string;
+}
+
+export interface UserDbSyncStats {
+  success: boolean;
+  installedPluginsSynced: number;
+  sessionHistorySynced: number;
+  chatSessionsSynced: number;
+  usageRowsSynced: number;
+  message: string;
+}
+
+export interface UserDbStatus {
+  isConfigured: boolean;
+  offPlatform: number;
+  isConnected: boolean;
+  latencyMs?: number | null;
+  tableCount: number;
+  canonicalTableCount: number;
+  tables: string[];
+  errorMessage?: string | null;
+}
 
 // ── LocalDB Studio Types ──────────────────────────────────────────────────────
 

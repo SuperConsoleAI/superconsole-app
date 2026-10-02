@@ -26,6 +26,7 @@ mod skills;
 mod sync_manager;
 mod team;
 mod usage;
+mod userdb;
 mod wiki;
 
 use auth::AuthState;
@@ -51,6 +52,8 @@ async fn add_workspace(
     path: String,
     cli: String,
     organization_id: i64,
+    org_id: Option<String>,
+    project_id: Option<String>,
 ) -> Result<Workspace, String> {
     let p = std::path::Path::new(&path);
     if p.exists() {
@@ -60,28 +63,36 @@ async fn add_workspace(
     } else {
         std::fs::create_dir_all(p).map_err(|e| format!("Could not create folder: {}", e))?;
     }
-    let ws = db.add_workspace(&name, &path, &cli, organization_id)?;
+    let ws = db.add_workspace(
+        &name,
+        &path,
+        &cli,
+        organization_id,
+        org_id.as_deref(),
+        project_id.as_deref(),
+    )?;
     // Best-effort scaffold — never blocks workspace creation.
     let _ = files::scaffold_superconsole_dir(&path);
 
-    // Auto-link to Turso immediately using the first org from the cached auth.
+    // Auto-link to Turso immediately using the specified org_id or from cached auth.
     // Best-effort: workspace is usable even if this fails.
-    let cloud_org_id: Option<String> = db
-        .get_cloud_identity()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
-        .and_then(|v| {
-            v["orgs"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|o| o["id"].as_str().map(|s| s.to_string()))
-        });
+    let cloud_org_id: Option<String> = ws.org_id.clone().or_else(|| {
+        db.get_cloud_identity()
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+            .and_then(|v| {
+                v["orgs"]
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|o| o["id"].as_str().map(|s| s.to_string()))
+            })
+    });
 
-    if let Some(org_id) = cloud_org_id {
+    if let Some(target_org) = cloud_org_id {
         let app2 = app.clone();
         let ws_id = ws.id;
         // Spawn so the response returns immediately to the UI.
         tauri::async_runtime::spawn(async move {
-            let _ = crate::llm::ensure_workspace_project(app2, ws_id, org_id).await;
+            let _ = crate::llm::ensure_workspace_project(app2, ws_id, target_org).await;
         });
     }
 
@@ -100,8 +111,56 @@ fn list_organizations(db: State<Db>) -> Result<Vec<Organization>, String> {
 }
 
 #[tauri::command]
-fn add_organization(db: State<Db>, name: String) -> Result<Organization, String> {
-    db.add_organization(&name)
+async fn add_organization(
+    db: State<'_, Db>,
+    name: String,
+    org_id: Option<String>,
+) -> Result<Organization, String> {
+    let final_org_id = org_id.unwrap_or_else(|| ulid::Ulid::new().to_string());
+
+    // 1. Create on Central DB (Turso) first if configured & user is authenticated
+    if let Ok(cfg) = crate::cloud::turso_config() {
+        let client = reqwest::Client::new();
+        let user_id = crate::llm::cached_user_id(&db);
+        if let Some(uid) = user_id {
+            let _ = crate::cloud::turso_execute(
+                &client,
+                &cfg,
+                "INSERT OR IGNORE INTO organizations (id, name, plan, owner_id) VALUES (?, ?, 'free', ?)",
+                vec![Some(final_org_id.clone()), Some(name.clone()), Some(uid.clone())],
+            )
+            .await;
+
+            let _ = crate::cloud::turso_execute(
+                &client,
+                &cfg,
+                "INSERT OR IGNORE INTO org_members (org_id, user_id, role) VALUES (?, ?, 'owner')",
+                vec![Some(final_org_id.clone()), Some(uid)],
+            )
+            .await;
+        }
+    }
+
+    // 2. Insert into local SQLite organizations table with final_org_id
+    let org = db.add_organization(&name, Some(&final_org_id))?;
+
+    // 3. Update cached cloud_identity with the new org
+    if let Some(payload_str) = db.get_cloud_identity() {
+        if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&payload_str) {
+            if let Some(orgs_arr) = v.get_mut("orgs").and_then(|o| o.as_array_mut()) {
+                if !orgs_arr.iter().any(|o| o["id"].as_str() == Some(&final_org_id)) {
+                    orgs_arr.push(serde_json::json!({
+                        "id": final_org_id,
+                        "name": name,
+                        "role": "owner"
+                    }));
+                    let _ = db.set_cloud_identity(&v.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(org)
 }
 
 #[tauri::command]
@@ -831,8 +890,14 @@ fn list_chat_sessions(db: State<Db>, project_id: String) -> Result<Vec<db::ChatS
 }
 
 #[tauri::command]
-fn create_chat_session(db: State<Db>, project_id: String) -> Result<db::ChatSession, String> {
-    db.create_chat_session(&project_id)
+fn create_chat_session(app: tauri::AppHandle, db: State<Db>, project_id: String) -> Result<db::ChatSession, String> {
+    let sess = db.create_chat_session(&project_id)?;
+    let app_c = app.clone();
+    let sid = sess.id.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::userdb::sync_chat_session_to_userdb(&app_c, &sid).await;
+    });
+    Ok(sess)
 }
 
 #[tauri::command]
@@ -859,28 +924,43 @@ fn add_chat_message(
 }
 
 #[tauri::command]
-fn delete_cli_session(db: State<Db>, id: i64) -> Result<(), String> {
-    db.delete_session_log(id)
+async fn delete_cli_session(app: tauri::AppHandle, db: State<'_, Db>, id: i64) -> Result<(), String> {
+    let sid = db.get_session_id_by_log_id(id);
+    db.delete_session_log(id)?;
+    if let Some(s) = sid {
+        crate::userdb::delete_session_from_userdb(&app, &s).await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn rename_cli_session(db: State<Db>, id: i64, label: Option<String>) -> Result<(), String> {
-    db.rename_session_log(id, label.as_deref())
+async fn rename_cli_session(app: tauri::AppHandle, db: State<'_, Db>, id: i64, label: Option<String>) -> Result<(), String> {
+    db.rename_session_log(id, label.as_deref())?;
+    if let Some(s) = db.get_session_id_by_log_id(id) {
+        crate::userdb::sync_session_to_userdb(&app, &s).await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn rename_chat_session(db: State<Db>, id: String, name: String) -> Result<(), String> {
-    db.rename_chat_session(&id, &name)
+async fn rename_chat_session(app: tauri::AppHandle, db: State<'_, Db>, id: String, name: String) -> Result<(), String> {
+    db.rename_chat_session(&id, &name)?;
+    crate::userdb::sync_chat_session_to_userdb(&app, &id).await;
+    Ok(())
 }
 
 #[tauri::command]
-fn star_chat_session(db: State<Db>, id: String, is_star: bool) -> Result<(), String> {
-    db.star_chat_session(&id, is_star)
+async fn star_chat_session(app: tauri::AppHandle, db: State<'_, Db>, id: String, is_star: bool) -> Result<(), String> {
+    db.star_chat_session(&id, is_star)?;
+    crate::userdb::sync_chat_session_to_userdb(&app, &id).await;
+    Ok(())
 }
 
 #[tauri::command]
-fn delete_chat_session(db: State<Db>, id: String) -> Result<(), String> {
-    db.delete_chat_session(&id)
+async fn delete_chat_session(app: tauri::AppHandle, db: State<'_, Db>, id: String) -> Result<(), String> {
+    db.delete_chat_session(&id)?;
+    crate::userdb::delete_chat_session_from_userdb(&app, &id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1324,6 +1404,7 @@ pub fn run() {
             auth::sign_in,
             auth::auth_status,
             auth::sign_out,
+            auth::update_user_profile,
             llm::ensure_workspace_project,
             llm::list_llm_keys,
             llm::set_llm_key,
@@ -1464,6 +1545,14 @@ pub fn run() {
             localdb::local_db_list_tables,
             localdb::local_db_get_table_schema,
             localdb::local_db_get_table_data,
+            // UserDB commands
+            userdb::userdb_get_config,
+            userdb::userdb_save_config,
+            userdb::userdb_test_connection,
+            userdb::userdb_provision,
+            userdb::userdb_set_off_platform,
+            userdb::userdb_get_status,
+            userdb::userdb_sync_all,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

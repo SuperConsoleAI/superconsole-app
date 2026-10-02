@@ -1,3 +1,8 @@
+/**
+ * AgentsNavbar Component
+ * Top bar header controls for the Agents view.
+ * Handles the Agents vs Activity vs Catalog tabs, along with creation and import triggers.
+ */
 import { useState, useEffect } from "react";
 import { Bot, GitBranch, History, ListTodo, Plus, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,15 +13,29 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useWorkspaces } from "@/lib/workspace-context";
-import { cn } from "@/lib/utils";
+import { cn, getActiveWorkspaceFilter, setActiveWorkspaceFilter } from "@/lib/utils";
 
 type AgentTab = "agents" | "activity" | "library";
 
 export function AgentsNavbar() {
   const { workspaces, organizations } = useWorkspaces();
   const [tab, setTab] = useState<AgentTab>("agents");
-  const [orgFilter, setOrgFilter] = useState<number | "all">("all");
-  const [projFilter, setProjFilter] = useState<number | "all">("all");
+  const initialWsId = getActiveWorkspaceFilter();
+  const [projFilter, setProjFilter] = useState<number | "all">(() => initialWsId ?? "all");
+  const [orgFilter, setOrgFilter] = useState<number | "all">(() => {
+    if (initialWsId) {
+      const ws = workspaces.find((w) => w.id === initialWsId);
+      if (ws?.organization_id) return ws.organization_id;
+    }
+    return "all";
+  });
+
+  useEffect(() => {
+    if (projFilter !== "all" && orgFilter === "all" && workspaces.length > 0) {
+      const ws = workspaces.find((w) => w.id === projFilter);
+      if (ws?.organization_id) setOrgFilter(ws.organization_id);
+    }
+  }, [projFilter, orgFilter, workspaces]);
 
   useEffect(() => {
     const onTabSync = (e: any) => {
@@ -26,7 +45,10 @@ export function AgentsNavbar() {
       if (e.detail !== undefined) setOrgFilter(e.detail);
     };
     const onProjSync = (e: any) => {
-      if (e.detail !== undefined) setProjFilter(e.detail);
+      if (e.detail !== undefined) {
+        setProjFilter(e.detail);
+        if (e.detail !== "all") setActiveWorkspaceFilter(e.detail);
+      }
     };
 
     window.addEventListener("agents-tab-sync", onTabSync);
@@ -70,18 +92,21 @@ export function AgentsNavbar() {
 
   const handleProjChange = (projId: number | "all") => {
     setProjFilter(projId);
+    if (projId !== "all") {
+      setActiveWorkspaceFilter(projId);
+    }
     window.dispatchEvent(new CustomEvent("agents-proj-change", { detail: projId }));
   };
 
   return (
     <div className="flex w-full items-center justify-between gap-3">
-      {/* Left: Tab Switcher (Agents | Activity | Catalog) — h-7 container, h-6 inner buttons */}
-      <div className="flex h-7 items-center gap-0.5 rounded-md border bg-background p-0.5">
+      {/* Left: Tab Switcher (Agents | Activity | Catalog) — 26px outer container, 22px inner button, vertically centered */}
+      <div className="flex h-[26px] items-center gap-0.5 rounded-md border bg-background p-[1px]">
         <button
           type="button"
           onClick={() => handleTabChange("agents")}
           className={cn(
-            "flex h-6 items-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors",
+            "flex h-[22px] items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors leading-none",
             tab === "agents"
               ? "bg-primary text-primary-foreground"
               : "text-muted-foreground hover:bg-muted"
@@ -95,7 +120,7 @@ export function AgentsNavbar() {
           type="button"
           onClick={() => handleTabChange("activity")}
           className={cn(
-            "flex h-6 items-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors",
+            "flex h-[22px] items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors leading-none",
             tab === "activity"
               ? "bg-primary text-primary-foreground"
               : "text-muted-foreground hover:bg-muted"
@@ -109,7 +134,7 @@ export function AgentsNavbar() {
           type="button"
           onClick={() => handleTabChange("library")}
           className={cn(
-            "flex h-6 items-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors",
+            "flex h-[22px] items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium transition-colors leading-none",
             tab === "library"
               ? "bg-primary text-primary-foreground"
               : "text-muted-foreground hover:bg-muted"

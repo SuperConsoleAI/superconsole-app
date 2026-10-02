@@ -1,3 +1,7 @@
+/**
+ * SessionsView Component — Cross-workspace & per-project chat session explorer
+ * Supports filtering by workspace/search query, session resumption, renaming, and usage stats.
+ */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BarChart3,
@@ -41,7 +45,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SessionUsageCost, type SessionUsageData } from "@/components/SessionUsageCost";
 
-import { parseUtcDate, extractCleanResumeId } from "@/lib/utils";
+import { parseUtcDate, extractCleanResumeId, getActiveWorkspaceFilter } from "@/lib/utils";
 
 function fmtWhen(s: string | null): string {
   const d = parseUtcDate(s);
@@ -119,6 +123,7 @@ function cliName(s: SessionLog): string {
 }
 
 export function SessionsView({
+  initialWorkspaceId,
   workspaces,
   organizations: _organizations,
   activeOrgId,
@@ -126,6 +131,7 @@ export function SessionsView({
   onOpenChat,
   onResume,
 }: {
+  initialWorkspaceId?: number;
   workspaces: Workspace[];
   organizations: Organization[];
   activeOrgId: number;
@@ -133,14 +139,26 @@ export function SessionsView({
   onOpenChat: (workspaceId: number, sessionId?: string) => void;
   onResume: (workspaceId: number, cli: string, sessionId: string) => void;
 }) {
+  const activeWsId = getActiveWorkspaceFilter(initialWorkspaceId) ?? lastProjectId;
+  const targetWs = activeWsId ? workspaces.find((w) => w.id === activeWsId) : null;
   const [tab, setTab] = useState<"cli" | "chat">("cli");
   const [query, setQuery] = useState("");
-  const [orgFilter, setOrgFilter] = useState<number | "all">(activeOrgId);
-  const [projFilter, setProjFilter] = useState<number | "all">(lastProjectId ?? "all");
+  const [orgFilter, setOrgFilter] = useState<number | "all">(targetWs?.organization_id ?? activeOrgId);
+  const [projFilter, setProjFilter] = useState<number | "all">(targetWs?.id ?? "all");
   const [cli, setCli] = useState<CliRow[]>([]);
   const [threads, setThreads] = useState<ChatRow[]>([]);
   const [feedMap, setFeedMap] = useState<Record<string, SessionFeedItem>>({});
   const [usageSession, setUsageSession] = useState<SessionUsageData | null>(null);
+
+  useEffect(() => {
+    if (activeWsId && projFilter === "all" && workspaces.length > 0) {
+      const ws = workspaces.find((w) => w.id === activeWsId);
+      if (ws) {
+        setProjFilter(ws.id);
+        if (ws.organization_id) setOrgFilter(ws.organization_id);
+      }
+    }
+  }, [activeWsId, projFilter, workspaces]);
 
   // Workspaces under the current org filter drive the project list.
   const orgWorkspaces = useMemo(

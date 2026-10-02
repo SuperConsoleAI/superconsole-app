@@ -18,13 +18,23 @@ import { cn } from "@/lib/utils";
 interface AddWorkspaceDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAdd: (name: string, path: string, cli: string) => Promise<Workspace>;
+  onAdd: (
+    name: string,
+    path: string,
+    cli: string,
+    orgId?: string | null,
+    projectId?: string | null,
+  ) => Promise<Workspace>;
+  orgId?: string | null;
+  projectId?: string | null;
 }
 
 export function AddWorkspaceDialog({
   open: isOpen,
   onOpenChange,
   onAdd,
+  orgId,
+  projectId,
 }: AddWorkspaceDialogProps) {
   const [mode, setMode] = useState<"folder" | "repo">("folder");
   const [name, setName] = useState("");
@@ -92,7 +102,7 @@ export function AddWorkspaceDialog({
             .replace(/[/\\]+$/, "")
             .split(/[/\\/]/)
             .pop() ?? "project";
-        const ws = await onAdd(name.trim() || repoName, projectPath, cli);
+        const ws = await onAdd(name.trim() || repoName, projectPath, cli, orgId, projectId);
         reset();
         onOpenChange(false);
         void showScaffoldToast(ws.id);
@@ -111,7 +121,7 @@ export function AddWorkspaceDialog({
     setBusy(true);
     setError(null);
     try {
-      const ws = await onAdd(name.trim(), path.trim(), cli);
+      const ws = await onAdd(name.trim(), path.trim(), cli, orgId, projectId);
       reset();
       onOpenChange(false);
       void showScaffoldToast(ws.id);

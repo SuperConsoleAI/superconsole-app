@@ -617,6 +617,13 @@ pub fn start_session(
             let db = app_handle.state::<crate::db::Db>();
             db.finalize_cli_session_cost(&sid);
         }
+        {
+            let app_c = app_handle.clone();
+            let sid_c = sid.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::userdb::sync_session_to_userdb(&app_c, &sid_c).await;
+            });
+        }
         // SessionEnd hook — best-effort, non-blocking.
         {
             let mut hook_env = std::collections::HashMap::new();

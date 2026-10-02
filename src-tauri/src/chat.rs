@@ -541,6 +541,11 @@ pub async fn chat_send(
                 &model,
                 &provider,
             );
+            let app_c = app.clone();
+            let rid_c = request_id.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::userdb::sync_chat_session_to_userdb(&app_c, &rid_c).await;
+            });
         }
     }
 

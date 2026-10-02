@@ -35,6 +35,7 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
     // ── organizations ─────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS organizations (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        org_id              TEXT,
         name                TEXT NOT NULL UNIQUE,
         created_at          TEXT NOT NULL DEFAULT (datetime('now'))
     )"#,
@@ -68,6 +69,7 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE TABLE IF NOT EXISTS session_history (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
         workspace_id        INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        project_id          TEXT,
         session_id          TEXT NOT NULL,
         cli                 TEXT NOT NULL,
         label               TEXT,
@@ -91,6 +93,7 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE INDEX IF NOT EXISTS idx_session_history_ws ON session_history (workspace_id)"#,
     r#"CREATE INDEX IF NOT EXISTS idx_session_history_session ON session_history (session_id)"#,
     r#"CREATE INDEX IF NOT EXISTS idx_session_history_user ON session_history (user_id)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_session_history_project ON session_history (project_id)"#,
 
     // ── settings ──────────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS settings (
@@ -142,6 +145,7 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
     // ── chat_sessions ─────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS chat_sessions (
         id                  TEXT PRIMARY KEY,
+        workspace_id        INTEGER REFERENCES workspaces(id) ON DELETE CASCADE,
         project_id          TEXT NOT NULL,
         name                TEXT,
         is_star             INTEGER NOT NULL DEFAULT 0,
@@ -163,6 +167,7 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
     )"#,
     r#"CREATE INDEX IF NOT EXISTS idx_chat_sessions_project ON chat_sessions (project_id)"#,
     r#"CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions (user_id)"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_chat_sessions_ws ON chat_sessions (workspace_id)"#,
 
     // ── agents ────────────────────────────────────────────────────────────────
     r#"CREATE TABLE IF NOT EXISTS agents (
@@ -188,6 +193,29 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
         UNIQUE(workspace_id, name)
     )"#,
     r#"CREATE INDEX IF NOT EXISTS idx_agents_workspace ON agents (workspace_id)"#,
+
+    // ── project_agents ────────────────────────────────────────────────────────
+    r#"CREATE TABLE IF NOT EXISTS project_agents (
+        id                  TEXT PRIMARY KEY,
+        project_id          TEXT NOT NULL,
+        name                TEXT NOT NULL,
+        description         TEXT NOT NULL DEFAULT '',
+        schedule            TEXT NOT NULL DEFAULT '',
+        default_run_mode    TEXT NOT NULL DEFAULT 'cli',
+        default_cli         TEXT NOT NULL DEFAULT 'claude',
+        default_provider    TEXT NOT NULL DEFAULT 'anthropic',
+        default_model       TEXT NOT NULL DEFAULT '',
+        skills              TEXT NOT NULL DEFAULT '',
+        connectors          TEXT NOT NULL DEFAULT '',
+        is_active           INTEGER NOT NULL DEFAULT 1,
+        agent_catalog_id    TEXT,
+        author              TEXT NOT NULL DEFAULT '',
+        last_run            TEXT,
+        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(project_id, name)
+    )"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_project_agents_project ON project_agents (project_id)"#,
 
     // ── project_session_logs (Project scope .superconsole/sessions/ metadata) ──
     r#"CREATE TABLE IF NOT EXISTS project_session_logs (
@@ -772,13 +800,34 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
         org_id              TEXT NOT NULL,
         synced_at           TEXT NOT NULL
     )"#,
+
+    // ── userdb (Account-wide UserDB configuration & encrypted credentials) ─────
+    r#"CREATE TABLE IF NOT EXISTS userdb (
+        user_id             TEXT PRIMARY KEY,
+        url                 TEXT NOT NULL DEFAULT '',
+        token_encrypted     TEXT NOT NULL DEFAULT '',
+        off_platform        INTEGER NOT NULL DEFAULT 0,
+        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    )"#,
+    r#"CREATE INDEX IF NOT EXISTS idx_userdb_user ON userdb (user_id)"#,
 ];
 
 /// Provisions and initializes all canonical local SQLite tables and indexes.
 pub fn provision_local_database(conn: &Connection) -> Result<(), String> {
     conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(|e| e.to_string())?;
 
-    // 1. Create all 47 canonical tables and indexes
+    // Pre-migrations: add new columns to pre-existing tables on disk before executing schema indexes
+    let _ = conn.execute("ALTER TABLE session_history ADD COLUMN project_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE chat_sessions ADD COLUMN workspace_id INTEGER REFERENCES workspaces(id) ON DELETE CASCADE", []);
+    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN mcp_url TEXT NOT NULL DEFAULT '[]'", []);
+    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN synced_at TEXT NOT NULL DEFAULT (datetime('now'))", []);
+    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN rules_url TEXT NOT NULL DEFAULT '[]'", []);
+    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN rule_ids TEXT NOT NULL DEFAULT '[]'", []);
+    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN connector_auth TEXT NOT NULL DEFAULT '[]'", []);
+    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN agents_url TEXT NOT NULL DEFAULT '[]'", []);
+
+    // 1. Create all canonical tables and indexes
     for stmt in LOCAL_SCHEMA_STATEMENTS {
         conn.execute_batch(stmt)
             .map_err(|e| format!("Schema init error for statement: {}\nErr: {}", stmt, e))?;
@@ -792,8 +841,10 @@ pub fn provision_local_database(conn: &Connection) -> Result<(), String> {
         [],
     );
 
-    // 3. Drop all deprecated cache / legacy tables
+    // 4. Drop all deprecated cache / legacy tables
     let obsolete_tables = [
+        "project_session_history",
+        "project_chat_sessions",
         "connectors_cache",
         "connectors",
         "llm_keys_cache",
@@ -822,14 +873,6 @@ pub fn provision_local_database(conn: &Connection) -> Result<(), String> {
         let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", tbl), []);
     }
 
-    // Ensure pre-existing plugins table has all required columns
-    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN mcp_url TEXT NOT NULL DEFAULT '[]'", []);
-    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN synced_at TEXT NOT NULL DEFAULT (datetime('now'))", []);
-    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN rules_url TEXT NOT NULL DEFAULT '[]'", []);
-    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN rule_ids TEXT NOT NULL DEFAULT '[]'", []);
-    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN connector_auth TEXT NOT NULL DEFAULT '[]'", []);
-    let _ = conn.execute("ALTER TABLE plugins ADD COLUMN agents_url TEXT NOT NULL DEFAULT '[]'", []);
-
     Ok(())
 }
 
@@ -848,6 +891,7 @@ pub fn get_canonical_table_names() -> &'static [&'static str] {
         "chat_threads",
         "chat_sessions",
         "agents",
+        "project_agents",
         "project_session_logs",
         "org_session_logs",
         "session_logs",
@@ -884,6 +928,7 @@ pub fn get_canonical_table_names() -> &'static [&'static str] {
         "org_connectors",
         "account_connectors",
         "project_org_cache",
+        "userdb",
     ]
 }
 
@@ -930,7 +975,7 @@ mod tests {
         assert!(provision_local_database(&conn).is_ok());
 
         let canonical_tables = get_canonical_table_names();
-        assert_eq!(canonical_tables.len(), 47);
+        assert_eq!(canonical_tables.len(), 49);
 
         // Verify every canonical table exists in sqlite_master
         for table in canonical_tables {
@@ -948,6 +993,8 @@ mod tests {
 
         // Verify NO obsolete cache tables exist
         let obsolete = [
+            "project_session_history",
+            "project_chat_sessions",
             "connectors_cache",
             "llm_keys_cache",
             "skill_catalog_cache",
@@ -991,6 +1038,13 @@ mod tests {
         assert!(col_names.contains(&"user_id".to_string()));
         assert!(col_names.contains(&"provider".to_string()));
         assert!(col_names.contains(&"credentials_encrypted".to_string()));
+
+        let mut userdb_cols = conn.prepare("PRAGMA table_info(userdb)").unwrap();
+        let col_names: Vec<String> = userdb_cols.query_map([], |r| r.get(1)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(col_names.contains(&"user_id".to_string()));
+        assert!(col_names.contains(&"url".to_string()));
+        assert!(col_names.contains(&"token_encrypted".to_string()));
+        assert!(col_names.contains(&"off_platform".to_string()));
     }
 }
 
