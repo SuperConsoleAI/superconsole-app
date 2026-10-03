@@ -22,8 +22,11 @@ pub fn ensure_env() {
 
 pub fn cookie_password() -> Result<String, String> {
     ensure_env();
-    std::env::var("WORKOS_COOKIE_PASSWORD")
-        .map_err(|_| "WORKOS_COOKIE_PASSWORD is not set".to_string())
+    option_env!("WORKOS_COOKIE_PASSWORD")
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from)
+        .or_else(|| std::env::var("WORKOS_COOKIE_PASSWORD").ok().filter(|s| !s.trim().is_empty()))
+        .ok_or_else(|| "WORKOS_COOKIE_PASSWORD is not set".to_string())
 }
 
 #[derive(Clone)]
@@ -34,10 +37,16 @@ pub struct TursoConfig {
 
 pub fn turso_config() -> Result<TursoConfig, String> {
     ensure_env();
-    let raw = std::env::var("TURSO_DATABASE_URL")
-        .map_err(|_| "TURSO_DATABASE_URL is not set".to_string())?;
-    let token =
-        std::env::var("TURSO_AUTH_TOKEN").map_err(|_| "TURSO_AUTH_TOKEN is not set".to_string())?;
+    let raw = option_env!("TURSO_DATABASE_URL")
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from)
+        .or_else(|| std::env::var("TURSO_DATABASE_URL").ok().filter(|s| !s.trim().is_empty()))
+        .ok_or_else(|| "TURSO_DATABASE_URL is not set".to_string())?;
+    let token = option_env!("TURSO_AUTH_TOKEN")
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from)
+        .or_else(|| std::env::var("TURSO_AUTH_TOKEN").ok().filter(|s| !s.trim().is_empty()))
+        .ok_or_else(|| "TURSO_AUTH_TOKEN is not set".to_string())?;
     let url = raw
         .replacen("libsql://", "https://", 1)
         .replacen("wss://", "https://", 1);
@@ -122,8 +131,13 @@ pub async fn ensure_project_settings_columns(
         "ALTER TABLE projects ADD COLUMN script_run TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE projects ADD COLUMN script_teardown TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE projects ADD COLUMN script_auto_run INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE projects ADD COLUMN repo_url TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN repo_url TEXT",
+        "ALTER TABLE projects ADD COLUMN description TEXT",
+        "ALTER TABLE projects ADD COLUMN tagline TEXT",
+        "ALTER TABLE projects ADD COLUMN details TEXT",
+        "ALTER TABLE projects ADD COLUMN logo_url TEXT",
+        "ALTER TABLE projects ADD COLUMN image_url TEXT",
+        "ALTER TABLE projects ADD COLUMN slider TEXT NOT NULL DEFAULT '[]'",
         "ALTER TABLE projects ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE projects ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN show_usage INTEGER NOT NULL DEFAULT 1",

@@ -370,3 +370,256 @@ pub fn local_db_get_table_data(
         page_size: limit,
     })
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlQueryResult {
+    pub success: bool,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+    pub affected_rows: Option<usize>,
+    pub execution_time_ms: u64,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn local_db_execute_sql(
+    db: State<'_, Db>,
+    sql: String,
+    target: Option<String>,
+) -> Result<SqlQueryResult, String> {
+    let start = std::time::Instant::now();
+    let target_mode = target.as_deref().unwrap_or("localdb").to_lowercase();
+
+    // ── 1. Target: Turso UserDB ─────────────────────────────────────────────
+    if target_mode == "userdb" || target_mode.contains("turso") {
+        let cfg_opt = crate::userdb::resolve_userdb_config(&db);
+        let cfg = match cfg_opt {
+            Some(c) => c,
+            None => {
+                return Ok(SqlQueryResult {
+                    success: false,
+                    columns: vec![],
+                    rows: vec![],
+                    affected_rows: None,
+                    execution_time_ms: start.elapsed().as_millis() as u64,
+                    error: Some(
+                        "UserDB is not configured yet. Please configure your Turso Database URL and Token in Settings -> UserDB, or switch target to LocalDB.".to_string(),
+                    ),
+                });
+            }
+        };
+
+        let client = reqwest::Client::new();
+        match crate::cloud::turso_execute(&client, &cfg, &sql, vec![]).await {
+            Ok(result) => {
+                let execution_time_ms = start.elapsed().as_millis() as u64;
+                let columns: Vec<String> = result["cols"]
+                    .as_array()
+                    .map(|cols| {
+                        cols.iter()
+                            .filter_map(|c| c["name"].as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let rows: Vec<Vec<serde_json::Value>> = result["rows"]
+                    .as_array()
+                    .map(|r_arr| {
+                        r_arr
+                            .iter()
+                            .filter_map(|r| {
+                                r.as_array().map(|cells| {
+                                    cells
+                                        .iter()
+                                        .map(|cell| {
+                                            if cell["type"].as_str() == Some("null") {
+                                                return serde_json::Value::Null;
+                                            }
+                                            match cell.get("value") {
+                                                Some(serde_json::Value::String(s)) => {
+                                                    let t = cell["type"].as_str().unwrap_or("");
+                                                    if t == "integer" {
+                                                        s.parse::<i64>()
+                                                            .map(|n| serde_json::Value::Number(n.into()))
+                                                            .unwrap_or_else(|_| serde_json::Value::String(s.clone()))
+                                                    } else if t == "float" || t == "real" {
+                                                        s.parse::<f64>()
+                                                            .ok()
+                                                            .and_then(serde_json::Number::from_f64)
+                                                            .map(serde_json::Value::Number)
+                                                            .unwrap_or_else(|| serde_json::Value::String(s.clone()))
+                                                    } else {
+                                                        serde_json::Value::String(s.clone())
+                                                    }
+                                                }
+                                                Some(v) => v.clone(),
+                                                None => serde_json::Value::Null,
+                                            }
+                                        })
+                                        .collect()
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let affected_rows = result["affected_row_count"].as_u64().map(|n| n as usize);
+
+                Ok(SqlQueryResult {
+                    success: true,
+                    columns,
+                    rows,
+                    affected_rows,
+                    execution_time_ms,
+                    error: None,
+                })
+            }
+            Err(e) => Ok(SqlQueryResult {
+                success: false,
+                columns: vec![],
+                rows: vec![],
+                affected_rows: None,
+                execution_time_ms: start.elapsed().as_millis() as u64,
+                error: Some(e),
+            }),
+        }
+    } else {
+        // ── 2. Target: Local SQLite Database (`superconsole.db`) ─────────────
+        let trimmed = sql.trim().trim_end_matches(';');
+        if trimmed.is_empty() {
+            return Ok(SqlQueryResult {
+                success: true,
+                columns: vec![],
+                rows: vec![],
+                affected_rows: Some(0),
+                execution_time_ms: 0,
+                error: None,
+            });
+        }
+
+        let conn = db.0.lock().unwrap();
+
+        // Check if statement prepares and returns columns (SELECT, PRAGMA, EXPLAIN, etc.)
+        let res = match conn.prepare(trimmed) {
+            Ok(mut stmt) => {
+                let col_count = stmt.column_count();
+                if col_count > 0 {
+                    let columns: Vec<String> = stmt
+                        .column_names()
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect();
+
+                    let rows_res = stmt.query_map([], |row| {
+                        let mut row_vals = Vec::with_capacity(col_count);
+                        for i in 0..col_count {
+                            let val_ref = row.get_ref(i)?;
+                            let json_val = match val_ref {
+                                rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+                                rusqlite::types::ValueRef::Integer(n) => {
+                                    serde_json::Value::Number(n.into())
+                                }
+                                rusqlite::types::ValueRef::Real(f) => {
+                                    serde_json::Number::from_f64(f)
+                                        .map(serde_json::Value::Number)
+                                        .unwrap_or(serde_json::Value::Null)
+                                }
+                                rusqlite::types::ValueRef::Text(bytes) => {
+                                    let s = String::from_utf8_lossy(bytes).to_string();
+                                    serde_json::Value::String(s)
+                                }
+                                rusqlite::types::ValueRef::Blob(bytes) => {
+                                    serde_json::Value::String(format!(
+                                        "<Blob {} bytes>",
+                                        bytes.len()
+                                    ))
+                                }
+                            };
+                            row_vals.push(json_val);
+                        }
+                        Ok(row_vals)
+                    });
+
+                    match rows_res {
+                        Ok(mapped_rows) => {
+                            let rows: Vec<Vec<serde_json::Value>> = mapped_rows
+                                .filter_map(|r| r.ok())
+                                .take(1000)
+                                .collect();
+
+                            let execution_time_ms = start.elapsed().as_millis() as u64;
+                            Ok(SqlQueryResult {
+                                success: true,
+                                columns,
+                                rows,
+                                affected_rows: None,
+                                execution_time_ms,
+                                error: None,
+                            })
+                        }
+                        Err(e) => Ok(SqlQueryResult {
+                            success: false,
+                            columns: vec![],
+                            rows: vec![],
+                            affected_rows: None,
+                            execution_time_ms: start.elapsed().as_millis() as u64,
+                            error: Some(e.to_string()),
+                        }),
+                    }
+                } else {
+                    // DDL / DML statement that modifies rows or schema
+                    drop(stmt);
+                    match conn.execute(trimmed, []) {
+                        Ok(affected) => {
+                            let execution_time_ms = start.elapsed().as_millis() as u64;
+                            Ok(SqlQueryResult {
+                                success: true,
+                                columns: vec![],
+                                rows: vec![],
+                                affected_rows: Some(affected),
+                                execution_time_ms,
+                                error: None,
+                            })
+                        }
+                        Err(e) => Ok(SqlQueryResult {
+                            success: false,
+                            columns: vec![],
+                            rows: vec![],
+                            affected_rows: None,
+                            execution_time_ms: start.elapsed().as_millis() as u64,
+                            error: Some(e.to_string()),
+                        }),
+                    }
+                }
+            }
+            Err(e) => {
+                // If it's a batch of multiple statements, attempt execute_batch
+                match conn.execute_batch(sql.as_str()) {
+                    Ok(_) => {
+                        let execution_time_ms = start.elapsed().as_millis() as u64;
+                        Ok(SqlQueryResult {
+                            success: true,
+                            columns: vec![],
+                            rows: vec![],
+                            affected_rows: Some(0),
+                            execution_time_ms,
+                            error: None,
+                        })
+                    }
+                    Err(batch_err) => Ok(SqlQueryResult {
+                        success: false,
+                        columns: vec![],
+                        rows: vec![],
+                        affected_rows: None,
+                        execution_time_ms: start.elapsed().as_millis() as u64,
+                        error: Some(format!("{}\n(Batch execution error: {})", e, batch_err)),
+                    }),
+                }
+            }
+        };
+        drop(conn);
+        res
+    }
+}
+

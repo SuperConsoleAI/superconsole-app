@@ -95,11 +95,11 @@ function periodTotals(row: UsageRow, period: Period, year: string): PeriodTotals
     return {
       cost: y?.cost_usd ?? 0,
       sessions: y?.sessions ?? 0,
-      tokens: (y?.tokens_prompt ?? 0) + (y?.tokens_completion ?? 0),
+      tokens: (y?.tokens_prompt ?? 0) + (y?.tokens_completion ?? 0) + (y?.tokens_reasoning ?? 0),
       prompt: y?.tokens_prompt ?? 0,
       cached: 0,
       completion: y?.tokens_completion ?? 0,
-      reasoning: 0,
+      reasoning: y?.tokens_reasoning ?? 0,
       cacheHits: y?.cache_hits ?? 0,
     };
   }
@@ -151,7 +151,7 @@ function Breakdown({
         {entries.map(([key, v]) => {
           const [model, provider] = splitKey ? key.split(":") : [key, v.provider];
           const color = providerColor(provider);
-          const tokens = v.tokens ?? (v.tokens_prompt ?? 0) + (v.tokens_completion ?? 0);
+          const tokens = v.tokens ?? ((v.tokens_prompt ?? 0) + (v.tokens_completion ?? 0) + (v.tokens_reasoning ?? 0));
           const displayName = v.name && v.name.trim() !== "" ? v.name : model;
           return (
             <div key={key} className="flex items-center gap-3">
@@ -252,7 +252,7 @@ function buildReport(
     .sort((a, b) => (b[1].cost_usd ?? 0) - (a[1].cost_usd ?? 0))
     .map(([k, v]) => {
       const [m, p] = k.split(":");
-      const tk = v.tokens ?? (v.tokens_prompt ?? 0) + (v.tokens_completion ?? 0);
+      const tk = v.tokens ?? ((v.tokens_prompt ?? 0) + (v.tokens_completion ?? 0) + (v.tokens_reasoning ?? 0));
       return `| ${m} | ${p ?? v.provider ?? ""} | ${v.sessions ?? 0} | ${fmtTokens(tk)} | ${fmtUsd(v.cost_usd ?? 0)} |`;
     })
     .join("\n");

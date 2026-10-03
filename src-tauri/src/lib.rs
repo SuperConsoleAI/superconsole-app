@@ -386,6 +386,11 @@ async fn update_workspace(
     script_auto_run: bool,
     repo_url: String,
     description: String,
+    tagline: Option<String>,
+    details: Option<String>,
+    logo_url: Option<String>,
+    image_url: Option<String>,
+    slider: Option<String>,
 ) -> Result<(), String> {
     let (project_id, ws) = {
         let db = app.state::<Db>();
@@ -401,6 +406,11 @@ async fn update_workspace(
             script_auto_run,
             &repo_url,
             &description,
+            tagline.as_deref(),
+            details.as_deref(),
+            logo_url.as_deref(),
+            image_url.as_deref(),
+            slider.as_deref(),
         )?;
         (db.get_workspace_project_id(id), db.get_workspace(id).ok())
     };
@@ -470,6 +480,16 @@ fn set_workspace_env_files(
 ) -> Result<(), String> {
     let json = serde_json::to_string(&env_files).map_err(|e| e.to_string())?;
     db.set_workspace_env_files(workspace_id, &json)
+}
+
+#[tauri::command]
+fn set_workspace_slider(
+    db: State<Db>,
+    workspace_id: i64,
+    slider: Vec<String>,
+) -> Result<(), String> {
+    let json = serde_json::to_string(&slider).map_err(|e| e.to_string())?;
+    db.set_workspace_slider(workspace_id, &json)
 }
 
 #[tauri::command]
@@ -941,8 +961,35 @@ fn get_inbox_session(db: State<Db>, inbox_id: i64) -> Result<Option<SessionFeedI
 
 #[tauri::command]
 fn get_settings(db: State<Db>) -> Result<std::collections::HashMap<String, String>, String> {
-    remote::ensure_api_token(&db);
-    db.all_settings()
+    let token = remote::ensure_api_token(&db);
+    let mut map = db.all_settings()?;
+    map.insert("api_token".to_string(), token);
+    Ok(map)
+}
+
+#[tauri::command]
+fn get_api_token(db: State<Db>) -> Result<String, String> {
+    Ok(remote::ensure_api_token(&db))
+}
+
+#[tauri::command]
+fn regenerate_api_token(db: State<Db>) -> Result<String, String> {
+    use rand::Rng;
+    let rand_part: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(38)
+        .map(char::from)
+        .collect();
+    let token = format!("ct{}", rand_part);
+    if let Ok(conn) = db.0.lock() {
+        conn.execute(
+            "INSERT INTO api_tokens (name, token, description) VALUES ('http_trigger', ?1, 'Local HTTP trigger auth token')
+             ON CONFLICT(name) DO UPDATE SET token = ?1",
+            [&token],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(token)
 }
 
 #[tauri::command]
@@ -1027,6 +1074,11 @@ fn list_slash_commands(app: AppHandle, workspace_id: i64) -> Result<Vec<String>,
 async fn sync_cloud_cache(app: AppHandle) -> Result<(), String> {
     sync_manager::sync_on_startup(&app).await;
     Ok(())
+}
+
+#[tauri::command]
+fn get_chat_session(db: State<Db>, id: String) -> Result<db::ChatSession, String> {
+    db.get_chat_session(&id)
 }
 
 #[tauri::command]
@@ -1570,6 +1622,7 @@ pub fn run() {
             update_workspace,
             update_workspace_flags,
             set_workspace_env_files,
+            set_workspace_slider,
             read_env_file,
             write_env_file,
             set_env_entry,
@@ -1611,6 +1664,8 @@ pub fn run() {
             delete_inbox_item,
             get_settings,
             set_setting,
+            get_api_token,
+            regenerate_api_token,
             get_env_vars,
             set_env_var,
             delete_env_var,
@@ -1634,6 +1689,7 @@ pub fn run() {
             chat::stop_chat,
             chat::has_provider_key,
             chat::compact_chat_session,
+            get_chat_session,
             list_chat_sessions,
             create_chat_session,
             list_chat_messages,
@@ -1763,6 +1819,7 @@ pub fn run() {
             localdb::local_db_list_tables,
             localdb::local_db_get_table_schema,
             localdb::local_db_get_table_data,
+            localdb::local_db_execute_sql,
             // UserDB commands
             userdb::userdb_get_config,
             userdb::userdb_save_config,

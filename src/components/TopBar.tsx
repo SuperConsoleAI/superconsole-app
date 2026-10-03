@@ -300,7 +300,7 @@ export function TopBar({
       <div
         className={cn(
           "flex items-center shrink-0 transition-all",
-          isFullscreen ? "pl-3" : "pl-[84px]",
+          isFullscreen || showWinControls ? "pl-3" : "pl-[84px]",
           sidebarOpen ? "w-64 pr-3 justify-between" : "w-auto pr-3"
         )}
       >
@@ -335,7 +335,13 @@ export function TopBar({
 
       {!isDashboard && (
         !isProjectPage ? (
-        <div className="flex min-w-0 flex-1 items-center px-5">
+        <div
+          data-tauri-drag-region
+          className={cn(
+            "flex min-w-0 flex-1 items-center h-full pl-5",
+            showWinControls ? "pr-3" : "pr-5"
+          )}
+        >
           {pathname === "/tasks" && <TasksNavbar />}
           {pathname === "/inbox" && <InboxNavbar />}
           {pathname === "/sessions" && <SessionsNavbar />}
@@ -367,14 +373,16 @@ export function TopBar({
         )
       ))}
 
-      {/* Draggable spacer to fill remaining horizontal space and allow moving the window */}
-      <div
-        data-tauri-drag-region
-        className="flex-1 h-full min-w-[20px] pointer-events-auto self-stretch"
-      />
+      {/* Draggable spacer to fill remaining horizontal space and allow moving the window on dashboard and project page */}
+      {(isDashboard || isProjectPage) && (
+        <div
+          data-tauri-drag-region
+          className="flex-1 h-full min-w-[20px] pointer-events-auto self-stretch"
+        />
+      )}
 
       {isProjectPage && (
-        <div className="ml-auto flex items-center gap-1 pr-4">
+        <div className={cn("flex items-center gap-1", showWinControls ? "pr-2" : "pr-4")}>
           <div id="topbar-portal" className="flex items-center gap-2 mr-1" />
           {/* ── Git: Initialize Git (non-repo) ─────────── */}
           {workspace && isGitRepo === false && (

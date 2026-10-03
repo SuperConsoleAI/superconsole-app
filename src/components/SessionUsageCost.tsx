@@ -2,9 +2,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { PresetIcon } from "@/components/PresetIcon";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { Copy, Check, BarChart3, Coins, Layers, ArrowUpRight } from "lucide-react";
-import { useState } from "react";
+import { Copy, Check, BarChart3, Coins, Layers, ArrowUpRight, Brain } from "lucide-react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { api } from "@/lib/api";
 
 export interface SessionUsageData {
   id?: string | number;
@@ -25,6 +26,10 @@ export interface SessionUsageData {
   tokens_reasoning?: number;
   tokens_total?: number;
   cost_usd?: number;
+  rate_prompt_per_1m?: number | null;
+  rate_cached_per_1m?: number | null;
+  rate_completion_per_1m?: number | null;
+  rate_reasoning_per_1m?: number | null;
 }
 
 export interface SessionUsageCostProps {
@@ -101,12 +106,12 @@ export function getModelRate(model?: string, provider?: string): ModelRate {
   return { promptPer1M: 3.0, completionPer1M: 15.0, cachedPer1M: 0.30, reasoningPer1M: 15.0 };
 }
 
-function fmtUsd(n?: number): string {
+export function fmtUsd(n?: number): string {
   if (!n || isNaN(n)) return "$0.00";
   return n < 0.0001 && n > 0 ? `$${n.toFixed(5)}` : n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
 }
 
-function fmtTokens(n?: number): string {
+export function fmtTokens(n?: number): string {
   if (!n) return "0";
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -116,29 +121,96 @@ function fmtTokens(n?: number): string {
 export function SessionUsageCost({ open, onOpenChange, session }: SessionUsageCostProps) {
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
+  const [liveSession, setLiveSession] = useState<SessionUsageData | null>(null);
+
+  const sessionId =
+    session?.session_id || session?.resume_id || (session?.id != null ? String(session.id) : "");
+  const isChat = session?.session_type === "chat" || session?.cli === "chat";
+
+  // Automatically fetch up-to-the-second stats from SQLite whenever the modal opens
+  useEffect(() => {
+    if (!open || !sessionId) {
+      setLiveSession(null);
+      return;
+    }
+    if (isChat) {
+      api
+        .getChatSession(sessionId)
+        .then((s) => {
+          if (s) {
+            const tot =
+              (s.tokens_prompt || 0) + (s.tokens_completion || 0) + (s.tokens_reasoning || 0);
+            setLiveSession({
+              ...session,
+              id: s.id,
+              session_id: s.id,
+              tokens_prompt: s.tokens_prompt,
+              tokens_completion: s.tokens_completion,
+              tokens_reasoning: s.tokens_reasoning,
+              tokens_total: tot,
+              cost_usd: s.cost_usd,
+              rate_prompt_per_1m: s.rate_prompt_per_1m,
+              rate_cached_per_1m: s.rate_cached_per_1m,
+              rate_completion_per_1m: s.rate_completion_per_1m,
+              rate_reasoning_per_1m: s.rate_reasoning_per_1m,
+              model: s.model || session?.model,
+              provider: s.provider || session?.provider,
+              label: s.name || session?.label,
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [open, sessionId, isChat]);
 
   if (!session) return null;
 
-  const sessionId = session.session_id || session.resume_id || (session.id != null ? String(session.id) : "");
-  const cli = session.cli || "cli";
-  const provider = session.provider || "";
-  const model = session.model || "";
-  
-  const promptTokens = session.tokens_prompt ?? 0;
-  const completionTokens = session.tokens_completion ?? 0;
-  const reasoningTokens = session.tokens_reasoning ?? 0;
-  const totalTokens = session.tokens_total ?? (promptTokens + completionTokens + reasoningTokens);
+  const active = liveSession || session;
+  const cli = active.cli || "cli";
+  const provider = active.provider || "";
+  const model = active.model || "";
 
-  const rate = getModelRate(model, provider);
+  let promptTokens = active.tokens_prompt ?? 0;
+  let completionTokens = active.tokens_completion ?? 0;
+  const reasoningTokens = active.tokens_reasoning ?? 0;
+  const totalTokens =
+    active.tokens_total ?? promptTokens + completionTokens + reasoningTokens;
+
+  // If total tokens exist but individual turn breakdown is not yet split, distribute logically
+  if (totalTokens > 0 && promptTokens === 0 && completionTokens === 0) {
+    promptTokens = Math.round(totalTokens * 0.4);
+    completionTokens = Math.max(0, totalTokens - promptTokens - reasoningTokens);
+  }
+
+  const fallbackRate = getModelRate(model, provider);
+  const rate: ModelRate = {
+    promptPer1M:
+      active.rate_prompt_per_1m && active.rate_prompt_per_1m > 0
+        ? active.rate_prompt_per_1m
+        : fallbackRate.promptPer1M,
+    completionPer1M:
+      active.rate_completion_per_1m && active.rate_completion_per_1m > 0
+        ? active.rate_completion_per_1m
+        : fallbackRate.completionPer1M,
+    cachedPer1M:
+      active.rate_cached_per_1m && active.rate_cached_per_1m > 0
+        ? active.rate_cached_per_1m
+        : fallbackRate.cachedPer1M,
+    reasoningPer1M:
+      active.rate_reasoning_per_1m && active.rate_reasoning_per_1m > 0
+        ? active.rate_reasoning_per_1m
+        : fallbackRate.reasoningPer1M,
+  };
+
   const promptCost = (promptTokens / 1_000_000) * rate.promptPer1M;
   const completionCost = (completionTokens / 1_000_000) * rate.completionPer1M;
   const reasoningCost = (reasoningTokens / 1_000_000) * rate.reasoningPer1M;
   const calculatedCost = promptCost + completionCost + reasoningCost;
-  const cost = session.cost_usd && session.cost_usd > 0 ? session.cost_usd : calculatedCost;
-  
-  const isChat = session.session_type === "chat" || cli === "chat";
-  const title = session.label || (isChat ? "Chat Session" : `${cli[0].toUpperCase() + cli.slice(1)} Session`);
-  const wsName = session.wsName || session.workspace_name || "Workspace";
+  const cost = active.cost_usd && active.cost_usd > 0 ? active.cost_usd : calculatedCost;
+
+  const title =
+    active.label || (isChat ? "Chat Session" : `${cli[0].toUpperCase() + cli.slice(1)} Session`);
+  const wsName = active.wsName || active.workspace_name || "Workspace";
 
   const copySessionId = () => {
     if (!sessionId) return;
@@ -183,29 +255,44 @@ export function SessionUsageCost({ open, onOpenChange, session }: SessionUsageCo
           </div>
         </DialogHeader>
 
-        {/* Top Highlight Cards */}
-        <div className="grid grid-cols-2 gap-2.5">
+        {/* Top Highlight Cards - 3 columns: Cost, Total Tokens, Reasoning Tokens */}
+        <div className="grid grid-cols-3 gap-2">
           <div className="rounded-xl border border-border/80 bg-card p-3">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>Estimated Cost</span>
-              <Coins className="h-3.5 w-3.5 text-primary" strokeWidth={1.5} />
+              <span className="truncate">Est. Cost</span>
+              <Coins className="h-3.5 w-3.5 text-primary shrink-0" strokeWidth={1.5} />
             </div>
-            <p className="mt-1 text-2xl font-semibold tracking-tight text-foreground tabular-nums">
+            <p className="mt-1 text-xl font-semibold tracking-tight text-foreground tabular-nums truncate">
               {fmtUsd(cost)}
             </p>
-            <p className="text-[11px] text-muted-foreground mt-0.5">Based on token usage</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5 truncate">Snapshot rates</p>
           </div>
 
           <div className="rounded-xl border border-border/80 bg-card p-3">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>Total Tokens</span>
-              <Layers className="h-3.5 w-3.5 text-primary" strokeWidth={1.5} />
+              <span className="truncate">Total Tokens</span>
+              <Layers className="h-3.5 w-3.5 text-primary shrink-0" strokeWidth={1.5} />
             </div>
-            <p className="mt-1 text-2xl font-semibold tracking-tight text-foreground tabular-nums">
+            <p className="mt-1 text-xl font-semibold tracking-tight text-foreground tabular-nums truncate">
               {fmtTokens(totalTokens)}
             </p>
-            <p className="text-[11px] text-muted-foreground mt-0.5">
-              {formatDuration(session.started_at, session.ended_at)} active
+            <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
+              {promptTokens > 0 || completionTokens > 0
+                ? `${fmtTokens(promptTokens)} in · ${fmtTokens(completionTokens)} out`
+                : formatDuration(session.started_at, session.ended_at) || "Cumulative"}
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-border/80 bg-card p-3">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="truncate">Reasoning</span>
+              <Brain className="h-3.5 w-3.5 text-primary shrink-0" strokeWidth={1.5} />
+            </div>
+            <p className="mt-1 text-xl font-semibold tracking-tight text-foreground tabular-nums truncate">
+              {fmtTokens(reasoningTokens)}
+            </p>
+            <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
+              {reasoningTokens > 0 ? `${fmtUsd(reasoningCost)} cost` : "Thinking tokens"}
             </p>
           </div>
         </div>
@@ -217,7 +304,7 @@ export function SessionUsageCost({ open, onOpenChange, session }: SessionUsageCo
               Usage & Cost Breakdown
             </p>
             <span className="text-[10px] font-mono text-muted-foreground bg-muted/70 px-2 py-0.5 rounded shrink-0">
-              ${rate.promptPer1M.toFixed(2)} in / ${rate.completionPer1M.toFixed(2)} out · 1M
+              ${rate.promptPer1M.toFixed(2)} in / ${rate.completionPer1M.toFixed(2)} out / ${rate.reasoningPer1M.toFixed(2)} think · 1M
             </span>
           </div>
 
@@ -260,14 +347,18 @@ export function SessionUsageCost({ open, onOpenChange, session }: SessionUsageCo
                   <td className="py-1.5 text-right font-medium tabular-nums text-foreground">{fmtTokens(completionTokens)}</td>
                   <td className="py-1.5 text-right font-medium tabular-nums text-foreground">{fmtUsd(completionCost)}</td>
                 </tr>
-                {reasoningTokens > 0 && (
-                  <tr>
-                    <td className="py-1.5 font-medium text-foreground">Reasoning</td>
-                    <td className="py-1.5 font-mono text-muted-foreground text-[11px]">${rate.reasoningPer1M.toFixed(2)} / 1M</td>
-                    <td className="py-1.5 text-right font-medium tabular-nums text-foreground">{fmtTokens(reasoningTokens)}</td>
-                    <td className="py-1.5 text-right font-medium tabular-nums text-foreground">{fmtUsd(reasoningCost)}</td>
-                  </tr>
-                )}
+                <tr>
+                  <td className="py-1.5 font-medium text-foreground flex items-center gap-1.5">
+                    <Brain className="h-3 w-3 text-muted-foreground/80 shrink-0" />
+                    <span>Reasoning</span>
+                    <span className="text-[9px] text-muted-foreground bg-muted/80 px-1 py-0.2 rounded font-normal leading-tight">
+                      Thinking
+                    </span>
+                  </td>
+                  <td className="py-1.5 font-mono text-muted-foreground text-[11px]">${rate.reasoningPer1M.toFixed(2)} / 1M</td>
+                  <td className="py-1.5 text-right font-medium tabular-nums text-foreground">{fmtTokens(reasoningTokens)}</td>
+                  <td className="py-1.5 text-right font-medium tabular-nums text-foreground">{fmtUsd(reasoningCost)}</td>
+                </tr>
                 <tr className="font-semibold text-foreground border-t border-border/70">
                   <td className="pt-2">Total</td>
                   <td className="pt-2 text-[11px] text-muted-foreground font-normal">

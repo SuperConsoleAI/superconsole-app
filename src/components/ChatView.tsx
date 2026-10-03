@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -14,6 +14,13 @@ import { Button } from "@/components/ui/button";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { ChatComposer, type Attachment } from "@/components/ChatComposer";
 import { StatusFooter } from "@/components/StatusFooter";
+import {
+  SessionUsageCost,
+  type SessionUsageData,
+  fmtUsd,
+  fmtTokens,
+  getModelRate,
+} from "@/components/SessionUsageCost";
 import { useAuth } from "@/lib/auth-context";
 import { useWorkspaces } from "@/lib/workspace-context";
 import { cn } from "@/lib/utils";
@@ -60,7 +67,7 @@ const SESSION_PROMPTS: { label: string; build: () => string }[] = [
 - Project context and examples we used
 - Templates or processes we established
 - Next steps we identified
-Make it detailed enough that a new conversation can pick up exactly where we left off. Save it in the session-log/ folder as session-log/SESSION_LOG_${today()}.md`,
+Make it detailed enough that a new conversation can pick up exactly where we left off. Save it in the .superconsole/sessions/SESSION_LOG_${today()}.md`,
   },
   {
     label: "Summarize",
@@ -124,6 +131,7 @@ export function ChatView({
   const [projectError, setProjectError] = useState<string | null>(null);
   const [draftSessionId, setDraftSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -133,6 +141,7 @@ export function ChatView({
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sessionStats, setSessionStats] = useState({ tokens: 0, cost: 0 });
+  const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [contextTokens, setContextTokens] = useState(0);
   const [commandSlashes, setCommandSlashes] = useState<Set<string>>(new Set());
   const [toolMode, setToolMode] = useState<"auto" | "direct">(() =>
@@ -249,25 +258,64 @@ export function ChatView({
   // The picker lists the project's sessions; refresh when it becomes visible.
   useEffect(() => {
     if (isPicker && visible && projectId) {
-      api.listChatSessions(projectId).then(setSessions).catch(() => {});
+      api.listChatSessions(projectId).then(setSessions).catch(() => { });
     }
   }, [isPicker, visible, projectId]);
+
+  const refreshSession = useCallback(
+    async (sidParam?: string | null) => {
+      const targetId = sidParam || sessionRef.current || sessionId || fixedSessionId;
+      if (!targetId) return;
+      try {
+        const s = await api.getChatSession(targetId);
+        if (s) {
+          setCurrentSession(s);
+          if (s.provider) setProvider(s.provider);
+          if (s.model) setModel(s.model);
+          const totalTok =
+            (s.tokens_prompt || 0) + (s.tokens_completion || 0) + (s.tokens_reasoning || 0);
+          if (totalTok > 0 || (s.cost_usd && s.cost_usd > 0)) {
+            setSessionStats({
+              tokens: totalTok,
+              cost: s.cost_usd || 0,
+            });
+            setContextTokens(totalTok);
+          }
+        }
+      } catch {
+        /* fallback to in-memory sessions */
+        const s =
+          sessions.find((sess) => sess.id === targetId) ||
+          (fixedSessionId ? sessions.find((sess) => sess.id === fixedSessionId) : null);
+        if (s) {
+          setCurrentSession(s);
+          if (s.provider) setProvider(s.provider);
+          if (s.model) setModel(s.model);
+          const totalTok =
+            (s.tokens_prompt || 0) + (s.tokens_completion || 0) + (s.tokens_reasoning || 0);
+          if (totalTok > 0 || (s.cost_usd && s.cost_usd > 0)) {
+            setSessionStats({
+              tokens: totalTok,
+              cost: s.cost_usd || 0,
+            });
+            setContextTokens(totalTok);
+          }
+        }
+      }
+    },
+    [sessionId, fixedSessionId, sessions],
+  );
 
   // Load the conversation for a concrete/draft session.
   useEffect(() => {
     if (sessionId) {
       api.listChatMessages(sessionId).then(setMessages).catch(() => {});
-      if (fixedSessionId) {
-        const s = sessions.find((sess) => sess.id === fixedSessionId);
-        if (s) {
-          if (s.provider) setProvider(s.provider);
-          if (s.model) setModel(s.model);
-        }
-      }
+      refreshSession(sessionId);
     } else {
       setMessages([]);
+      setCurrentSession(null);
     }
-  }, [sessionId, fixedSessionId, sessions]);
+  }, [sessionId, refreshSession]);
 
   useEffect(() => {
     const unToken = listen<{ request_id: string; content: string }>("chat-token", (e) => {
@@ -279,6 +327,7 @@ export function ChatView({
       request_id: string;
       tokens_prompt: number;
       tokens_completion: number;
+      tokens_reasoning?: number;
       cost_usd: number;
     }>("chat-done", async (e) => {
       if (e.payload.request_id !== reqRef.current) return;
@@ -286,12 +335,13 @@ export function ChatView({
       reqRef.current = null;
       setStreaming(null);
       setSending(false);
+      const reasoning = e.payload.tokens_reasoning || 0;
       setSessionStats((s) => ({
-        tokens: s.tokens + e.payload.tokens_prompt + e.payload.tokens_completion,
+        tokens: s.tokens + e.payload.tokens_prompt + e.payload.tokens_completion + reasoning,
         cost: s.cost + e.payload.cost_usd,
       }));
       // The prompt size of the latest turn is the current context window usage.
-      setContextTokens(e.payload.tokens_prompt + e.payload.tokens_completion);
+      setContextTokens(e.payload.tokens_prompt + e.payload.tokens_completion + reasoning);
       const sid = sessionRef.current;
       if (content && sid) {
         try {
@@ -306,6 +356,9 @@ export function ChatView({
       if (isDraft && sid && !boundRef.current) {
         boundRef.current = true;
         bindChatDraftToSession(workspace.id, tabId, sid, tabLabel(firstUserRef.current));
+      }
+      if (sid) {
+        refreshSession(sid);
       }
     });
     const unError = listen<{ request_id: string; message: string }>("chat-error", (e) => {
@@ -372,8 +425,12 @@ export function ChatView({
       .catch(() => setCommandSlashes(new Set()));
   }, [workspace.id]);
 
-  const streamAssistant = async (modelMessages: { role: string; content: string }[]) => {
+  const streamAssistant = async (
+    modelMessages: { role: string; content: string }[],
+    sidParam?: string | null,
+  ) => {
     const reqId = crypto.randomUUID();
+    const sid = sidParam || sessionRef.current || null;
     reqRef.current = reqId;
     bufRef.current = "";
     stickRef.current = true;
@@ -381,7 +438,7 @@ export function ChatView({
     setSending(true);
     setError(null);
     try {
-      await api.chatSend(reqId, workspace.id, provider, model, modelMessages, toolMode, reasoning);
+      await api.chatSend(reqId, workspace.id, sid, provider, model, modelMessages, toolMode, reasoning);
     } catch (e) {
       const msg = String(e);
       reqRef.current = null;
@@ -432,6 +489,7 @@ export function ChatView({
         sid = created.id;
         setDraftSessionId(sid);
         sessionRef.current = sid;
+        setCurrentSession(created);
         firstUserRef.current = text;
         if (isDraft) setChatTabLabel(workspace.id, tabId, tabLabel(text || atts[0]?.name || "Chat"));
       } catch (e) {
@@ -464,7 +522,7 @@ export function ChatView({
         ? { role: m.role, content: text + attBlocks }
         : { role: m.role, content: m.content },
     );
-    streamAssistant(modelMessages);
+    streamAssistant(modelMessages, sid);
   };
 
   const stop = async () => {
@@ -577,6 +635,21 @@ export function ChatView({
                   >
                     <ProviderIcon provider={s.provider} className="h-4 w-4 shrink-0 opacity-80" />
                     <span className="min-w-0 flex-1 truncate text-sm">{sessionTitle(s)}</span>
+                    {((s.cost_usd && s.cost_usd > 0) ||
+                      (s.tokens_prompt || 0) +
+                        (s.tokens_completion || 0) +
+                        (s.tokens_reasoning || 0) >
+                        0) && (
+                      <span className="hidden shrink-0 items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
+                        ~{fmtUsd(s.cost_usd ?? 0)} ·{" "}
+                        {fmtTokens(
+                          (s.tokens_prompt || 0) +
+                            (s.tokens_completion || 0) +
+                            (s.tokens_reasoning || 0),
+                        )}{" "}
+                        tok
+                      </span>
+                    )}
                     {s.model && (
                       <span className="hidden max-w-[40%] shrink-0 items-center gap-1 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
                         <ProviderIcon model={s.model} className="h-3 w-3 shrink-0 opacity-50" />
@@ -689,39 +762,126 @@ export function ChatView({
         </div>
       )}
 
-      <ChatComposer
-        workspaceId={workspace.id}
-        projectId={projectId}
-        orgId={activeCloudOrgId}
-        userId={auth?.user.id ?? null}
-        input={input}
-        setInput={setInput}
-        onSend={send}
-        sending={sending}
-        onStop={stop}
-        provider={provider}
-        setProvider={setProvider}
-        model={model}
-        setModel={setModel}
-        attachments={attachments}
-        setAttachments={setAttachments}
-        toolMode={toolMode}
-        setToolMode={setToolMode}
-        reasoning={reasoning}
-        setReasoning={setReasoning}
-        agentMode={agentMode}
-        setAgentMode={setAgentMode}
-      />
+      {(() => {
+        const targetSession =
+          currentSession ||
+          (sessionId ? sessions.find((s) => s.id === sessionId) : null) ||
+          (fixedSessionId ? sessions.find((s) => s.id === fixedSessionId) : null);
 
-      <StatusFooter
-        workspace={workspace}
-        onOpenFiles={onOpenFiles}
-        refreshKey={messages.length}
-        context={contextTokens}
-        contextLimit={contextLimit}
-        tokens={sessionStats.tokens}
-        cost={sessionStats.cost}
-      />
+        const currentProvider = targetSession?.provider || provider;
+        const currentModel = targetSession?.model || model;
+        const fallbackRate = getModelRate(currentModel, currentProvider);
+
+        const dbTokens = targetSession
+          ? (targetSession.tokens_prompt || 0) +
+            (targetSession.tokens_completion || 0) +
+            (targetSession.tokens_reasoning || 0)
+          : 0;
+
+        const totalTokens = Math.max(dbTokens, sessionStats.tokens);
+
+        let promptTok = targetSession?.tokens_prompt || 0;
+        let compTok = targetSession?.tokens_completion || 0;
+        const reasonTok = targetSession?.tokens_reasoning || 0;
+
+        if (totalTokens > 0 && promptTok === 0 && compTok === 0) {
+          promptTok = Math.round(totalTokens * 0.4);
+          compTok = Math.max(0, totalTokens - promptTok - reasonTok);
+        }
+
+        const costVal =
+          targetSession?.cost_usd && targetSession.cost_usd > 0
+            ? targetSession.cost_usd
+            : sessionStats.cost > 0
+              ? sessionStats.cost
+              : (promptTok / 1e6) * fallbackRate.promptPer1M +
+                (compTok / 1e6) * fallbackRate.completionPer1M +
+                (reasonTok / 1e6) * fallbackRate.reasoningPer1M;
+
+        const activeSessionData: SessionUsageData = {
+          session_id: sessionId ?? fixedSessionId ?? "live-session",
+          session_type: "chat",
+          workspace_id: workspace.id,
+          workspace_name: workspace.name,
+          wsName: workspace.name,
+          provider: currentProvider,
+          model: currentModel,
+          label:
+            targetSession?.name ||
+            (firstUserRef.current ? snippet(firstUserRef.current, 30) : "Active Chat Session"),
+          started_at: targetSession?.created_at || new Date().toISOString(),
+          tokens_prompt: promptTok,
+          tokens_completion: compTok,
+          tokens_reasoning: reasonTok,
+          tokens_total: totalTokens,
+          cost_usd: costVal,
+          rate_prompt_per_1m:
+            targetSession?.rate_prompt_per_1m && targetSession.rate_prompt_per_1m > 0
+              ? targetSession.rate_prompt_per_1m
+              : fallbackRate.promptPer1M,
+          rate_cached_per_1m:
+            targetSession?.rate_cached_per_1m && targetSession.rate_cached_per_1m > 0
+              ? targetSession.rate_cached_per_1m
+              : fallbackRate.cachedPer1M,
+          rate_completion_per_1m:
+            targetSession?.rate_completion_per_1m && targetSession.rate_completion_per_1m > 0
+              ? targetSession.rate_completion_per_1m
+              : fallbackRate.completionPer1M,
+          rate_reasoning_per_1m:
+            targetSession?.rate_reasoning_per_1m && targetSession.rate_reasoning_per_1m > 0
+              ? targetSession.rate_reasoning_per_1m
+              : fallbackRate.reasoningPer1M,
+        };
+
+        return (
+          <>
+            <ChatComposer
+              workspaceId={workspace.id}
+              projectId={projectId}
+              orgId={activeCloudOrgId}
+              userId={auth?.user.id ?? null}
+              input={input}
+              setInput={setInput}
+              onSend={send}
+              sending={sending}
+              onStop={stop}
+              provider={provider}
+              setProvider={setProvider}
+              model={model}
+              setModel={setModel}
+              attachments={attachments}
+              setAttachments={setAttachments}
+              toolMode={toolMode}
+              setToolMode={setToolMode}
+              reasoning={reasoning}
+              setReasoning={setReasoning}
+              agentMode={agentMode}
+              setAgentMode={setAgentMode}
+              sessionCost={sessionStats.cost || costVal}
+              onOpenUsageCost={() => {
+                refreshSession();
+                setUsageModalOpen(true);
+              }}
+            />
+
+            <StatusFooter
+              workspace={workspace}
+              onOpenFiles={onOpenFiles}
+              refreshKey={messages.length}
+              context={contextTokens}
+              contextLimit={contextLimit}
+              tokens={sessionStats.tokens}
+              cost={sessionStats.cost}
+            />
+
+            <SessionUsageCost
+              open={usageModalOpen}
+              onOpenChange={setUsageModalOpen}
+              session={activeSessionData}
+            />
+          </>
+        );
+      })()}
     </div>
   );
 }

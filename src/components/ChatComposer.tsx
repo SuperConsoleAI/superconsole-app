@@ -13,6 +13,7 @@ import {
   Brain,
   Check,
   ChevronDown,
+  Coins,
   Paperclip,
   Square,
   X,
@@ -23,6 +24,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { ComposerPlusMenu } from "@/components/ComposerPlusMenu";
+import { getModelRate, fmtUsd } from "@/components/SessionUsageCost";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,8 +48,8 @@ export interface ThinkingLevelOption {
 }
 
 const EFFORT_METADATA: Record<string, { label: string; hint: string; order: number }> = {
-  off: { label: "Thinking off", hint: "Standard generation without thinking", order: 0 },
-  none: { label: "Thinking off", hint: "Standard generation without thinking", order: 0 },
+  off: { label: "Off", hint: "Standard generation without thinking", order: 0 },
+  none: { label: "Off", hint: "Standard generation without thinking", order: 0 },
   minimal: { label: "Minimal", hint: "Minimal reasoning effort", order: 1 },
   low: { label: "Low", hint: "Fast thoughts (low reasoning effort)", order: 2 },
   medium: { label: "Medium", hint: "Balanced reasoning effort", order: 3 },
@@ -58,21 +60,21 @@ const EFFORT_METADATA: Record<string, { label: string; hint: string; order: numb
 };
 
 export const OPENAI_THINKING_LEVELS: readonly ThinkingLevelOption[] = [
-  { id: "off", label: "Thinking off", hint: "Standard generation without thinking" },
+  { id: "off", label: "Off", hint: "Standard generation without thinking" },
   { id: "low", label: "Low", hint: "Fast thoughts (low reasoning effort)" },
   { id: "medium", label: "Medium", hint: "Balanced reasoning effort" },
   { id: "high", label: "High", hint: "Deep multi-step reasoning" },
 ];
 
 export const GEMINI_THINKING_LEVELS: readonly ThinkingLevelOption[] = [
-  { id: "off", label: "Thinking off", hint: "Standard generation without thinking" },
+  { id: "off", label: "Off", hint: "Standard generation without thinking" },
   { id: "low", label: "Low", hint: "Fast thoughts (~2K token budget)" },
   { id: "medium", label: "Medium", hint: "Balanced reasoning (~4K token budget)" },
   { id: "high", label: "High", hint: "Deep reasoning (~16K token budget)" },
 ];
 
 export const ANTHROPIC_THINKING_LEVELS: readonly ThinkingLevelOption[] = [
-  { id: "off", label: "Thinking off", hint: "Standard generation without thinking" },
+  { id: "off", label: "Off", hint: "Standard generation without thinking" },
   { id: "low", label: "Low", hint: "Fast thoughts (~2K token budget)" },
   { id: "medium", label: "Medium", hint: "Balanced reasoning (~4K token budget)" },
   { id: "high", label: "High", hint: "Deep reasoning (~16K token budget)" },
@@ -80,7 +82,7 @@ export const ANTHROPIC_THINKING_LEVELS: readonly ThinkingLevelOption[] = [
 ];
 
 export const DEFAULT_REASONING_LEVELS: readonly ThinkingLevelOption[] = [
-  { id: "off", label: "Thinking off", hint: "Standard generation without reasoning" },
+  { id: "off", label: "Off", hint: "Standard generation without reasoning" },
   { id: "low", label: "Low", hint: "Fast reasoning effort" },
   { id: "medium", label: "Medium", hint: "Balanced reasoning effort" },
   { id: "high", label: "High", hint: "Deep reasoning effort" },
@@ -154,9 +156,9 @@ export function getThinkingLevelsForModel(
     const efforts = orModel.reasoning.supported_efforts;
     const items: ThinkingLevelOption[] = [];
 
-    // Only allow "Thinking off" if reasoning is not strictly mandatory for this model
+    // Only allow "Off" if reasoning is not strictly mandatory for this model
     if (!orModel.reasoning.mandatory && !efforts.some((e) => e === "none" || e === "off")) {
-      items.push({ id: "off", label: "Thinking off", hint: "Standard generation without thinking" });
+      items.push({ id: "off", label: "Off", hint: "Standard generation without thinking" });
     }
 
     // Sort according to effort intensity
@@ -170,7 +172,7 @@ export function getThinkingLevelsForModel(
       const norm = eff.toLowerCase();
       if (norm === "none" || norm === "off") {
         if (!items.some((i) => i.id === "off")) {
-          items.unshift({ id: "off", label: "Thinking off", hint: "Standard generation without thinking" });
+          items.unshift({ id: "off", label: "Off", hint: "Standard generation without thinking" });
         }
         continue;
       }
@@ -218,6 +220,13 @@ export function fmtCtx(n: number): string {
 
 export function fmtPrice(p: number): string {
   return `$${(p * 1e6).toFixed(2)}`;
+}
+
+export function fmtRate(v: number): string {
+  if (v <= 0) return "$0";
+  if (v < 0.01) return `$${v.toFixed(3)}`;
+  if (v < 1) return `$${v.toFixed(2)}`;
+  return v % 1 === 0 ? `$${v}` : `$${v.toFixed(2)}`;
 }
 
 // Provider tabs surfaced in the model selector, in this order.
@@ -358,6 +367,8 @@ interface ChatComposerProps {
   setReasoning: (r: string) => void;
   agentMode: "auto" | "semi" | "manual";
   setAgentMode: (m: "auto" | "semi" | "manual") => void;
+  sessionCost?: number;
+  onOpenUsageCost?: () => void;
 }
 
 export function ChatComposer({
@@ -382,6 +393,8 @@ export function ChatComposer({
   setReasoning,
   agentMode,
   setAgentMode,
+  sessionCost,
+  onOpenUsageCost,
 }: ChatComposerProps) {
   const router = useRouter();
   const [customModel, setCustomModel] = useState(false);
@@ -390,6 +403,23 @@ export function ChatComposer({
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeVendor, setActiveVendor] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  const currentOrModel = useMemo(() => {
+    return orModels.find(
+      (m) => m.id === model || m.id.endsWith(`/${model}`) || model.endsWith(`/${m.id}`),
+    );
+  }, [orModels, model]);
+
+  const rates = useMemo(() => {
+    if (currentOrModel && (currentOrModel.prompt_price > 0 || currentOrModel.completion_price > 0)) {
+      return {
+        prompt: currentOrModel.prompt_price * 1e6,
+        completion: currentOrModel.completion_price * 1e6,
+      };
+    }
+    const fallback = getModelRate(model, provider);
+    return { prompt: fallback.promptPer1M, completion: fallback.completionPer1M };
+  }, [currentOrModel, model, provider]);
 
   // Slash autocomplete state
   const [slashItems, setSlashItems] = useState<SlashItem[]>([]);
@@ -828,7 +858,24 @@ export function ChatComposer({
             onGoAgents={() => router.navigate({ to: "/agents" })}
           />
 
-
+          {/* Price / Usage Cost Chip — currency icon [$₹E] placed before model chip */}
+          <button
+            type="button"
+            onClick={onOpenUsageCost}
+            className={cn(
+              "flex h-7 w-7 items-center justify-center rounded-md border border-border/70 bg-card/60 transition-colors shadow-2xs hover:bg-accent hover:border-border cursor-pointer shrink-0",
+              sessionCost && sessionCost > 0
+                ? "text-emerald-500 dark:text-emerald-400 border-emerald-500/30"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            title={
+              sessionCost && sessionCost > 0
+                ? `Session Spend: ${fmtUsd(sessionCost)} | Rates: ${fmtRate(rates.prompt)} in / ${fmtRate(rates.completion)} out per 1M. Click to view full usage & cost breakdown.`
+                : `Model Rates: ${fmtRate(rates.prompt)} in / ${fmtRate(rates.completion)} out per 1M. Click to view session usage & cost.`
+            }
+          >
+            <Coins className="h-3.5 w-3.5 opacity-85" />
+          </button>
 
           {/* Unified provider → model selector (OpenRouter-backed) */}
           {customModel ? (
@@ -962,7 +1009,7 @@ export function ChatComposer({
                       isThinkingActive ? "opacity-85 text-foreground" : "opacity-45 text-muted-foreground",
                     )}
                   />
-                  <span>{isThinkingActive ? `Thinking: ${thinkingLabel}` : "Thinking off"}</span>
+                  <span>{isThinkingActive ? thinkingLabel.replace(/^Thinking:\s*/i, "") : "Off"}</span>
                   <ChevronDown className="h-2.5 w-2.5 opacity-40 ml-0.5" />
                 </button>
               </DropdownMenuTrigger>

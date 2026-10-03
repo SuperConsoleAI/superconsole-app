@@ -21,13 +21,18 @@ pub const LOCAL_SCHEMA_STATEMENTS: &[&str] = &[
         default_run_mode    TEXT NOT NULL DEFAULT 'cli',
         default_cli         TEXT NOT NULL DEFAULT 'claude',
         default_provider    TEXT NOT NULL DEFAULT 'anthropic',
-        default_model       TEXT NOT NULL DEFAULT '',
-        script_setup        TEXT NOT NULL DEFAULT '',
-        script_run          TEXT NOT NULL DEFAULT '',
-        script_teardown     TEXT NOT NULL DEFAULT '',
+        default_model       TEXT,
+        script_setup        TEXT,
+        script_run          TEXT,
+        script_teardown     TEXT,
         script_auto_run     INTEGER NOT NULL DEFAULT 0,
-        repo_url            TEXT NOT NULL DEFAULT '',
-        description         TEXT NOT NULL DEFAULT '',
+        repo_url            TEXT,
+        description         TEXT,
+        tagline             TEXT,
+        details             TEXT,
+        logo_url            TEXT,
+        image_url           TEXT,
+        slider              TEXT NOT NULL DEFAULT '[]',
         env_files           TEXT NOT NULL DEFAULT '[]',
         is_active           INTEGER NOT NULL DEFAULT 1,
         is_public           INTEGER NOT NULL DEFAULT 0,
@@ -870,6 +875,20 @@ pub fn provision_local_database(conn: &Connection) -> Result<(), String> {
     let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN show_usage INTEGER NOT NULL DEFAULT 1", []);
     let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN show_team INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN tagline TEXT", []);
+    let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN details TEXT", []);
+    let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN logo_url TEXT", []);
+    let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN image_url TEXT", []);
+    let _ = conn.execute("ALTER TABLE workspaces ADD COLUMN slider TEXT NOT NULL DEFAULT '[]'", []);
+    let _ = conn.execute("ALTER TABLE chat_sessions ADD COLUMN tokens_reasoning INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE chat_sessions ADD COLUMN rate_prompt_per_1m REAL NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE chat_sessions ADD COLUMN rate_cached_per_1m REAL NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE chat_sessions ADD COLUMN rate_completion_per_1m REAL NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE chat_sessions ADD COLUMN rate_reasoning_per_1m REAL NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE session_history ADD COLUMN tokens_reasoning INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE session_history ADD COLUMN rate_reasoning_per_1m REAL NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE usage_events ADD COLUMN tokens_reasoning INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE usage_events ADD COLUMN rate_reasoning_per_1m REAL NOT NULL DEFAULT 0", []);
 
     // 1. Create all canonical tables and indexes
     for stmt in LOCAL_SCHEMA_STATEMENTS {
@@ -995,6 +1014,121 @@ pub fn provision_local_database(conn: &Connection) -> Result<(), String> {
         );
     }
 
+    // 6. Heal past chat sessions that have messages but uncalculated zero tokens/cost
+    let _ = heal_zero_token_chat_sessions_conn(conn);
+
+    Ok(())
+}
+
+/// Heals any past chat sessions that have messages in chat_messages but 0 recorded tokens/cost.
+pub fn heal_zero_token_chat_sessions_conn(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id, s.model, s.provider, s.project_id
+             FROM chat_sessions s
+             WHERE (s.tokens_prompt + s.tokens_completion + s.tokens_reasoning) = 0
+               AND EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = s.id)",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    drop(stmt);
+
+    for (sid, model_opt, provider_opt, _project_id) in rows {
+        let mut msg_stmt = conn
+            .prepare("SELECT role, content, provider, model FROM chat_messages WHERE session_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let msgs = msg_stmt
+            .query_map([&sid], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(msg_stmt);
+
+        let mut prompt_tokens: i64 = 0;
+        let mut completion_tokens: i64 = 0;
+        let mut last_model = model_opt.unwrap_or_default();
+        let mut last_provider = provider_opt.unwrap_or_default();
+
+        for (role, content, p_opt, m_opt) in msgs {
+            if let Some(m) = m_opt {
+                if !m.is_empty() {
+                    last_model = m;
+                }
+            }
+            if let Some(p) = p_opt {
+                if !p.is_empty() {
+                    last_provider = p;
+                }
+            }
+            let tok = (content.len() as i64 / 4).max(1);
+            if role == "assistant" {
+                completion_tokens += tok;
+            } else {
+                prompt_tokens += tok;
+            }
+        }
+
+        if last_model.is_empty() {
+            last_model = "gemini-2.5-flash".to_string();
+        }
+        if last_provider.is_empty() {
+            last_provider = "gemini".to_string();
+        }
+
+        if prompt_tokens > 0 || completion_tokens > 0 {
+            let (r_prompt, r_cached, r_comp, r_reason) =
+                crate::usage::pricing_for(&last_model, &last_provider);
+            let cost = ((prompt_tokens as f64 / 1_000_000.0) * r_prompt)
+                + ((completion_tokens as f64 / 1_000_000.0) * r_comp);
+
+            let _ = conn.execute(
+                "UPDATE chat_sessions
+                 SET tokens_prompt = ?1,
+                     tokens_completion = ?2,
+                     tokens_reasoning = 0,
+                     cost_usd = ?3,
+                     rate_prompt_per_1m = ?4,
+                     rate_cached_per_1m = ?5,
+                     rate_completion_per_1m = ?6,
+                     rate_reasoning_per_1m = ?7,
+                     model = CASE WHEN model IS NULL OR model = '' THEN ?8 ELSE model END,
+                     provider = CASE WHEN provider IS NULL OR provider = '' THEN ?9 ELSE provider END
+                 WHERE id = ?10",
+                rusqlite::params![
+                    prompt_tokens,
+                    completion_tokens,
+                    cost,
+                    r_prompt,
+                    r_cached,
+                    r_comp,
+                    r_reason,
+                    last_model,
+                    last_provider,
+                    sid
+                ],
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1169,6 +1303,32 @@ mod tests {
         assert!(col_names.contains(&"url".to_string()));
         assert!(col_names.contains(&"token_encrypted".to_string()));
         assert!(col_names.contains(&"off_platform".to_string()));
+
+        let mut ws_cols = conn.prepare("PRAGMA table_info(workspaces)").unwrap();
+        let col_names: Vec<String> = ws_cols.query_map([], |r| r.get(1)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(col_names.contains(&"tagline".to_string()));
+        assert!(col_names.contains(&"details".to_string()));
+        assert!(col_names.contains(&"logo_url".to_string()));
+        assert!(col_names.contains(&"image_url".to_string()));
+        assert!(col_names.contains(&"slider".to_string()));
+
+        let mut cs_cols = conn.prepare("PRAGMA table_info(chat_sessions)").unwrap();
+        let col_names: Vec<String> = cs_cols.query_map([], |r| r.get(1)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(col_names.contains(&"tokens_reasoning".to_string()));
+        assert!(col_names.contains(&"rate_prompt_per_1m".to_string()));
+        assert!(col_names.contains(&"rate_cached_per_1m".to_string()));
+        assert!(col_names.contains(&"rate_completion_per_1m".to_string()));
+        assert!(col_names.contains(&"rate_reasoning_per_1m".to_string()));
+
+        let mut sh_cols = conn.prepare("PRAGMA table_info(session_history)").unwrap();
+        let col_names: Vec<String> = sh_cols.query_map([], |r| r.get(1)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(col_names.contains(&"tokens_reasoning".to_string()));
+        assert!(col_names.contains(&"rate_reasoning_per_1m".to_string()));
+
+        let mut ue_cols = conn.prepare("PRAGMA table_info(usage_events)").unwrap();
+        let col_names: Vec<String> = ue_cols.query_map([], |r| r.get(1)).unwrap().filter_map(|r| r.ok()).collect();
+        assert!(col_names.contains(&"tokens_reasoning".to_string()));
+        assert!(col_names.contains(&"rate_reasoning_per_1m".to_string()));
     }
 }
 

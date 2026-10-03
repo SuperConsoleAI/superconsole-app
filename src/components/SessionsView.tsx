@@ -2,7 +2,7 @@
  * SessionsView Component — Cross-workspace & per-project chat session explorer
  * Supports filtering by workspace/search query, session resumption, renaming, and usage stats.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BarChart3,
   FolderInput,
@@ -142,6 +142,8 @@ export function SessionsView({
   const activeWsId = getActiveWorkspaceFilter(initialWorkspaceId) ?? lastProjectId;
   const targetWs = activeWsId ? workspaces.find((w) => w.id === activeWsId) : null;
   const [tab, setTab] = useState<"cli" | "chat">("cli");
+  const [loaded, setLoaded] = useState(false);
+  const userPickedTabRef = useRef(false);
   const [query, setQuery] = useState("");
   const [orgFilter, setOrgFilter] = useState<number | "all">(targetWs?.organization_id ?? activeOrgId);
   const [projFilter, setProjFilter] = useState<number | "all">(targetWs?.id ?? "all");
@@ -170,7 +172,7 @@ export function SessionsView({
   );
 
   const load = useCallback(() => {
-    Promise.all(
+    const cliPromise = Promise.all(
       workspaces.map((w) =>
         api
           .listSessionHistory(w.id)
@@ -181,13 +183,9 @@ export function SessionsView({
           )
           .catch(() => [] as CliRow[]),
       ),
-    ).then((lists) => {
-      const flat = lists.flat();
-      flat.sort((a, b) => b.started_at.localeCompare(a.started_at));
-      setCli(flat);
-    });
+    );
 
-    Promise.all(
+    const chatPromise = Promise.all(
       workspaces
         .filter((w) => w.project_id)
         .map(async (w): Promise<ChatRow[]> => {
@@ -200,27 +198,62 @@ export function SessionsView({
             return [];
           }
         }),
-    ).then((lists) => {
-      const flat = lists.flat();
-      flat.sort(
-        (a, b) =>
-          Number(b.is_star) - Number(a.is_star) ||
-          (b.last_at ?? b.updated_at).localeCompare(a.last_at ?? a.updated_at),
-      );
-      setThreads(flat);
-    });
+    );
+
+    Promise.all([cliPromise, chatPromise])
+      .then(([cliLists, chatLists]) => {
+        const flatCli = cliLists.flat();
+        flatCli.sort((a, b) => b.started_at.localeCompare(a.started_at));
+        setCli(flatCli);
+
+        const flatChat = chatLists.flat();
+        flatChat.sort(
+          (a, b) =>
+            Number(b.is_star) - Number(a.is_star) ||
+            (b.last_at ?? b.updated_at).localeCompare(a.last_at ?? a.updated_at),
+        );
+        setThreads(flatChat);
+        setLoaded(true);
+      })
+      .catch(() => {
+        setLoaded(true);
+      });
 
     // Load feed items for cost/token metadata
-    api.listUserSessions().then((items) => {
-      const map: Record<string, SessionFeedItem> = {};
-      for (const item of items) map[item.resume_id] = item;
-      setFeedMap(map);
-    }).catch(() => {});
+    api
+      .listUserSessions()
+      .then((items) => {
+        const map: Record<string, SessionFeedItem> = {};
+        for (const item of items) map[item.resume_id] = item;
+        setFeedMap(map);
+      })
+      .catch(() => {});
   }, [workspaces]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  // Dynamic tab switcher: CLI is default, but if CLI is empty and chat sessions exist, dynamically open Chat tab
+  useEffect(() => {
+    if (!loaded) return;
+    if (userPickedTabRef.current) return;
+
+    const allowedSet = new Set(orgWorkspaces.map((w) => w.id));
+    const currentCliCount = cli.filter(
+      (r) => allowedSet.has(r.workspace_id) && (projFilter === "all" || r.workspace_id === projFilter),
+    ).length;
+
+    const currentChatCount = threads.filter(
+      (t) => allowedSet.has(t.workspaceId) && (projFilter === "all" || t.workspaceId === projFilter),
+    ).length;
+
+    if (currentCliCount === 0 && currentChatCount > 0) {
+      setTab("chat");
+    } else if (currentCliCount > 0) {
+      setTab("cli");
+    }
+  }, [loaded, cli, threads, projFilter, orgWorkspaces]);
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent("sessions-tab-sync", { detail: tab }));
@@ -235,9 +268,19 @@ export function SessionsView({
   }, [projFilter]);
 
   useEffect(() => {
-    const onTab = (e: any) => setTab(e.detail);
-    const onOrg = (e: any) => { setOrgFilter(e.detail); setProjFilter("all"); };
-    const onProj = (e: any) => setProjFilter(e.detail);
+    const onTab = (e: any) => {
+      userPickedTabRef.current = true;
+      setTab(e.detail);
+    };
+    const onOrg = (e: any) => {
+      userPickedTabRef.current = false;
+      setOrgFilter(e.detail);
+      setProjFilter("all");
+    };
+    const onProj = (e: any) => {
+      userPickedTabRef.current = false;
+      setProjFilter(e.detail);
+    };
     const onNavMounted = () => {
       window.dispatchEvent(new CustomEvent("sessions-tab-sync", { detail: tab }));
       window.dispatchEvent(new CustomEvent("sessions-org-sync", { detail: orgFilter }));
@@ -355,7 +398,26 @@ export function SessionsView({
         <div className="flex flex-col px-5 py-3">
           {tab === "cli" ? (
             filteredCli.length === 0 ? (
-              <Empty icon={<Terminal />} text="No CLI sessions recorded yet." />
+              <Empty
+                icon={<Terminal />}
+                text="No CLI sessions recorded yet."
+                action={
+                  filteredThreads.length > 0 ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        userPickedTabRef.current = true;
+                        setTab("chat");
+                      }}
+                      className="gap-1.5 text-xs"
+                    >
+                      <MessageSquare className="h-3.5 w-3.5" />
+                      View {filteredThreads.length} chat {filteredThreads.length === 1 ? "session" : "sessions"} →
+                    </Button>
+                  ) : null
+                }
+              />
             ) : (
               <div className="divide-y divide-border">
                 {filteredCli.map((s) => {
@@ -387,8 +449,14 @@ export function SessionsView({
                           Resume →
                         </button>
                         {(cost > 0 || tokens > 0) && (
-                          <span className="hidden shrink-0 gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
+                          <span className="hidden shrink-0 items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
                             ~{fmtUsd(cost)} · {fmtTokens(tokens)} tok
+                          </span>
+                        )}
+                        {s.model && (
+                          <span className="hidden max-w-[28%] shrink-0 items-center gap-1 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground md:inline-flex">
+                            <ProviderIcon model={s.model} className="h-3 w-3 shrink-0 opacity-50" />
+                            {modelDisplayName(s.model, s.provider)}
                           </span>
                         )}
                         <span className="hidden max-w-[26%] shrink-0 truncate text-xs text-muted-foreground sm:inline">
@@ -411,6 +479,15 @@ export function SessionsView({
                               setUsageSession({
                                 ...s,
                                 ...(feed || {}),
+                                tokens_prompt: s.tokens_prompt ?? feed?.tokens_prompt,
+                                tokens_completion: s.tokens_completion ?? feed?.tokens_completion,
+                                tokens_reasoning: s.tokens_reasoning ?? feed?.tokens_reasoning,
+                                tokens_total: tokens,
+                                cost_usd: cost,
+                                rate_prompt_per_1m: s.rate_prompt_per_1m ?? feed?.rate_prompt_per_1m,
+                                rate_cached_per_1m: s.rate_cached_per_1m ?? feed?.rate_cached_per_1m,
+                                rate_completion_per_1m: s.rate_completion_per_1m ?? feed?.rate_completion_per_1m,
+                                rate_reasoning_per_1m: s.rate_reasoning_per_1m ?? feed?.rate_reasoning_per_1m,
                                 wsName: s.wsName,
                               });
                             }}
@@ -440,7 +517,26 @@ export function SessionsView({
               </div>
             )
           ) : filteredThreads.length === 0 ? (
-            <Empty icon={<MessageSquare />} text="No chat history yet." />
+            <Empty
+              icon={<MessageSquare />}
+              text="No chat history yet."
+              action={
+                filteredCli.length > 0 ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      userPickedTabRef.current = true;
+                      setTab("cli");
+                    }}
+                    className="gap-1.5 text-xs"
+                  >
+                    <Terminal className="h-3.5 w-3.5" />
+                    View {filteredCli.length} CLI {filteredCli.length === 1 ? "session" : "sessions"} →
+                  </Button>
+                ) : null
+              }
+            />
           ) : (
             <div className="divide-y divide-border">
               {filteredThreads.map((t) => {
@@ -467,23 +563,25 @@ export function SessionsView({
                       >
                         Resume →
                       </button>
+                      {(() => {
+                        const feed = feedMap[t.id];
+                        const cost = (t.cost_usd && t.cost_usd > 0) ? t.cost_usd : (feed?.cost_usd ?? 0);
+                        const tokens = (feed && feed.tokens_total > 0)
+                          ? feed.tokens_total
+                          : ((t.tokens_prompt ?? 0) + (t.tokens_completion ?? 0) + (t.tokens_reasoning ?? 0));
+                        if (cost <= 0 && tokens <= 0) return null;
+                        return (
+                          <span className="hidden shrink-0 items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
+                            ~{fmtUsd(cost)} · {fmtTokens(tokens)} tok
+                          </span>
+                        );
+                      })()}
                       {t.model && (
                         <span className="hidden max-w-[28%] shrink-0 items-center gap-1 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground md:inline-flex">
                           <ProviderIcon model={t.model} className="h-3 w-3 shrink-0 opacity-50" />
                           {modelDisplayName(t.model, t.provider)}
                         </span>
                       )}
-                      {(() => {
-                        const feed = feedMap[t.id];
-                        const cost = feed?.cost_usd ?? 0;
-                        const tokens = feed?.tokens_total ?? 0;
-                        if (cost <= 0 && tokens <= 0) return null;
-                        return (
-                          <span className="hidden shrink-0 gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
-                            ~{fmtUsd(cost)} · {fmtTokens(tokens)} tok
-                          </span>
-                        );
-                      })()}
                       <span className="hidden max-w-[26%] shrink-0 truncate text-xs text-muted-foreground sm:inline">
                         {t.wsName}
                       </span>
@@ -501,12 +599,27 @@ export function SessionsView({
                         <DropdownMenuItem
                           onClick={() => {
                             const feed = feedMap[t.id];
+                            const cost = (t.cost_usd && t.cost_usd > 0) ? t.cost_usd : (feed?.cost_usd ?? 0);
+                            const tokens = (feed && feed.tokens_total > 0)
+                              ? feed.tokens_total
+                              : ((t.tokens_prompt ?? 0) + (t.tokens_completion ?? 0) + (t.tokens_reasoning ?? 0));
                             setUsageSession({
                               ...(feed || {}),
                               id: t.id,
                               session_id: t.id,
                               session_type: "chat",
                               cli: "chat",
+                              provider: t.provider || feed?.provider,
+                              model: t.model || feed?.model,
+                              tokens_prompt: t.tokens_prompt ?? feed?.tokens_prompt,
+                              tokens_completion: t.tokens_completion ?? feed?.tokens_completion,
+                              tokens_reasoning: t.tokens_reasoning ?? feed?.tokens_reasoning,
+                              tokens_total: tokens,
+                              cost_usd: cost,
+                              rate_prompt_per_1m: (t.rate_prompt_per_1m && t.rate_prompt_per_1m > 0) ? t.rate_prompt_per_1m : feed?.rate_prompt_per_1m,
+                              rate_cached_per_1m: (t.rate_cached_per_1m && t.rate_cached_per_1m > 0) ? t.rate_cached_per_1m : feed?.rate_cached_per_1m,
+                              rate_completion_per_1m: (t.rate_completion_per_1m && t.rate_completion_per_1m > 0) ? t.rate_completion_per_1m : feed?.rate_completion_per_1m,
+                              rate_reasoning_per_1m: (t.rate_reasoning_per_1m && t.rate_reasoning_per_1m > 0) ? t.rate_reasoning_per_1m : feed?.rate_reasoning_per_1m,
                               label: t.name || "Chat Session",
                               workspace_id: t.workspaceId,
                               wsName: t.wsName,
@@ -622,13 +735,22 @@ export function SessionsView({
   );
 }
 
-function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {
+function Empty({
+  icon,
+  text,
+  action,
+}: {
+  icon: React.ReactNode;
+  text: string;
+  action?: React.ReactNode;
+}) {
   return (
     <div className="py-16 text-center">
       <div className="mx-auto flex h-8 w-8 items-center justify-center text-muted-foreground/40 [&_svg]:h-8 [&_svg]:w-8">
         {icon}
       </div>
       <p className="mt-3 text-sm text-muted-foreground">{text}</p>
+      {action && <div className="mt-3 flex justify-center">{action}</div>}
     </div>
   );
 }

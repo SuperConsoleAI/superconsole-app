@@ -24,29 +24,12 @@ pub fn ensure_api_token(db: &Db) -> String {
             |r| r.get::<_, String>(0),
         ) {
             if !token.trim().is_empty() {
-                let _ = conn.execute(
-                    "INSERT INTO settings (key, value) VALUES ('api_token', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1",
-                    [&token],
-                );
                 return token;
             }
         }
     }
 
-    // 2. Try legacy settings table
-    if let Some(token) = db.get_setting("api_token") {
-        if !token.trim().is_empty() {
-            if let Ok(conn) = db.0.lock() {
-                let _ = conn.execute(
-                    "INSERT INTO api_tokens (name, token, description) VALUES ('http_trigger', ?1, 'Local HTTP trigger auth token') ON CONFLICT(name) DO UPDATE SET token = ?1",
-                    [&token],
-                );
-            }
-            return token;
-        }
-    }
-
-    // 3. Generate new secure token and save to both api_tokens and settings
+    // 2. Generate new secure token and save to api_tokens
     let rand_part: String = rand::thread_rng()
         .sample_iter(&rand::distributions::Alphanumeric)
         .take(38)
@@ -60,7 +43,6 @@ pub fn ensure_api_token(db: &Db) -> String {
             [&token],
         );
     }
-    let _ = db.set_setting("api_token", &token);
     token
 }
 

@@ -470,6 +470,11 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         scriptAutoRun: merged.script_auto_run,
         repoUrl: merged.repo_url,
         description: merged.description,
+        tagline: merged.tagline,
+        details: merged.details,
+        logoUrl: merged.logo_url,
+        imageUrl: merged.image_url,
+        slider: typeof merged.slider === "string" ? merged.slider : JSON.stringify(merged.slider ?? []),
       });
     },
     [workspaces],

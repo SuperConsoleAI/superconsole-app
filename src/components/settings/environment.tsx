@@ -3,10 +3,11 @@
  * Handles encrypted/masked keys, local variables, file paths, and Tauri dialog picking.
  */
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, Plus, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Plus, Trash2, Lock, Unlock } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { api, type EnvEntry } from "@/lib/api";
 import { useWorkspaces } from "@/lib/workspace-context";
 import { useAuth } from "@/lib/auth-context";
@@ -36,12 +37,14 @@ export function EnvVarEditor({
   entries,
   onUpsert,
   onDelete,
+  onToggleSecret,
 }: {
   title: string;
   hint: string;
   entries: EnvVar[];
-  onUpsert: (key: string, value: string) => Promise<void>;
+  onUpsert: (key: string, value: string, isSecret: boolean) => Promise<void>;
   onDelete: (key: string) => Promise<void>;
+  onToggleSecret?: (key: string, currentSecret: boolean) => Promise<void>;
 }) {
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<string | null>(null);
@@ -49,6 +52,8 @@ export function EnvVarEditor({
   const [adding, setAdding] = useState(false);
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
+  const [newIsSecret, setNewIsSecret] = useState(false);
+  const [userToggledSecret, setUserToggledSecret] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const run = async (fn: () => Promise<void>) => {
@@ -66,6 +71,13 @@ export function EnvVarEditor({
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
+
+  const handleKeyChange = (val: string) => {
+    setNewKey(val);
+    if (!userToggledSecret) {
+      setNewIsSecret(keyIsSecret(val));
+    }
+  };
 
   return (
     <div className="flex flex-col gap-3">
@@ -87,9 +99,16 @@ export function EnvVarEditor({
                 key={e.key}
                 className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2"
               >
-                <span className="w-44 shrink-0 truncate font-mono text-[12px] font-medium text-foreground">
-                  {e.key}
-                </span>
+                <div className="flex items-center gap-1.5 w-44 shrink-0">
+                  <span className="truncate font-mono text-[12px] font-medium text-foreground">
+                    {e.key}
+                  </span>
+                  {e.is_secret && (
+                    <span className="rounded bg-amber-500/10 px-1 py-0.2 text-[9px] font-medium text-amber-500 shrink-0">
+                      SEC
+                    </span>
+                  )}
+                </div>
                 {editing === e.key ? (
                   <Input
                     value={editValue}
@@ -97,20 +116,20 @@ export function EnvVarEditor({
                     onChange={(ev) => setEditValue(ev.target.value)}
                     onKeyDown={(ev) => {
                       if (ev.key === "Enter") {
-                        run(() => onUpsert(e.key, editValue));
+                        run(() => onUpsert(e.key, editValue, e.is_secret));
                         setEditing(null);
                       }
                       if (ev.key === "Escape") setEditing(null);
                     }}
                     onBlur={() => {
-                      run(() => onUpsert(e.key, editValue));
+                      run(() => onUpsert(e.key, editValue, e.is_secret));
                       setEditing(null);
                     }}
                     className="h-7 flex-1 font-mono text-xs"
                   />
                 ) : (
                   <button
-                    className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-muted-foreground hover:text-foreground transition-colors"
+                    className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                     onClick={() => {
                       setEditing(e.key);
                       setEditValue(e.value);
@@ -120,11 +139,27 @@ export function EnvVarEditor({
                   </button>
                 )}
                 <div className="flex shrink-0 items-center gap-0.5">
+                  {onToggleSecret && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className={cn(
+                        "h-7 w-7 cursor-pointer",
+                        e.is_secret
+                          ? "text-amber-500 hover:text-amber-600 hover:bg-amber-500/10"
+                          : "text-muted-foreground/60 hover:text-foreground hover:bg-muted/40",
+                      )}
+                      onClick={() => run(() => onToggleSecret(e.key, e.is_secret))}
+                      title={e.is_secret ? "Marked as secret (click to make plain)" : "Plaintext (click to mark as secret)"}
+                    >
+                      {e.is_secret ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+                    </Button>
+                  )}
                   {e.is_secret && (
                     <Button
                       size="icon"
                       variant="ghost"
-                      className="h-7 w-7"
+                      className="h-7 w-7 cursor-pointer"
                       onClick={() => toggleReveal(e.key)}
                       title={masked ? "Reveal" : "Hide"}
                     >
@@ -138,7 +173,7 @@ export function EnvVarEditor({
                   <Button
                     size="icon"
                     variant="ghost"
-                    className="h-7 w-7 text-destructive hover:bg-destructive/10"
+                    className="h-7 w-7 text-destructive hover:bg-destructive/10 cursor-pointer"
                     onClick={() => run(() => onDelete(e.key))}
                     title="Delete variable"
                   >
@@ -155,7 +190,7 @@ export function EnvVarEditor({
         <div className="flex items-center gap-2">
           <Input
             value={newKey}
-            onChange={(e) => setNewKey(e.target.value)}
+            onChange={(e) => handleKeyChange(e.target.value)}
             placeholder="KEY"
             className="h-8 w-44 shrink-0 font-mono text-xs uppercase"
           />
@@ -163,34 +198,68 @@ export function EnvVarEditor({
             value={newValue}
             onChange={(e) => setNewValue(e.target.value)}
             placeholder="value"
+            type={newIsSecret ? "password" : "text"}
             className="h-8 flex-1 font-mono text-xs"
             onKeyDown={(e) => {
               if (e.key === "Enter" && newKey.trim()) {
-                run(() => onUpsert(newKey.trim(), newValue));
+                run(() => onUpsert(newKey.trim(), newValue, newIsSecret));
                 setNewKey("");
                 setNewValue("");
+                setNewIsSecret(false);
+                setUserToggledSecret(false);
                 setAdding(false);
               }
             }}
           />
+          <button
+            type="button"
+            onClick={() => {
+              setUserToggledSecret(true);
+              setNewIsSecret(!newIsSecret);
+            }}
+            className={cn(
+              "flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium border transition-colors shrink-0 cursor-pointer",
+              newIsSecret
+                ? "bg-amber-500/15 border-amber-500/30 text-amber-500 dark:text-amber-400"
+                : "bg-muted/40 border-border text-muted-foreground hover:text-foreground",
+            )}
+            title={newIsSecret ? "Marked as Secret (will be masked)" : "Plaintext (visible)"}
+          >
+            {newIsSecret ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+            <span>{newIsSecret ? "Secret" : "Plain"}</span>
+          </button>
           <Button
             size="sm"
             disabled={!newKey.trim()}
+            className="cursor-pointer"
             onClick={() => {
-              run(() => onUpsert(newKey.trim(), newValue));
+              run(() => onUpsert(newKey.trim(), newValue, newIsSecret));
               setNewKey("");
               setNewValue("");
+              setNewIsSecret(false);
+              setUserToggledSecret(false);
               setAdding(false);
             }}
           >
             Add
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setAdding(false)}>
+          <Button
+            size="sm"
+            variant="outline"
+            className="cursor-pointer"
+            onClick={() => {
+              setAdding(false);
+              setNewKey("");
+              setNewValue("");
+              setNewIsSecret(false);
+              setUserToggledSecret(false);
+            }}
+          >
             Cancel
           </Button>
         </div>
       ) : (
-        <Button size="sm" variant="outline" className="w-fit gap-1 text-xs" onClick={() => setAdding(true)}>
+        <Button size="sm" variant="outline" className="w-fit gap-1 text-xs cursor-pointer" onClick={() => setAdding(true)}>
           <Plus className="h-3.5 w-3.5" />
           Add variable
         </Button>
@@ -366,13 +435,20 @@ export function AccountEnvironmentSection() {
         title="Account variables"
         hint="Loaded into every CLI session across all projects on this machine. Stored in env_vars table."
         entries={vars}
-        onUpsert={async (key, value) => {
-          await api.setEnvVar("account", currentUserId, key, value, keyIsSecret(key), currentUserId);
+        onUpsert={async (key, value, isSecret) => {
+          await api.setEnvVar("account", currentUserId, key, value, isSecret, currentUserId);
           await loadVars();
         }}
         onDelete={async (key) => {
           await api.deleteEnvVar("account", currentUserId, key);
           await loadVars();
+        }}
+        onToggleSecret={async (key, currentSecret) => {
+          const item = vars.find((v) => v.key === key);
+          if (item) {
+            await api.setEnvVar("account", currentUserId, key, item.value, !currentSecret, currentUserId);
+            await loadVars();
+          }
         }}
       />
       <EnvFilesList
@@ -410,7 +486,7 @@ export function EnvironmentSection({ workspaceId }: { workspaceId: number }) {
         title="Workspace .env"
         hint="Variables loaded into every CLI session for this project. Stored in the workspace .env file."
         entries={entries.map((e) => ({ key: e.key, value: e.value, is_secret: e.is_secret }))}
-        onUpsert={async (key, value) => {
+        onUpsert={async (key, value, _isSecret) => {
           await api.setEnvEntry(workspaceId, key, value);
           await load();
         }}

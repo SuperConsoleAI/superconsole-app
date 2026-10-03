@@ -19,6 +19,11 @@ export interface Workspace {
   script_auto_run: boolean;
   repo_url: string;
   description: string;
+  tagline?: string | null;
+  details?: string | null;
+  logo_url?: string | null;
+  image_url?: string | null;
+  slider?: string | string[];
   env_files: string;
   is_active?: boolean;
   is_public?: boolean;
@@ -90,6 +95,11 @@ export interface WorkspaceUpdate {
   scriptAutoRun: boolean;
   repoUrl: string;
   description: string;
+  tagline?: string | null;
+  details?: string | null;
+  logoUrl?: string | null;
+  imageUrl?: string | null;
+  slider?: string | null;
 }
 
 export type LlmScope = "account" | "org" | "project";
@@ -294,6 +304,9 @@ export interface SessionFeedItem {
   started_at: string;
   updated_at: string;
   tokens_total: number;
+  tokens_prompt?: number;
+  tokens_completion?: number;
+  tokens_reasoning?: number;
   cost_usd: number;
   job_id?: number;
   agent_id?: string;
@@ -408,6 +421,14 @@ export interface ChatSession {
   provider: string | null;
   model: string | null;
   user_id?: string | null;
+  tokens_prompt?: number;
+  tokens_completion?: number;
+  tokens_reasoning?: number;
+  cost_usd?: number;
+  rate_prompt_per_1m?: number | null;
+  rate_cached_per_1m?: number | null;
+  rate_completion_per_1m?: number | null;
+  rate_reasoning_per_1m?: number | null;
 }
 
 export interface ChatMessage {
@@ -436,6 +457,7 @@ export interface UsageBucket {
   date: string;
   tokens_prompt: number;
   tokens_completion: number;
+  tokens_reasoning?: number;
   cost_usd: number;
   sessions: number;
 }
@@ -444,6 +466,7 @@ export interface UsageBucket {
 export interface UsageYear {
   tokens_prompt: number;
   tokens_completion: number;
+  tokens_reasoning?: number;
   cost_usd: number;
   sessions: number;
   cache_hits: number;
@@ -464,6 +487,7 @@ export interface UsageBreakdown {
   tokens?: number;
   tokens_prompt?: number;
   tokens_completion?: number;
+  tokens_reasoning?: number;
   provider?: string;
   name?: string;
 }
@@ -1021,6 +1045,8 @@ export const api = {
     }),
   setWorkspaceEnvFiles: (workspaceId: number, envFiles: string[]) =>
     invoke<void>("set_workspace_env_files", { workspaceId, envFiles }),
+  setWorkspaceSlider: (workspaceId: number, slider: string[]) =>
+    invoke<void>("set_workspace_slider", { workspaceId, slider }),
   readEnvFile: (workspaceId: number) =>
     invoke<EnvEntry[]>("read_env_file", { workspaceId }),
   writeEnvFile: (workspaceId: number, entries: EnvEntry[]) =>
@@ -1160,6 +1186,8 @@ export const api = {
     invoke<SessionFeedItem | null>("get_inbox_session", { inboxId }),
   getSettings: () => invoke<Record<string, string>>("get_settings"),
   setSetting: (key: string, value: string) => invoke<void>("set_setting", { key, value }),
+  getApiToken: () => invoke<string>("get_api_token"),
+  regenerateApiToken: () => invoke<string>("regenerate_api_token"),
   getEnvVars: (scope?: string, scopeId?: string) =>
     invoke<EnvVarRecord[]>("get_env_vars", { scope: scope ?? null, scopeId: scopeId ?? null }),
   setEnvVar: (
@@ -1211,6 +1239,7 @@ export const api = {
   chatSend: (
     requestId: string,
     workspaceId: number,
+    sessionId: string | null | undefined,
     provider: string,
     model: string,
     messages: { role: string; content: string }[],
@@ -1220,6 +1249,7 @@ export const api = {
     invoke<void>("chat_send", {
       requestId,
       workspaceId,
+      sessionId: sessionId ?? null,
       provider,
       model,
       messages,
@@ -1267,6 +1297,8 @@ export const api = {
   listOpenrouterModels: () => invoke<OpenrouterModel[]>("list_openrouter_models"),
   hasProviderKey: (workspaceId: number, provider: string) =>
     invoke<boolean>("has_provider_key", { workspaceId, provider }),
+  getChatSession: (id: string) =>
+    invoke<ChatSession>("get_chat_session", { id }),
   listChatSessions: (projectId: string) =>
     invoke<ChatSession[]>("list_chat_sessions", { projectId }),
   createChatSession: (projectId: string) =>
@@ -1581,6 +1613,8 @@ export const api = {
       sortDesc: params.sortDesc,
       onlyCurrentUser: params.onlyCurrentUser,
     }),
+  executeLocalDbSql: (sql: string, target?: "localdb" | "userdb") =>
+    invoke<SqlQueryResult>("local_db_execute_sql", { sql, target }),
 
   // ── UserDB (Personal Turso Cloud Database & Off-Platform Isolation) ───────
   getUserDbConfig: () => invoke<UserDbConfig>("userdb_get_config"),
@@ -1718,6 +1752,15 @@ export interface LocalDbTableDataResult {
   totalCount: number;
   page: number;
   pageSize: number;
+}
+
+export interface SqlQueryResult {
+  success: boolean;
+  columns: string[];
+  rows: any[][];
+  affectedRows?: number;
+  executionTimeMs: number;
+  error?: string;
 }
 
 export interface SubmitPluginInput {

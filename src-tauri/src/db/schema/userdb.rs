@@ -105,16 +105,20 @@ pub const USER_SCHEMA_STATEMENTS: &[&str] = &[
         name                TEXT NOT NULL,
         local_path_hint     TEXT,
         logo_url            TEXT,
+        image_url           TEXT,
         default_run_mode    TEXT NOT NULL DEFAULT 'cli',
         default_cli         TEXT NOT NULL DEFAULT 'claude',
         default_provider    TEXT NOT NULL DEFAULT 'anthropic',
-        default_model       TEXT NOT NULL DEFAULT '',
-        script_setup        TEXT NOT NULL DEFAULT '',
-        script_run          TEXT NOT NULL DEFAULT '',
-        script_teardown     TEXT NOT NULL DEFAULT '',
+        default_model       TEXT,
+        script_setup        TEXT,
+        script_run          TEXT,
+        script_teardown     TEXT,
         script_auto_run     INTEGER NOT NULL DEFAULT 0,
-        repo_url            TEXT NOT NULL DEFAULT '',
-        description         TEXT NOT NULL DEFAULT '',
+        repo_url            TEXT,
+        description         TEXT,
+        tagline             TEXT,
+        details             TEXT,
+        slider              TEXT NOT NULL DEFAULT '[]',
         is_active           INTEGER NOT NULL DEFAULT 1,
         is_public           INTEGER NOT NULL DEFAULT 0,
         show_usage          INTEGER NOT NULL DEFAULT 1,
@@ -592,6 +596,13 @@ pub const USER_SCHEMA_STATEMENTS: &[&str] = &[
 pub fn provision_user_database(conn: &Connection) -> Result<(), String> {
     conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(|e| e.to_string())?;
 
+    // Pre-migrations: ensure new columns exist on pre-existing projects table
+    let _ = conn.execute("ALTER TABLE projects ADD COLUMN tagline TEXT", []);
+    let _ = conn.execute("ALTER TABLE projects ADD COLUMN details TEXT", []);
+    let _ = conn.execute("ALTER TABLE projects ADD COLUMN logo_url TEXT", []);
+    let _ = conn.execute("ALTER TABLE projects ADD COLUMN image_url TEXT", []);
+    let _ = conn.execute("ALTER TABLE projects ADD COLUMN slider TEXT NOT NULL DEFAULT '[]'", []);
+
     for stmt in USER_SCHEMA_STATEMENTS {
         conn.execute_batch(stmt)
             .map_err(|e| format!("User schema init error for statement: {}\nErr: {}", stmt, e))?;
@@ -692,6 +703,19 @@ mod tests {
         assert!(cols.contains(&"banner".to_string()));
         assert!(cols.contains(&"show_projects".to_string()));
         assert!(cols.contains(&"show_usage".to_string()));
+
+        // Verify projects columns specifically
+        let mut prj_cols = conn.prepare("PRAGMA table_info(projects)").unwrap();
+        let prj_col_names: Vec<String> = prj_cols
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(prj_col_names.contains(&"tagline".to_string()));
+        assert!(prj_col_names.contains(&"details".to_string()));
+        assert!(prj_col_names.contains(&"logo_url".to_string()));
+        assert!(prj_col_names.contains(&"image_url".to_string()));
+        assert!(prj_col_names.contains(&"slider".to_string()));
 
         // Insert a test user with public profile & off_platform configuration
         conn.execute(

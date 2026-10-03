@@ -168,7 +168,8 @@ async fn sync_project_settings(
         client,
         cfg,
         "SELECT default_run_mode, default_cli, default_provider, default_model, \
-         script_setup, script_run, script_teardown, script_auto_run, repo_url, description \
+         script_setup, script_run, script_teardown, script_auto_run, repo_url, description, \
+         tagline, details, logo_url, image_url, slider \
          FROM projects WHERE id = ?",
         vec![Some(project_id.to_string())],
     )
@@ -183,6 +184,20 @@ async fn sync_project_settings(
     let Some(row) = rows(&result).into_iter().next() else {
         return;
     };
+    let cell_opt = |idx| {
+        let s = cell_text(&row, idx);
+        if s.trim().is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    };
+    let tagline = cell_opt(10);
+    let details = cell_opt(11);
+    let logo_url = cell_opt(12);
+    let image_url = cell_opt(13);
+    let slider = cell_opt(14);
+
     let db = app.state::<Db>();
     let _ = db.update_workspace_settings_by_project(
         project_id,
@@ -196,6 +211,11 @@ async fn sync_project_settings(
         cell_text(&row, 7) == "1",
         &cell_text(&row, 8),
         &cell_text(&row, 9),
+        tagline.as_deref(),
+        details.as_deref(),
+        logo_url.as_deref(),
+        image_url.as_deref(),
+        slider.as_deref(),
     );
 }
 

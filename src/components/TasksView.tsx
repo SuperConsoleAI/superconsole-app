@@ -445,17 +445,17 @@ export function TasksView({
                     </div>
                   </div>
 
-                  {/* Right chips — model only */}
+                  {/* Right chips — price chip before model chip */}
                   <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                    {job.last_run_cost_usd > 0 && (
+                      <span className="hidden shrink-0 items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
+                        ~${job.last_run_cost_usd.toFixed(2)}
+                      </span>
+                    )}
                     {modelId && (
                       <span className="hidden items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-flex">
                         <ProviderIcon model={modelId} className="h-2.5 w-2.5 opacity-50" />
                         <span className="font-mono">{modelId.split("/").pop()}</span>
-                      </span>
-                    )}
-                    {job.last_run_cost_usd > 0 && (
-                      <span className="hidden shrink-0 gap-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
-                        ~${job.last_run_cost_usd.toFixed(2)}
                       </span>
                     )}
                   </div>

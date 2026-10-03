@@ -170,10 +170,16 @@ struct WorkosConfig {
 
 fn workos_config() -> Result<WorkosConfig, String> {
     cloud::ensure_env();
-    let client_id =
-        std::env::var("WORKOS_CLIENT_ID").map_err(|_| "WORKOS_CLIENT_ID is not set".to_string())?;
-    let api_key =
-        std::env::var("WORKOS_API_KEY").map_err(|_| "WORKOS_API_KEY is not set".to_string())?;
+    let client_id = option_env!("WORKOS_CLIENT_ID")
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from)
+        .or_else(|| std::env::var("WORKOS_CLIENT_ID").ok().filter(|s| !s.trim().is_empty()))
+        .unwrap_or_else(|| "client_01KV2X6QQ2GNMB3J4GC3G0KT6K".to_string());
+    let api_key = option_env!("WORKOS_API_KEY")
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from)
+        .or_else(|| std::env::var("WORKOS_API_KEY").ok().filter(|s| !s.trim().is_empty()))
+        .ok_or_else(|| "WORKOS_API_KEY is not set".to_string())?;
     Ok(WorkosConfig { client_id, api_key })
 }
 
@@ -505,6 +511,14 @@ fn run_callback(
         }
     };
 
+    let path = request.url().split('?').next().unwrap_or("");
+    if path == "/__cancel" {
+        let header =
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..]).unwrap();
+        let _ = request.respond(tiny_http::Response::from_string("ok").with_header(header));
+        return;
+    }
+
     let params = parse_query(request.url());
     let respond = |request: tiny_http::Request, msg: &str| {
         let header =
@@ -554,10 +568,22 @@ pub fn sign_in(app: AppHandle) -> Result<String, String> {
     let wcfg = workos_config()?;
     // Loopback listener (RFC 8252) on a fixed port; REDIRECT_URI must be
     // registered in the WorkOS dashboard.
-    let server = tiny_http::Server::http(("127.0.0.1", CALLBACK_PORT)).map_err(|e| {
+    // If port 4666 is already held by a previous attempt, signal cancellation and retry.
+    let mut server = tiny_http::Server::http(("127.0.0.1", CALLBACK_PORT)).ok();
+    if server.is_none() {
+        if let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", CALLBACK_PORT)) {
+            use std::io::Write;
+            let _ = stream.write_all(b"GET /__cancel HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+            let _ = stream.flush();
+        }
+        std::thread::sleep(Duration::from_millis(250));
+        server = tiny_http::Server::http(("127.0.0.1", CALLBACK_PORT)).ok();
+    }
+
+    let server = server.ok_or_else(|| {
         format!(
-            "failed to start callback server on port {}: {}",
-            CALLBACK_PORT, e
+            "failed to start callback server on port {}: address already in use. Please check if another sign-in window is open.",
+            CALLBACK_PORT
         )
     })?;
     let state = ulid::Ulid::new().to_string();

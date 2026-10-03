@@ -34,6 +34,16 @@ pub struct Workspace {
     pub show_usage: bool,
     #[serde(default)]
     pub show_team: bool,
+    #[serde(default)]
+    pub tagline: Option<String>,
+    #[serde(default)]
+    pub details: Option<String>,
+    #[serde(default)]
+    pub logo_url: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<String>,
+    #[serde(default = "default_json_arr")]
+    pub slider: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +155,9 @@ pub struct SessionFeedItem {
     pub rate_cached_per_1m: Option<f64>,
     pub rate_completion_per_1m: Option<f64>,
     pub rate_reasoning_per_1m: Option<f64>,
+    pub tokens_prompt: i64,
+    pub tokens_completion: i64,
+    pub tokens_reasoning: i64,
 }
 
 /// Local metadata index for agents living in `.superconsole/agents/<name>/agent.md`.
@@ -324,6 +337,14 @@ pub struct ChatSession {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub user_id: Option<String>,
+    pub tokens_prompt: i64,
+    pub tokens_completion: i64,
+    pub tokens_reasoning: i64,
+    pub cost_usd: f64,
+    pub rate_prompt_per_1m: Option<f64>,
+    pub rate_cached_per_1m: Option<f64>,
+    pub rate_completion_per_1m: Option<f64>,
+    pub rate_reasoning_per_1m: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -464,7 +485,7 @@ impl Db {
         Ok(db)
     }
 
-    const WORKSPACE_SELECT_COLS: &'static str = "id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files, is_active, is_public, show_usage, show_team";
+    const WORKSPACE_SELECT_COLS: &'static str = "id, name, path, cli, organization_id, org_id, created_at, project_id, default_run_mode, default_cli, default_provider, default_model, script_setup, script_run, script_teardown, script_auto_run, repo_url, description, env_files, is_active, is_public, show_usage, show_team, tagline, details, logo_url, image_url, slider";
 
     fn workspace_from_row(r: &rusqlite::Row) -> rusqlite::Result<Workspace> {
         Ok(Workspace {
@@ -479,18 +500,23 @@ impl Db {
             default_run_mode: r.get(8)?,
             default_cli: r.get(9)?,
             default_provider: r.get(10)?,
-            default_model: r.get(11)?,
-            script_setup: r.get(12)?,
-            script_run: r.get(13)?,
-            script_teardown: r.get(14)?,
-            script_auto_run: r.get::<_, i64>(15)? != 0,
-            repo_url: r.get(16)?,
-            description: r.get(17)?,
-            env_files: r.get(18)?,
+            default_model: r.get::<_, Option<String>>(11)?.unwrap_or_default(),
+            script_setup: r.get::<_, Option<String>>(12)?.unwrap_or_default(),
+            script_run: r.get::<_, Option<String>>(13)?.unwrap_or_default(),
+            script_teardown: r.get::<_, Option<String>>(14)?.unwrap_or_default(),
+            script_auto_run: r.get::<_, Option<i64>>(15)?.map(|v| v != 0).unwrap_or(false),
+            repo_url: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+            description: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
+            env_files: r.get::<_, Option<String>>(18)?.unwrap_or_else(|| "[]".into()),
             is_active: r.get::<_, Option<i64>>(19)?.map(|v| v != 0).unwrap_or(true),
             is_public: r.get::<_, Option<i64>>(20)?.map(|v| v != 0).unwrap_or(false),
             show_usage: r.get::<_, Option<i64>>(21)?.map(|v| v != 0).unwrap_or(true),
             show_team: r.get::<_, Option<i64>>(22)?.map(|v| v != 0).unwrap_or(false),
+            tagline: r.get::<_, Option<String>>(23)?,
+            details: r.get::<_, Option<String>>(24)?,
+            logo_url: r.get::<_, Option<String>>(25)?,
+            image_url: r.get::<_, Option<String>>(26)?,
+            slider: r.get::<_, Option<String>>(27)?.unwrap_or_else(|| "[]".into()),
         })
     }
 
@@ -622,6 +648,15 @@ impl Db {
         Ok(())
     }
 
+fn str_to_null<'a>(s: &'a str) -> Option<&'a str> {
+    let t = s.trim();
+    if t.is_empty() { None } else { Some(t) }
+}
+
+fn opt_to_null<'a>(s: Option<&'a str>) -> Option<&'a str> {
+    s.map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
     #[allow(clippy::too_many_arguments)]
     pub fn update_workspace(
         &self,
@@ -636,6 +671,11 @@ impl Db {
         script_auto_run: bool,
         repo_url: &str,
         description: &str,
+        tagline: Option<&str>,
+        details: Option<&str>,
+        logo_url: Option<&str>,
+        image_url: Option<&str>,
+        slider: Option<&str>,
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
@@ -643,19 +683,25 @@ impl Db {
                 default_run_mode = ?1, default_cli = ?2, default_provider = ?3,
                 default_model = ?4, script_setup = ?5, script_run = ?6,
                 script_teardown = ?7, script_auto_run = ?8, repo_url = ?9,
-                description = ?10
-             WHERE id = ?11",
+                description = ?10, tagline = ?11, details = ?12, logo_url = ?13,
+                image_url = ?14, slider = COALESCE(?15, slider, '[]')
+             WHERE id = ?16",
             rusqlite::params![
                 default_run_mode,
                 default_cli,
                 default_provider,
-                default_model,
-                script_setup,
-                script_run,
-                script_teardown,
+                Self::str_to_null(default_model),
+                Self::str_to_null(script_setup),
+                Self::str_to_null(script_run),
+                Self::str_to_null(script_teardown),
                 script_auto_run as i64,
-                repo_url,
-                description,
+                Self::str_to_null(repo_url),
+                Self::str_to_null(description),
+                Self::opt_to_null(tagline),
+                Self::opt_to_null(details),
+                Self::opt_to_null(logo_url),
+                Self::opt_to_null(image_url),
+                slider,
                 id,
             ],
         )
@@ -679,6 +725,11 @@ impl Db {
         script_auto_run: bool,
         repo_url: &str,
         description: &str,
+        tagline: Option<&str>,
+        details: Option<&str>,
+        logo_url: Option<&str>,
+        image_url: Option<&str>,
+        slider: Option<&str>,
     ) -> Result<(), String> {
         let conn = self.0.lock().unwrap();
         conn.execute(
@@ -686,21 +737,37 @@ impl Db {
                 default_run_mode = ?1, default_cli = ?2, default_provider = ?3,
                 default_model = ?4, script_setup = ?5, script_run = ?6,
                 script_teardown = ?7, script_auto_run = ?8, repo_url = ?9,
-                description = ?10
-             WHERE project_id = ?11",
+                description = ?10, tagline = ?11, details = ?12, logo_url = ?13,
+                image_url = ?14, slider = COALESCE(?15, slider, '[]')
+             WHERE project_id = ?16",
             rusqlite::params![
                 default_run_mode,
                 default_cli,
                 default_provider,
-                default_model,
-                script_setup,
-                script_run,
-                script_teardown,
+                Self::str_to_null(default_model),
+                Self::str_to_null(script_setup),
+                Self::str_to_null(script_run),
+                Self::str_to_null(script_teardown),
                 script_auto_run as i64,
-                repo_url,
-                description,
+                Self::str_to_null(repo_url),
+                Self::str_to_null(description),
+                Self::opt_to_null(tagline),
+                Self::opt_to_null(details),
+                Self::opt_to_null(logo_url),
+                Self::opt_to_null(image_url),
+                slider,
                 project_id,
             ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn set_workspace_slider(&self, id: i64, slider: &str) -> Result<(), String> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE workspaces SET slider = ?1 WHERE id = ?2",
+            (slider, id),
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -1254,26 +1321,38 @@ impl Db {
         session_id: &str,
         tokens_prompt: i64,
         tokens_completion: i64,
+        tokens_reasoning: i64,
         cost_usd: f64,
         model: &str,
         provider: &str,
     ) {
+        let (rate_p, rate_cached, rate_c, rate_reasoning) = crate::usage::pricing_for(model, provider);
         let conn = self.0.lock().unwrap();
         let _ = conn.execute(
             "UPDATE chat_sessions SET
                tokens_prompt = tokens_prompt + ?1,
                tokens_completion = tokens_completion + ?2,
-               cost_usd = cost_usd + ?3,
-               model = ?4,
-               provider = ?5,
+               tokens_reasoning = tokens_reasoning + ?3,
+               cost_usd = cost_usd + ?4,
+               model = ?5,
+               provider = ?6,
+               rate_prompt_per_1m = ?7,
+               rate_cached_per_1m = ?8,
+               rate_completion_per_1m = ?9,
+               rate_reasoning_per_1m = ?10,
                updated_at = datetime('now')
-             WHERE id = ?6",
+             WHERE id = ?11",
             rusqlite::params![
                 tokens_prompt,
                 tokens_completion,
+                tokens_reasoning,
                 cost_usd,
                 model,
                 provider,
+                rate_p,
+                rate_cached,
+                rate_c,
+                rate_reasoning,
                 session_id
             ],
         );
@@ -1311,7 +1390,8 @@ impl Db {
             "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                     sh.last_output, sh.started_at, sh.started_at,
                     sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd, sh.agent_id,
-                    sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
+                    sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m,
+                    sh.tokens_prompt, sh.tokens_completion, sh.tokens_reasoning
              FROM session_history sh
              JOIN workspaces w ON w.id = sh.workspace_id
              WHERE sh.job_id IS NULL AND sh.agent_id IS NULL AND sh.workspace_id = ?1
@@ -1321,7 +1401,8 @@ impl Db {
             "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                     sh.last_output, sh.started_at, sh.started_at,
                     sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd, sh.agent_id,
-                    sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
+                    sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m,
+                    sh.tokens_prompt, sh.tokens_completion, sh.tokens_reasoning
              FROM session_history sh
              JOIN workspaces w ON w.id = sh.workspace_id
              WHERE sh.job_id IS NULL AND sh.agent_id IS NULL
@@ -1343,25 +1424,27 @@ impl Db {
 
         // Chat sessions — exclude agent-triggered runs
         let chat_sql = if workspace_id.is_some() {
-            "SELECT cs.id, w.id, w.name, 'chat', cs.provider, cs.model,
+            "SELECT cs.id, COALESCE(w.id, cs.workspace_id, 0), COALESCE(w.name, 'Workspace'), 'chat', cs.provider, cs.model,
                     (SELECT content FROM chat_messages m WHERE m.session_id = cs.id AND m.role = 'assistant'
                      ORDER BY m.id DESC LIMIT 1),
                     cs.created_at, cs.updated_at,
-                    cs.tokens_prompt + cs.tokens_completion, cs.cost_usd, cs.job_id, cs.agent_id,
-                    cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m
+                    cs.tokens_prompt + cs.tokens_completion + cs.tokens_reasoning, cs.cost_usd, cs.job_id, cs.agent_id,
+                    cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m,
+                    cs.tokens_prompt, cs.tokens_completion, cs.tokens_reasoning
              FROM chat_sessions cs
-             JOIN workspaces w ON w.project_id = cs.project_id
-             WHERE cs.job_id IS NULL AND cs.agent_id IS NULL AND w.id = ?1
+             LEFT JOIN workspaces w ON (w.id = cs.workspace_id OR (w.project_id IS NOT NULL AND w.project_id = cs.project_id))
+             WHERE cs.job_id IS NULL AND cs.agent_id IS NULL AND (cs.workspace_id = ?1 OR w.id = ?1)
              ORDER BY cs.updated_at DESC LIMIT 50"
         } else {
-            "SELECT cs.id, w.id, w.name, 'chat', cs.provider, cs.model,
+            "SELECT cs.id, COALESCE(w.id, cs.workspace_id, 0), COALESCE(w.name, 'Workspace'), 'chat', cs.provider, cs.model,
                     (SELECT content FROM chat_messages m WHERE m.session_id = cs.id AND m.role = 'assistant'
                      ORDER BY m.id DESC LIMIT 1),
                     cs.created_at, cs.updated_at,
-                    cs.tokens_prompt + cs.tokens_completion, cs.cost_usd, cs.job_id, cs.agent_id,
-                    cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m
+                    cs.tokens_prompt + cs.tokens_completion + cs.tokens_reasoning, cs.cost_usd, cs.job_id, cs.agent_id,
+                    cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m,
+                    cs.tokens_prompt, cs.tokens_completion, cs.tokens_reasoning
              FROM chat_sessions cs
-             JOIN workspaces w ON w.project_id = cs.project_id
+             LEFT JOIN workspaces w ON (w.id = cs.workspace_id OR (w.project_id IS NOT NULL AND w.project_id = cs.project_id))
              WHERE cs.job_id IS NULL AND cs.agent_id IS NULL
              ORDER BY cs.updated_at DESC LIMIT 50"
         };
@@ -1390,7 +1473,8 @@ impl Db {
                 "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                         sh.last_output, sh.started_at, sh.started_at,
                         sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd, sh.agent_id,
-                        sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
+                        sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m,
+                        sh.tokens_prompt, sh.tokens_completion, sh.tokens_reasoning
                  FROM session_history sh
                  JOIN workspaces w ON w.id = sh.workspace_id
                  WHERE sh.job_id = ?1
@@ -1418,7 +1502,8 @@ impl Db {
                         sh.last_output, sh.started_at, sh.started_at,
                         sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning,
                         sh.cost_usd, sh.agent_id,
-                        sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
+                        sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m,
+                        sh.tokens_prompt, sh.tokens_completion, sh.tokens_reasoning
                  FROM session_history sh
                  JOIN workspaces w ON w.id = sh.workspace_id
                  WHERE sh.job_id IS NOT NULL AND sh.agent_id IS NULL
@@ -1462,7 +1547,8 @@ impl Db {
                 "SELECT sh.session_id, sh.workspace_id, w.name, sh.cli, sh.provider, sh.model,
                     sh.last_output, sh.started_at, sh.started_at,
                     sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning, sh.cost_usd, sh.agent_id,
-                    sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
+                    sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m,
+                    sh.tokens_prompt, sh.tokens_completion, sh.tokens_reasoning
              FROM session_history sh
              JOIN workspaces w ON w.id = sh.workspace_id
              WHERE sh.session_id = ?1",
@@ -1476,14 +1562,15 @@ impl Db {
 
         // Fall back to chat session
         let chat_item = conn.query_row(
-            "SELECT cs.id, w.id, w.name, 'chat', cs.provider, cs.model,
+            "SELECT cs.id, COALESCE(w.id, cs.workspace_id, 0), COALESCE(w.name, 'Workspace'), 'chat', cs.provider, cs.model,
                     (SELECT content FROM chat_messages m WHERE m.session_id = cs.id AND m.role = 'assistant'
                      ORDER BY m.id DESC LIMIT 1),
                     cs.created_at, cs.updated_at,
-                    cs.tokens_prompt + cs.tokens_completion, cs.cost_usd, cs.job_id, cs.agent_id,
-                    cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m
+                    cs.tokens_prompt + cs.tokens_completion + cs.tokens_reasoning, cs.cost_usd, cs.job_id, cs.agent_id,
+                    cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m,
+                    cs.tokens_prompt, cs.tokens_completion, cs.tokens_reasoning
              FROM chat_sessions cs
-             JOIN workspaces w ON w.project_id = cs.project_id
+             LEFT JOIN workspaces w ON (w.id = cs.workspace_id OR (w.project_id IS NOT NULL AND w.project_id = cs.project_id))
              WHERE cs.id = ?1",
             [&sid],
             Self::session_feed_chat_from_row,
@@ -1515,6 +1602,9 @@ impl Db {
             rate_cached_per_1m: r.get(14).ok(),
             rate_completion_per_1m: r.get(15).ok(),
             rate_reasoning_per_1m: r.get(16).ok(),
+            tokens_prompt: r.get::<_, i64>(17).unwrap_or(0),
+            tokens_completion: r.get::<_, i64>(18).unwrap_or(0),
+            tokens_reasoning: r.get::<_, i64>(19).unwrap_or(0),
         })
     }
 
@@ -1541,6 +1631,9 @@ impl Db {
             rate_cached_per_1m: r.get(15).ok(),
             rate_completion_per_1m: r.get(16).ok(),
             rate_reasoning_per_1m: r.get(17).ok(),
+            tokens_prompt: r.get::<_, i64>(18).unwrap_or(0),
+            tokens_completion: r.get::<_, i64>(19).unwrap_or(0),
+            tokens_reasoning: r.get::<_, i64>(20).unwrap_or(0),
         })
     }
 
@@ -1553,6 +1646,13 @@ impl Db {
 
     pub fn get_setting(&self, key: &str) -> Option<String> {
         let conn = self.0.lock().unwrap();
+        if key == "api_token" {
+            return conn.query_row(
+                "SELECT token FROM api_tokens WHERE name = 'http_trigger' OR name = 'default' ORDER BY id ASC LIMIT 1",
+                [],
+                |r| r.get(0),
+            ).ok();
+        }
         let current_uid = Self::current_user_id_from_conn(&conn);
         if let Some(uid) = current_uid {
             conn.query_row(
@@ -1572,6 +1672,16 @@ impl Db {
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        if key == "api_token" {
+            let conn = self.0.lock().unwrap();
+            conn.execute(
+                "INSERT INTO api_tokens (name, token, description) VALUES ('http_trigger', ?1, 'Local HTTP trigger auth token')
+                 ON CONFLICT(name) DO UPDATE SET token = ?1",
+                [value],
+            )
+            .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
         let current_uid = self.current_user_id();
         let uid = current_uid.as_deref().unwrap_or("local");
         self.set_env_var("account", uid, key, value, false, Some(uid))
@@ -1613,6 +1723,15 @@ impl Db {
                 let k: String = row.get(0).map_err(|e| e.to_string())?;
                 let v: String = row.get(1).map_err(|e| e.to_string())?;
                 map.insert(k, v);
+            }
+        }
+        if let Ok(token) = conn.query_row(
+            "SELECT token FROM api_tokens WHERE name = 'http_trigger' OR name = 'default' ORDER BY id ASC LIMIT 1",
+            [],
+            |r| r.get::<_, String>(0),
+        ) {
+            if !token.trim().is_empty() {
+                map.insert("api_token".to_string(), token);
             }
         }
         Ok(map)
@@ -2183,7 +2302,8 @@ impl Db {
                             sh.last_output, sh.started_at, sh.started_at,
                             sh.tokens_prompt + sh.tokens_completion + sh.tokens_reasoning,
                             sh.cost_usd, sh.agent_id,
-                            sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m
+                            sh.user_id, sh.rate_prompt_per_1m, sh.rate_cached_per_1m, sh.rate_completion_per_1m, sh.rate_reasoning_per_1m,
+                            sh.tokens_prompt, sh.tokens_completion, sh.tokens_reasoning
                      FROM session_history sh
                      JOIN workspaces w ON w.id = sh.workspace_id
                      WHERE sh.workspace_id = ?1 AND sh.agent_id = ?2
@@ -2205,16 +2325,17 @@ impl Db {
         {
             let mut stmt = conn
                 .prepare(
-                    "SELECT cs.id, w.id, w.name, 'chat', cs.provider, cs.model,
+                    "SELECT cs.id, COALESCE(w.id, cs.workspace_id, 0), COALESCE(w.name, 'Workspace'), 'chat', cs.provider, cs.model,
                             (SELECT content FROM chat_messages m WHERE m.session_id = cs.id
                              AND m.role = 'assistant' ORDER BY m.id DESC LIMIT 1),
                             cs.created_at, cs.updated_at,
-                            cs.tokens_prompt + cs.tokens_completion, cs.cost_usd,
+                            cs.tokens_prompt + cs.tokens_completion + cs.tokens_reasoning, cs.cost_usd,
                             cs.job_id, cs.agent_id,
-                            cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m
+                            cs.user_id, cs.rate_prompt_per_1m, cs.rate_cached_per_1m, cs.rate_completion_per_1m, cs.rate_reasoning_per_1m,
+                            cs.tokens_prompt, cs.tokens_completion, cs.tokens_reasoning
                      FROM chat_sessions cs
-                     JOIN workspaces w ON w.project_id = cs.project_id
-                     WHERE w.id = ?1 AND cs.agent_id = ?2
+                     LEFT JOIN workspaces w ON (w.id = cs.workspace_id OR (w.project_id IS NOT NULL AND w.project_id = cs.project_id))
+                     WHERE (cs.workspace_id = ?1 OR w.id = ?1) AND cs.agent_id = ?2
                      ORDER BY cs.updated_at DESC LIMIT 100",
                 )
                 .map_err(|e| e.to_string())?;
@@ -2957,6 +3078,14 @@ impl Db {
             model: r.get(11)?,
             user_id: r.get(12).ok(),
             workspace_id: r.get(13).ok(),
+            tokens_prompt: r.get::<_, i64>(14).unwrap_or(0),
+            tokens_completion: r.get::<_, i64>(15).unwrap_or(0),
+            tokens_reasoning: r.get::<_, i64>(16).unwrap_or(0),
+            cost_usd: r.get::<_, f64>(17).unwrap_or(0.0),
+            rate_prompt_per_1m: r.get(18).ok(),
+            rate_cached_per_1m: r.get(19).ok(),
+            rate_completion_per_1m: r.get(20).ok(),
+            rate_reasoning_per_1m: r.get(21).ok(),
         })
     }
 
@@ -2966,10 +3095,18 @@ impl Db {
             (SELECT created_at FROM chat_messages m WHERE m.session_id = s.id ORDER BY m.id DESC LIMIT 1),
             (SELECT content FROM chat_messages m WHERE m.session_id = s.id ORDER BY m.id DESC LIMIT 1),
             (SELECT content FROM chat_messages m WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.id ASC LIMIT 1),
-            (SELECT provider FROM chat_messages m WHERE m.session_id = s.id AND m.provider IS NOT NULL ORDER BY m.id DESC LIMIT 1),
-            (SELECT model FROM chat_messages m WHERE m.session_id = s.id AND m.model IS NOT NULL ORDER BY m.id DESC LIMIT 1),
+            COALESCE((SELECT provider FROM chat_messages m WHERE m.session_id = s.id AND m.provider IS NOT NULL ORDER BY m.id DESC LIMIT 1), s.provider),
+            COALESCE((SELECT model FROM chat_messages m WHERE m.session_id = s.id AND m.model IS NOT NULL ORDER BY m.id DESC LIMIT 1), s.model),
             s.user_id,
-            s.workspace_id
+            s.workspace_id,
+            s.tokens_prompt,
+            s.tokens_completion,
+            s.tokens_reasoning,
+            s.cost_usd,
+            s.rate_prompt_per_1m,
+            s.rate_cached_per_1m,
+            s.rate_completion_per_1m,
+            s.rate_reasoning_per_1m
          FROM chat_sessions s";
 
     pub fn create_chat_session(&self, project_id: &str) -> Result<ChatSession, String> {
@@ -2985,6 +3122,16 @@ impl Db {
         conn.query_row(
             &format!("{} WHERE s.id = ?1", Self::CHAT_SESSION_SELECT),
             [&id],
+            Self::chat_session_from_row,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    pub fn get_chat_session(&self, id: &str) -> Result<ChatSession, String> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row(
+            &format!("{} WHERE s.id = ?1", Self::CHAT_SESSION_SELECT),
+            [id],
             Self::chat_session_from_row,
         )
         .map_err(|e| e.to_string())

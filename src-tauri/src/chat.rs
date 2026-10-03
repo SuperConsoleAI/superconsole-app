@@ -58,6 +58,7 @@ struct ChatDone {
     request_id: String,
     tokens_prompt: i64,
     tokens_completion: i64,
+    tokens_reasoning: i64,
     cost_usd: f64,
 }
 
@@ -321,6 +322,7 @@ pub async fn chat_send(
     app: AppHandle,
     request_id: String,
     workspace_id: i64,
+    session_id: Option<String>,
     provider: String,
     model: String,
     messages: Vec<ChatMsg>,
@@ -501,52 +503,57 @@ pub async fn chat_send(
         ),
     };
 
-    // Record token usage for this chat turn (cli = "chat"). Needs a cloud
-    // project ULID; skip recording silently for non-cloud workspaces.
+    // Record token usage for this chat turn (cli = "chat").
     if usage.total() > 0 {
-        let project_id = {
-            let db = app.state::<Db>();
-            db.get_workspace(workspace_id)
-                .ok()
-                .and_then(|w| w.project_id)
+        let db = app.state::<Db>();
+        let project_id = db.get_workspace(workspace_id)
+            .ok()
+            .and_then(|w| w.project_id)
+            .unwrap_or_else(|| format!("ws_{}", workspace_id));
+
+        let cache_total = usage.prompt + usage.cached;
+        let (rate_p, rate_cached, rate_c, rate_reasoning) = crate::usage::pricing_for(&model, &provider);
+        let target_sid = session_id.clone().unwrap_or_else(|| request_id.clone());
+        let ev = crate::db::UsageEvent {
+            project_id: project_id.clone(),
+            session_id: Some(target_sid.clone()),
+            model: Some(model.clone()),
+            provider: Some(provider.clone()),
+            cli: Some("chat".to_string()),
+            tokens_prompt: usage.prompt,
+            tokens_prompt_cached: usage.cached,
+            tokens_completion: usage.completion,
+            tokens_reasoning: usage.reasoning,
+            cost_usd: cost,
+            rate_prompt_per_1m: Some(rate_p),
+            rate_cached_per_1m: Some(rate_cached),
+            rate_completion_per_1m: Some(rate_c),
+            rate_reasoning_per_1m: Some(rate_reasoning),
+            cache_hit_rate: if cache_total > 0 {
+                usage.cached as f64 / cache_total as f64
+            } else {
+                0.0
+            },
+            ..Default::default()
         };
-        if let Some(project_id) = project_id {
-            let cache_total = usage.prompt + usage.cached;
-            let ev = crate::db::UsageEvent {
-                project_id,
-                session_id: Some(request_id.clone()),
-                model: Some(model.clone()),
-                provider: Some(provider.clone()),
-                cli: Some("chat".to_string()),
-                tokens_prompt: usage.prompt,
-                tokens_prompt_cached: usage.cached,
-                tokens_completion: usage.completion,
-                tokens_reasoning: usage.reasoning,
-                cost_usd: cost,
-                cache_hit_rate: if cache_total > 0 {
-                    usage.cached as f64 / cache_total as f64
-                } else {
-                    0.0
-                },
-                ..Default::default()
-            };
-            crate::usage::record_usage(&app, ev);
-            // Also accumulate into chat_sessions for the Sessions feed display.
-            let db = app.state::<Db>();
-            db.update_chat_session_cost(
-                &request_id,
-                usage.prompt + usage.cached,
-                usage.completion + usage.reasoning,
-                cost,
-                &model,
-                &provider,
-            );
-            let app_c = app.clone();
-            let rid_c = request_id.clone();
-            tauri::async_runtime::spawn(async move {
-                crate::userdb::sync_chat_session_to_userdb(&app_c, &rid_c).await;
-            });
-        }
+        crate::usage::record_usage(&app, ev);
+
+        // Always accumulate into chat_sessions for the Sessions feed & cost display
+        db.update_chat_session_cost(
+            &target_sid,
+            usage.prompt + usage.cached,
+            usage.completion,
+            usage.reasoning,
+            cost,
+            &model,
+            &provider,
+        );
+
+        let app_c = app.clone();
+        let sid_c = target_sid.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::userdb::sync_chat_session_to_userdb(&app_c, &sid_c).await;
+        });
     }
 
     clear_cancel(&app, &request_id);
@@ -555,7 +562,8 @@ pub async fn chat_send(
         ChatDone {
             request_id,
             tokens_prompt: usage.prompt + usage.cached,
-            tokens_completion: usage.completion + usage.reasoning,
+            tokens_completion: usage.completion,
+            tokens_reasoning: usage.reasoning,
             cost_usd: cost,
         },
     );
@@ -715,11 +723,6 @@ async fn run_tool_loop(
     Ok(total)
 }
 
-enum Sse {
-    Token(String),
-    Done,
-}
-
 fn truncate(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
@@ -753,17 +756,56 @@ async fn stream(
 
     let mut resp = resp;
     let mut buffer = String::new();
+    let mut text = String::new();
+    let mut usage = TurnUsage::default();
+
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
         if is_cancelled(app, request_id) {
-            return Ok(TurnUsage::default());
+            return Ok(usage);
         }
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(pos) = buffer.find('\n') {
             let line: String = buffer.drain(..=pos).collect();
             let line = line.trim_end_matches(['\r', '\n']);
-            match parse_sse_line(provider, line) {
-                Some(Sse::Token(t)) => {
+            let Some(payload) = line.strip_prefix("data:").map(|s| s.trim()) else {
+                continue;
+            };
+            if payload.is_empty() {
+                continue;
+            }
+            if payload == "[DONE]" {
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(payload) else {
+                continue;
+            };
+
+            match provider {
+                "gemini" => {
+                    if let Some(um) = v.get("usageMetadata") {
+                        if let Some(n) = um["promptTokenCount"].as_i64() {
+                            let cached = um["cachedContentTokenCount"].as_i64().unwrap_or(0);
+                            usage.cached = cached;
+                            usage.prompt = (n - cached).max(0);
+                        }
+                        if let Some(n) = um["candidatesTokenCount"].as_i64() {
+                            usage.completion = n;
+                        }
+                        if let Some(n) = um["thinkingTokenCount"].as_i64().or_else(|| um["reasoningTokenCount"].as_i64()) {
+                            usage.reasoning = n;
+                        }
+                    }
+                    let t: String = v["candidates"][0]["content"]["parts"]
+                        .as_array()
+                        .map(|parts| {
+                            parts
+                                .iter()
+                                .filter_map(|p| p["text"].as_str())
+                                .collect::<String>()
+                        })
+                        .unwrap_or_default();
                     if !t.is_empty() {
+                        text.push_str(&t);
                         let _ = app.emit(
                             "chat-token",
                             ChatToken {
@@ -773,59 +815,80 @@ async fn stream(
                         );
                     }
                 }
-                Some(Sse::Done) => return Ok(TurnUsage::default()),
-                None => {}
+                "anthropic" => {
+                    if let Some(u) = v.get("message").and_then(|m| m.get("usage")).or_else(|| v.get("usage")) {
+                        if let Some(n) = u["input_tokens"].as_i64() {
+                            usage.prompt = n;
+                        }
+                        if let Some(n) = u["cache_read_input_tokens"].as_i64() {
+                            usage.cached = n;
+                        }
+                        if let Some(n) = u["output_tokens"].as_i64() {
+                            usage.completion = n;
+                        }
+                    }
+                    if v["type"] == "content_block_delta" {
+                        let t = v["delta"]["text"]
+                            .as_str()
+                            .or_else(|| v["delta"]["thinking"].as_str())
+                            .unwrap_or("");
+                        if !t.is_empty() {
+                            text.push_str(t);
+                            let _ = app.emit(
+                                "chat-token",
+                                ChatToken {
+                                    request_id: request_id.to_string(),
+                                    content: t.to_string(),
+                                },
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    // OpenAI-compatible (openai, openrouter, local)
+                    if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
+                        if let Some(n) = u["prompt_tokens"].as_i64() {
+                            let cached = u["prompt_tokens_details"]["cached_tokens"].as_i64().unwrap_or(0);
+                            usage.cached = cached;
+                            usage.prompt = (n - cached).max(0);
+                        }
+                        if let Some(n) = u["completion_tokens"].as_i64() {
+                            usage.completion = n;
+                        }
+                        if let Some(n) = u["completion_tokens_details"]["reasoning_tokens"].as_i64() {
+                            usage.reasoning = n;
+                        }
+                    }
+                    let delta = &v["choices"][0]["delta"];
+                    let t = delta["content"].as_str()
+                        .or_else(|| delta["reasoning_content"].as_str())
+                        .unwrap_or("");
+                    if !t.is_empty() {
+                        text.push_str(t);
+                        let _ = app.emit(
+                            "chat-token",
+                            ChatToken {
+                                request_id: request_id.to_string(),
+                                content: t.to_string(),
+                            },
+                        );
+                    }
+                }
             }
         }
     }
-    Ok(TurnUsage::default())
-}
 
-fn parse_sse_line(provider: &str, line: &str) -> Option<Sse> {
-    let payload = line.strip_prefix("data:")?.trim();
-    if payload.is_empty() {
-        return None;
+    // Fallback token estimation if usage was not returned by API
+    if usage.prompt == 0 {
+        let prompt_text: String = messages.iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join(" ");
+        let full_prompt = if system.is_empty() { prompt_text } else { format!("{}\n{}", system, prompt_text) };
+        usage.prompt = estimate_tokens(&full_prompt).max(1) as i64;
     }
-    if payload == "[DONE]" {
-        return Some(Sse::Done);
+    if usage.completion == 0 && !text.is_empty() {
+        usage.completion = estimate_tokens(&text).max(1) as i64;
     }
-    let v: Value = serde_json::from_str(payload).ok()?;
 
-    match provider {
-        "anthropic" => match v["type"].as_str() {
-            Some("content_block_delta") => {
-                let text = v["delta"]["text"]
-                    .as_str()
-                    .or_else(|| v["delta"]["thinking"].as_str())
-                    .unwrap_or("")
-                    .to_string();
-                Some(Sse::Token(text))
-            }
-            Some("message_stop") => Some(Sse::Done),
-            _ => None,
-        },
-        "gemini" => {
-            let text: String = v["candidates"][0]["content"]["parts"]
-                .as_array()
-                .map(|parts| {
-                    parts
-                        .iter()
-                        .filter_map(|p| p["text"].as_str())
-                        .collect::<String>()
-                })
-                .unwrap_or_default();
-            Some(Sse::Token(text))
-        }
-        // OpenAI-compatible (openai, openrouter, local)
-        _ => {
-            let text = v["choices"][0]["delta"]["content"]
-                .as_str()
-                .or_else(|| v["choices"][0]["delta"]["reasoning_content"].as_str())
-                .unwrap_or("")
-                .to_string();
-            Some(Sse::Token(text))
-        }
-    }
+    Ok(usage)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -4,6 +4,7 @@ import {
   Table as TableIcon,
   Layers,
   X,
+  Terminal,
 } from "lucide-react";
 import {
   api,
@@ -14,6 +15,7 @@ import {
 import { LocalDBTables } from "./LocalDBTables";
 import { LocalDBData } from "./LocalDBData";
 import { LocalDBSchema } from "./LocalDBSchema";
+import { LocalDBSQLEditor } from "./LocalDBSQLEditor";
 import { cn } from "@/lib/utils";
 
 interface LocalDBStudioProps {
@@ -21,13 +23,14 @@ interface LocalDBStudioProps {
   isModal?: boolean;
 }
 
-type StudioTab = "data" | "structure";
+type StudioTab = "data" | "structure" | "sql";
 
 export const LocalDBStudio: React.FC<LocalDBStudioProps> = ({ onClose, isModal = false }) => {
   const [tables, setTables] = useState<LocalDbTableSummary[]>([]);
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<StudioTab>("data");
   const [tablesLoading, setTablesLoading] = useState(false);
+  const [showSqlModal, setShowSqlModal] = useState(false);
 
   // Data view state
   const [tableData, setTableData] = useState<LocalDbTableDataResult | null>(null);
@@ -158,11 +161,11 @@ export const LocalDBStudio: React.FC<LocalDBStudioProps> = ({ onClose, isModal =
           </div>
           <span className="text-muted-foreground/50">/</span>
           <span className="font-mono text-xs text-muted-foreground">
-            {selectedTable ?? "No table selected"}
+            {activeTab === "sql" ? "SQL Editor" : (selectedTable ?? "No table selected")}
           </span>
         </div>
 
-        {/* Tab Switcher: [Data] vs [Structure] */}
+        {/* Tab Switcher: [Data] vs [Structure] vs [SQL Editor] */}
         <div className="flex items-center gap-1 bg-muted/60 border border-border rounded-lg p-0.5">
           <button
             onClick={() => setActiveTab("data")}
@@ -188,18 +191,42 @@ export const LocalDBStudio: React.FC<LocalDBStudioProps> = ({ onClose, isModal =
             <Layers className="w-3.5 h-3.5" />
             <span>Structure</span>
           </button>
+          <button
+            onClick={() => setActiveTab("sql")}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all",
+              activeTab === "sql"
+                ? "bg-background text-foreground shadow-sm font-semibold"
+                : "text-muted-foreground hover:text-foreground hover:bg-background/50",
+            )}
+          >
+            <Terminal className="w-3.5 h-3.5" />
+            <span>SQL Editor</span>
+          </button>
         </div>
 
-        {/* Close Button */}
-        {onClose && (
+        {/* Right Action Icons: SQL Window Button & Close */}
+        <div className="flex items-center gap-2">
           <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-            title="Close LocalDB Studio"
+            type="button"
+            onClick={() => setShowSqlModal(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border border-border/80 bg-background/50 hover:bg-muted text-foreground transition-all shadow-2xs"
+            title="Open floating SQL Editor window"
           >
-            <X className="w-4 h-4" />
+            <Terminal className="w-3.5 h-3.5 text-primary" />
+            <span className="hidden sm:inline">SQL Window</span>
           </button>
-        )}
+
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              title="Close LocalDB Studio"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Main Split Body: Sidebar on left, Content on right */}
@@ -231,11 +258,35 @@ export const LocalDBStudio: React.FC<LocalDBStudioProps> = ({ onClose, isModal =
               onlyCurrentUser={onlyCurrentUser}
               onToggleCurrentUser={() => setOnlyCurrentUser(!onlyCurrentUser)}
             />
-          ) : (
+          ) : activeTab === "structure" ? (
             <LocalDBSchema schema={schema} loading={schemaLoading} />
+          ) : (
+            <LocalDBSQLEditor
+              isModal={false}
+              defaultTarget="localdb"
+              defaultQuery={
+                selectedTable
+                  ? `SELECT * FROM "${selectedTable}" LIMIT 20;`
+                  : "PRAGMA table_info(_schema_migrations);"
+              }
+            />
           )}
         </div>
       </div>
+
+      {/* Floating Modal SQL Editor (Screenshot matching window) */}
+      {showSqlModal && (
+        <LocalDBSQLEditor
+          isModal={true}
+          defaultTarget="localdb"
+          defaultQuery={
+            selectedTable
+              ? `SELECT * FROM "${selectedTable}" LIMIT 20;`
+              : "PRAGMA table_info(_schema_migrations);"
+          }
+          onClose={() => setShowSqlModal(false)}
+        />
+      )}
     </div>
   );
 };

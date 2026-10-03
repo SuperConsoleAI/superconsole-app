@@ -405,7 +405,7 @@ export function SettingsPage({
               </Tooltip>
             </div>
           ) : (
-            <div className="border-t px-2.5 py-2 flex items-center justify-between min-h-[44px] shrink-0">
+            <div className="border-t px-2.5 h-[44px] flex items-center justify-between shrink-0">
               <button
                 type="button"
                 onClick={() => openUrl("https://github.com").catch(() => {})}
@@ -493,14 +493,7 @@ function Content({
   if (tab === "account") {
     switch (section) {
       case "General":
-        return (
-          <div className="flex flex-col gap-6">
-            <GeneralSection onNavigateSection={onNavigateSection} />
-            <div className="rounded-xl border border-border/80 bg-card p-4 shadow-xs">
-              <ApiKeysSection />
-            </div>
-          </div>
-        );
+        return <GeneralSection onNavigateSection={onNavigateSection} />;
       case "Profile":
         return auth ? (
           <ProfileSection user={auth.user} onNavigateSection={onNavigateSection} />
@@ -752,12 +745,31 @@ function ProjectGeneralSection({
     workspaces.find((w) => w.project_id === projectId);
   const [repo, setRepo] = useState("");
   const [desc, setDesc] = useState("");
+  const [tagline, setTagline] = useState("");
+  const [details, setDetails] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
+  const [sliderText, setSliderText] = useState("");
   const [confirming, setConfirming] = useState(false);
 
   useEffect(() => {
     setRepo(ws?.repo_url ?? "");
     setDesc(ws?.description ?? "");
-  }, [ws?.id, ws?.repo_url, ws?.description]);
+    setTagline(ws?.tagline ?? "");
+    setDetails(ws?.details ?? "");
+    setLogoUrl(ws?.logo_url ?? "");
+    setImageUrl(ws?.image_url ?? "");
+    try {
+      const parsed = typeof ws?.slider === "string" ? JSON.parse(ws.slider) : ws?.slider;
+      if (Array.isArray(parsed)) {
+        setSliderText(parsed.join("\n"));
+      } else {
+        setSliderText("");
+      }
+    } catch {
+      setSliderText("");
+    }
+  }, [ws?.id, ws?.repo_url, ws?.description, ws?.tagline, ws?.details, ws?.logo_url, ws?.image_url, ws?.slider]);
 
   if (!ws) return <Hint>Select a project to continue.</Hint>;
 
@@ -852,9 +864,25 @@ function ProjectGeneralSection({
       </div>
 
       <div>
+        <h3 className="text-sm font-medium">Tagline</h3>
+        <p className="mb-2 mt-1 text-xs leading-relaxed text-muted-foreground">
+          Short one-line punchline or subtitle for this workspace.
+        </p>
+        <div className="flex gap-2">
+          <Input
+            value={tagline}
+            onChange={(e) => setTagline(e.target.value)}
+            placeholder="e.g. Real-time developer workspace"
+            className="h-8 flex-1 text-xs"
+          />
+          <SaveButton onSave={() => updateWorkspaceFields(ws.id, { tagline: tagline.trim() || null })} />
+        </div>
+      </div>
+
+      <div>
         <h3 className="text-sm font-medium">Description</h3>
         <p className="mb-2 mt-1 text-xs leading-relaxed text-muted-foreground">
-          Short note about this project.
+          Brief summary about this project.
         </p>
         <div className="flex gap-2">
           <Input
@@ -863,7 +891,87 @@ function ProjectGeneralSection({
             placeholder="What is this project?"
             className="h-8 flex-1 text-xs"
           />
-          <SaveButton onSave={() => updateWorkspaceFields(ws.id, { description: desc })} />
+          <SaveButton onSave={() => updateWorkspaceFields(ws.id, { description: desc.trim() })} />
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-medium">Details</h3>
+        <p className="mb-2 mt-1 text-xs leading-relaxed text-muted-foreground">
+          Extended notes, overview, or markdown documentation for this project.
+        </p>
+        <div className="flex flex-col gap-2">
+          <textarea
+            value={details}
+            onChange={(e) => setDetails(e.target.value)}
+            placeholder="Comprehensive project overview, documentation, or specifications..."
+            rows={4}
+            className="w-full rounded-md border border-input bg-background p-2.5 text-xs font-normal focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+          <div className="flex justify-end">
+            <SaveButton onSave={() => updateWorkspaceFields(ws.id, { details: details.trim() || null })} />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <h3 className="text-sm font-medium">Logo URL</h3>
+          <p className="mb-2 mt-1 text-xs leading-relaxed text-muted-foreground">
+            URL for the workspace logo / icon.
+          </p>
+          <div className="flex gap-2">
+            <Input
+              value={logoUrl}
+              onChange={(e) => setLogoUrl(e.target.value)}
+              placeholder="https://example.com/logo.svg"
+              className="h-8 flex-1 font-mono text-xs"
+            />
+            <SaveButton onSave={() => updateWorkspaceFields(ws.id, { logo_url: logoUrl.trim() || null })} />
+          </div>
+        </div>
+
+        <div>
+          <h3 className="text-sm font-medium">Image URL</h3>
+          <p className="mb-2 mt-1 text-xs leading-relaxed text-muted-foreground">
+            Hero banner or preview image for this project.
+          </p>
+          <div className="flex gap-2">
+            <Input
+              value={imageUrl}
+              onChange={(e) => setImageUrl(e.target.value)}
+              placeholder="https://example.com/cover.png"
+              className="h-8 flex-1 font-mono text-xs"
+            />
+            <SaveButton onSave={() => updateWorkspaceFields(ws.id, { image_url: imageUrl.trim() || null })} />
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-medium">Slider Images</h3>
+        <p className="mb-2 mt-1 text-xs leading-relaxed text-muted-foreground">
+          Image URLs for the project slider / carousel (one per line).
+        </p>
+        <div className="flex flex-col gap-2">
+          <textarea
+            value={sliderText}
+            onChange={(e) => setSliderText(e.target.value)}
+            placeholder="https://example.com/slide1.png&#10;https://example.com/slide2.png"
+            rows={3}
+            className="w-full rounded-md border border-input bg-background p-2.5 font-mono text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+          <div className="flex justify-end">
+            <SaveButton
+              onSave={() => {
+                const arr = sliderText
+                  .split("\n")
+                  .map((s) => s.trim())
+                  .filter(Boolean);
+                return updateWorkspaceFields(ws.id, { slider: JSON.stringify(arr) });
+              }}
+            />
+          </div>
         </div>
       </div>
 
@@ -1039,15 +1147,6 @@ function AppearanceSection() {
 }
 
 
-function useSettings() {
-  const [settings, setSettings] = useState<Record<string, string>>({});
-  useEffect(() => {
-    api.getSettings().then(setSettings).catch(console.error);
-  }, []);
-  const update = (key: string, value: string) =>
-    setSettings((s) => ({ ...s, [key]: value }));
-  return { settings, update };
-}
 
 function SaveButton({
   onSave,
@@ -1800,76 +1899,4 @@ function GlobalCommandsSection() {
   );
 }
 
-function ApiKeysSection() {
-  const { settings, update } = useSettings();
-  const [copied, setCopied] = useState(false);
-  const httpEnabled = settings.http_enabled === "1";
 
-  return (
-    <div className="flex flex-col gap-4">
-      <div>
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Local HTTP server</h3>
-          <button
-            className={cn(
-              "h-4 w-7 rounded-full transition-colors",
-              httpEnabled ? "bg-primary" : "bg-muted",
-            )}
-            onClick={() => update("http_enabled", httpEnabled ? "0" : "1")}
-          >
-            <span
-              className={cn(
-                "block h-3 w-3 rounded-full bg-background transition-transform",
-                httpEnabled ? "translate-x-3.5" : "translate-x-0.5",
-              )}
-            />
-          </button>
-        </div>
-        <p className="mb-3 mt-1 text-xs leading-relaxed text-muted-foreground">
-          Binds 127.0.0.1 only. POST /trigger {"{ workspace, command }"} with the
-          x-superconsole-token header. Expose via Cloudflare Tunnel for mobile.
-          Restart SuperConsole to apply.
-        </p>
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2">
-            <span className="w-10 text-xs text-muted-foreground">Port</span>
-            <Input
-              value={settings.http_port ?? "4665"}
-              onChange={(e) => update("http_port", e.target.value)}
-              className="h-8 w-24 font-mono text-xs"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-10 text-xs text-muted-foreground">Token</span>
-            <Input
-              readOnly
-              value={settings.api_token ?? ""}
-              type="password"
-              className="h-8 flex-1 font-mono text-xs"
-            />
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => {
-                navigator.clipboard.writeText(settings.api_token ?? "");
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              }}
-            >
-              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-            </Button>
-          </div>
-        </div>
-      </div>
-      <div>
-        <SaveButton
-          onSave={async () => {
-            await api.setSetting("http_enabled", httpEnabled ? "1" : "0");
-            await api.setSetting("http_port", settings.http_port || "4665");
-          }}
-        />
-      </div>
-    </div>
-  );
-}

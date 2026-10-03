@@ -144,23 +144,36 @@ pub async fn push_project_settings(project_id: &str, ws: &crate::db::Workspace) 
     {
         return;
     }
+    let to_null = |s: &str| {
+        let t = s.trim();
+        if t.is_empty() { None } else { Some(t.to_string()) }
+    };
+    let opt_to_null = |s: &Option<String>| {
+        s.as_deref().map(|v| v.trim()).filter(|v| !v.is_empty()).map(|v| v.to_string())
+    };
     let _ = cloud::turso_execute(
         &client,
         &cfg,
         "UPDATE projects SET default_run_mode = ?, default_cli = ?, default_provider = ?, \
          default_model = ?, script_setup = ?, script_run = ?, script_teardown = ?, \
-         script_auto_run = ?, repo_url = ?, description = ? WHERE id = ?",
+         script_auto_run = ?, repo_url = ?, description = ?, tagline = ?, details = ?, \
+         logo_url = ?, image_url = ?, slider = ? WHERE id = ?",
         vec![
             Some(ws.default_run_mode.clone()),
             Some(ws.default_cli.clone()),
             Some(ws.default_provider.clone()),
-            Some(ws.default_model.clone()),
-            Some(ws.script_setup.clone()),
-            Some(ws.script_run.clone()),
-            Some(ws.script_teardown.clone()),
+            to_null(&ws.default_model),
+            to_null(&ws.script_setup),
+            to_null(&ws.script_run),
+            to_null(&ws.script_teardown),
             Some(if ws.script_auto_run { "1" } else { "0" }.to_string()),
-            Some(ws.repo_url.clone()),
-            Some(ws.description.clone()),
+            to_null(&ws.repo_url),
+            to_null(&ws.description),
+            opt_to_null(&ws.tagline),
+            opt_to_null(&ws.details),
+            opt_to_null(&ws.logo_url),
+            opt_to_null(&ws.image_url),
+            Some(if ws.slider.trim().is_empty() { "[]".to_string() } else { ws.slider.clone() }),
             Some(project_id.to_string()),
         ],
     )
